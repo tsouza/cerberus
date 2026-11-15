@@ -23,25 +23,11 @@ const ClassicBucketMergeBudgetMessage = "classic-histogram bucket merge exceeds 
 // (CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_SERIES_MAX_ENTRIES).
 const ClassicBucketWindowSeriesBudgetMessage = "classic-histogram window exceeds the bucket-entries-per-series resource bound"
 
-// IsClassicBucketBudgetMessage reports whether msg is the message of one of
-// the classic-histogram stage's own `throwIf` guards —
-// [ClassicBucketMergeBudgetMessage] or
-// [ClassicBucketWindowSeriesBudgetMessage]. A plan carrying a `throwIf` with
-// either message carries a classic-histogram window or bucket-merge stage,
-// which is how internal/engine tells a ClickHouse memory-limit abort of such
-// a statement from any other.
-func IsClassicBucketBudgetMessage(msg string) bool {
-	switch msg {
-	case ClassicBucketMergeBudgetMessage, ClassicBucketWindowSeriesBudgetMessage:
-		return true
-	}
-	return false
-}
-
 // ClassicHistogramMemoryLimitMessage is the message the Prometheus head
 // answers with when ClickHouse aborts a statement carrying a
-// classic-histogram window or bucket-merge stage for exceeding its memory
-// limit (code 241). The stage has no query-wide check of its own, so the
-// server's cap is what refuses such a query; the head names the stage
-// instead of reporting a generic memory-limit failure.
+// classic-histogram quantile ([HistogramQuantile]) for exceeding its memory
+// limit (code 241). The quantile's stages are bounded per series and per
+// merge, not as a whole, so the server's cap is what refuses such a query;
+// the head names the quantile instead of reporting a generic memory-limit
+// failure.
 const ClassicHistogramMemoryLimitMessage = "classic-histogram quantile exceeds the ClickHouse memory limit"

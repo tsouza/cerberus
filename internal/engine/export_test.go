@@ -18,8 +18,8 @@ func SharedQuerySettingsForTest(r SettingsRules, plan chplan.Node) map[string]an
 	return chclient.QuerySettingsFromContext(applySharedQuerySettings(context.Background(), f, testQueryMemoryCap, r))
 }
 
-// ClassicHistogramStageForTest reports plan's classicHistogramStage fact, so
+// ClassicHistogramQuantileForTest reports plan's classicHistogramQuantile fact, so
 // the external tests that lower real PromQL can pin which lowerings carry it.
-func ClassicHistogramStageForTest(plan chplan.Node) bool {
-	return inspectPlanShape(plan, "").classicHistogramStage
+func ClassicHistogramQuantileForTest(plan chplan.Node) bool {
+	return inspectPlanShape(plan, "").classicHistogramQuantile
 }

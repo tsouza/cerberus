@@ -89,7 +89,7 @@ func TestClassifyMetadataError_UnclassifiedIsATransportFault(t *testing.T) {
 
 // TestClassifyEngineError_ClassicHistogramMemoryLimit pins the classification
 // of an engine-marked classic-histogram memory-limit abort on the instant
-// and the drain classifiers alike: 422 errorType=execution with the stage's
+// and the drain classifiers alike: 422 errorType=execution with the quantile's
 // message and the resource-exhausted telemetry reason, the cap named only
 // when one is configured.
 func TestClassifyEngineError_ClassicHistogramMemoryLimit(t *testing.T) {

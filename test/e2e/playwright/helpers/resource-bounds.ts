@@ -38,8 +38,7 @@ export const MEMORY_LIMIT_MESSAGE = `query processing would use too much memory 
 
 // The exact 422 errorType=execution wire message the Prom head emits in
 // place of MEMORY_LIMIT_MESSAGE when the statement ClickHouse aborted at
-// the per-query memory cap carries a classic-histogram window or
-// bucket-merge stage. Byte-for-byte the production message from
+// the per-query memory cap carries a classic-histogram quantile. Byte-for-byte the production message from
 // internal/api/prom/handler.go (classicHistogramMemoryLimitMessage over
 // internal/chplan.ClassicHistogramMemoryLimitMessage) — pinned in lock-step
 // with internal/api/prom/handler_classic_histogram_memory_limit_test.go.

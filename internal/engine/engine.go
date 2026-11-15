@@ -396,7 +396,7 @@ func routeAQuerySettingsOf(ctx context.Context, f planShapeFacts, memCap int64, 
 // once emitForHead has rendered the SQL, so every dispatch site stamps it
 // onto the ctx this function returns, right after the emit.
 //
-// The third result is the plan's classicHistogramStage fact, read off the
+// The third result is the plan's classicHistogramQuantile fact, read off the
 // same inspection the settings come from, for the dispatch site to classify
 // a memory-limit abort with (wrapClassicHistogramMemoryLimit).
 func (e *Engine) execContext(
@@ -426,7 +426,7 @@ func (e *Engine) execContext(
 	// Return the queryID so the caller can later stamp a cerberus-side terminal
 	// outcome (e.g. the sample-budget 422 surfacing through this dispatch) onto
 	// the same corpus record via observeOutcomeForErr.
-	return ctx, queryID, f.classicHistogramStage
+	return ctx, queryID, f.classicHistogramQuantile
 }
 
 // applySharedQuerySettings layers every plan-shape-gated per-query ClickHouse
@@ -1814,13 +1814,13 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	// their per-head labels.
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
-	execCtx, queryID, classicHistogramStage := e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision)
+	execCtx, queryID, classicHistogramQuantile := e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision)
 	execCtx = chclient.WithDataShardFanoutMultiplier(execCtx, physicalScans)
 	samples, err := e.Client.Query(execCtx, sql, args...)
 	chMillis := time.Since(start).Milliseconds()
 	execT.Done(ctx)
 	if err != nil {
-		err = wrapClassicHistogramMemoryLimit(err, classicHistogramStage)
+		err = wrapClassicHistogramMemoryLimit(err, classicHistogramQuantile)
 		// The eager path drains the whole result inside Client.Query, so a
 		// sample-budget 422 (or a breaker fast-fail) surfaces here. Stamp the
 		// cerberus-side outcome onto the corpus before wrapping the error.
@@ -2222,7 +2222,7 @@ func (e *Engine) executeRouted(
 	}
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
-	classicHistogramStage := planHasClassicHistogramStage(plan)
+	classicHistogramQuantile := planHasClassicHistogramQuantile(plan)
 	cursor, info, err := e.Solver.Executor.Execute(
 		routeBExecCtx(
 			ctx, lang.Name(), meta.ResponseShape, decision, plan, e.queryMemoryCap(), e.settings(),
@@ -2232,7 +2232,7 @@ func (e *Engine) executeRouted(
 		), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	if err != nil {
-		err = wrapClassicHistogramMemoryLimit(err, classicHistogramStage)
+		err = wrapClassicHistogramMemoryLimit(err, classicHistogramQuantile)
 		execT.Done(ctx)
 		// Same stamping route A's eager path does at its own dispatch
 		// failure (cerberus issue #3184): a breaker rejection or a
@@ -2258,7 +2258,7 @@ func (e *Engine) executeRouted(
 	for cursor.Next() {
 		samples = append(samples, cursor.Sample())
 	}
-	if cerr := wrapClassicHistogramMemoryLimit(cursor.Err(), classicHistogramStage); cerr != nil {
+	if cerr := wrapClassicHistogramMemoryLimit(cursor.Err(), classicHistogramQuantile); cerr != nil {
 		execT.Done(ctx)
 		// The route-B eager path drains inside this function, so this is the
 		// ONLY site that can stamp a drain outcome for it — the streaming
@@ -2592,7 +2592,7 @@ func (e *Engine) dispatchRouteACursor(
 	}
 
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
-	execCtx, queryID, classicHistogramStage := e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision)
+	execCtx, queryID, classicHistogramQuantile := e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision)
 	execCtx = chclient.WithDataShardFanoutMultiplier(execCtx, physicalScans)
 	// Thread the adapter's declared response shape onto the execute ctx so
 	// chclient's columnar matrix decode can confirm (defense-in-depth, on top
@@ -2605,9 +2605,9 @@ func (e *Engine) dispatchRouteACursor(
 	cursor, err := cq.QueryCursor(execCtx, sql, args...)
 	execT.Done(ctx)
 	if err != nil {
-		return routeACursorAttempt{openErr: wrapClassicHistogramMemoryLimit(err, classicHistogramStage), queryID: queryID}, nil
+		return routeACursorAttempt{openErr: wrapClassicHistogramMemoryLimit(err, classicHistogramQuantile), queryID: queryID}, nil
 	}
-	cursor = wrapClassicHistogramCursor(cursor, classicHistogramStage)
+	cursor = wrapClassicHistogramCursor(cursor, classicHistogramQuantile)
 
 	nodes := cerbtrace.CountNodes(plan)
 	strategy := strategyFor(meta)
@@ -2674,7 +2674,7 @@ func (e *Engine) buildRoutedCursorResult(
 	}
 	headers[HeaderRouteDecision] = solver.StrategyShardedTimeslice + ";k=" + strconv.Itoa(decision.K) + ";reason=" + via
 	return CursorResult{
-		Cursor:        wrapClassicHistogramCursor(cursor, planHasClassicHistogramStage(plan)),
+		Cursor:        wrapClassicHistogramCursor(cursor, planHasClassicHistogramQuantile(plan)),
 		SQL:           sql,
 		Args:          args,
 		Strategy:      strategy,
@@ -2772,7 +2772,7 @@ func (e *Engine) executeRoutedCursor(
 	}
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
-	classicHistogramStage := planHasClassicHistogramStage(plan)
+	classicHistogramQuantile := planHasClassicHistogramQuantile(plan)
 	cursor, info, err := e.Solver.Executor.Execute(
 		routeBExecCtx(
 			ctx, lang.Name(), meta.ResponseShape, decision, plan, e.queryMemoryCap(), e.settings(),
@@ -2783,7 +2783,7 @@ func (e *Engine) executeRoutedCursor(
 	)
 	execT.Done(ctx)
 	if err != nil {
-		err = wrapClassicHistogramMemoryLimit(err, classicHistogramStage)
+		err = wrapClassicHistogramMemoryLimit(err, classicHistogramQuantile)
 		e.logQueryFailure(lang.Name(), plan, decision, time.Since(start), "", err)
 		return CursorResult{}, fmt.Errorf("engine: solver execute: %w", err)
 	}
@@ -2793,7 +2793,7 @@ func (e *Engine) executeRoutedCursor(
 	// site by wrapping the cursor below.
 	e.observeRoutedQuery(info, plan, lang.Name(), decision)
 	cursor = wrapClassicHistogramCursor(
-		wrapPerRungObserver(cursor, e.PerRungAdmission, e.RouteMemo, plan, decision), classicHistogramStage,
+		wrapPerRungObserver(cursor, e.PerRungAdmission, e.RouteMemo, plan, decision), classicHistogramQuantile,
 	)
 
 	nodes := cerbtrace.CountNodes(plan)

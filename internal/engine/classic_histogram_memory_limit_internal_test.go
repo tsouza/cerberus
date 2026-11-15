@@ -13,50 +13,47 @@ import (
 	"github.com/tsouza/cerberus/internal/solver"
 )
 
-// guardedScan is a scan under a filter whose predicate is
-// throwIf(Value > 0, msg) = 0, or under f(Value, msg) = 0 when fn is not
-// throwIf.
-func guardedScan(fn chplan.Fn, msg string) chplan.Node {
-	return &chplan.Filter{
-		Input: &chplan.Scan{Table: "otel_metrics_histogram"},
-		Predicate: &chplan.Binary{
-			Op: chplan.OpEq,
-			Left: &chplan.FuncCall{Fn: fn, Args: []chplan.Expr{
-				&chplan.Binary{Op: chplan.OpGt, Left: &chplan.ColumnRef{Name: "Value"}, Right: &chplan.LitInt{V: 0}},
-				&chplan.InlineString{V: msg},
-			}},
-			Right: &chplan.LitInt{V: 0},
-		},
-	}
+// classicQuantileOver is a classic-histogram quantile over input.
+func classicQuantileOver(input chplan.Node) *chplan.HistogramQuantile {
+	return &chplan.HistogramQuantile{Input: input, Phi: 0.5, BucketCountsColumn: "BucketCounts", ExplicitBoundsColumn: "ExplicitBounds"}
 }
 
-// TestInspectPlanShape_ClassicHistogramStageIsTheGuardMessage pins what sets
-// the fact: a throwIf raising either classic-histogram stage message, and
-// neither another guard's message nor the message outside a throwIf.
-func TestInspectPlanShape_ClassicHistogramStageIsTheGuardMessage(t *testing.T) {
+// histogramScan is a bare scan of the classic-histogram table.
+func histogramScan() chplan.Node { return &chplan.Scan{Table: "otel_metrics_histogram"} }
+
+// TestInspectPlanShape_ClassicHistogramQuantileIsTheNode pins what sets the
+// fact: a chplan.HistogramQuantile anywhere in the plan — at the root, under
+// another node, inside a chplan.HistogramQuantiles (whose children skip it),
+// or inside a scalar subquery — and neither the native quantile nor a plan
+// that only reads the classic-histogram table.
+func TestInspectPlanShape_ClassicHistogramQuantileIsTheNode(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		plan chplan.Node
 		want bool
 	}{
-		{"merge guard", guardedScan(chplan.FnThrowIf, chplan.ClassicBucketMergeBudgetMessage), true},
-		{"per-series window guard", guardedScan(chplan.FnThrowIf, chplan.ClassicBucketWindowSeriesBudgetMessage), true},
-		{"native histogram merge guard", guardedScan(chplan.FnThrowIf, chplan.HistogramMergeBudgetMessage), false},
-		{"classic message outside a throwIf", guardedScan(chplan.FnConcat, chplan.ClassicBucketMergeBudgetMessage), false},
+		{"classic quantile", classicQuantileOver(histogramScan()), true},
+		{"under a projection", &chplan.Project{Input: classicQuantileOver(histogramScan())}, true},
+		{"inside histogram_quantiles", &chplan.HistogramQuantiles{
+			Histogram: classicQuantileOver(histogramScan()),
+			Levels:    []chplan.HistogramQuantileLevel{{Phi: 0.5}},
+		}, true},
 		{"inside a scalar subquery", &chplan.Filter{
-			Input: &chplan.Scan{Table: "otel_metrics_histogram"},
+			Input: histogramScan(),
 			Predicate: &chplan.Binary{
 				Op:    chplan.OpGt,
-				Left:  &chplan.ScalarSubquery{Input: guardedScan(chplan.FnThrowIf, chplan.ClassicBucketWindowSeriesBudgetMessage)},
+				Left:  &chplan.ScalarSubquery{Input: classicQuantileOver(histogramScan())},
 				Right: &chplan.LitInt{V: 0},
 			},
 		}, true},
+		{"native quantile", &chplan.HistogramQuantileNative{Input: histogramScan(), Phi: 0.5}, false},
+		{"classic-histogram table without a quantile", histogramScan(), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := inspectPlanShape(tc.plan, "").classicHistogramStage; got != tc.want {
-				t.Fatalf("classicHistogramStage = %v, want %v", got, tc.want)
+			if got := inspectPlanShape(tc.plan, "").classicHistogramQuantile; got != tc.want {
+				t.Fatalf("classicHistogramQuantile = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -138,7 +135,7 @@ func TestWrapClassicHistogramCursor_KeepsTheComposedTeardown(t *testing.T) {
 
 // TestBuildRoutedCursorResult_WrapsAClassicStage pins the route-B memo-hit
 // and retry dispatch seam: the cursor it returns for a classic-histogram
-// plan reports a memory-limit drain abort as the stage's, and the cursor for
+// plan reports a memory-limit drain abort as the quantile's, and the cursor for
 // any other plan reports it unchanged.
 func TestBuildRoutedCursorResult_WrapsAClassicStage(t *testing.T) {
 	t.Parallel()
@@ -149,8 +146,8 @@ func TestBuildRoutedCursorResult_WrapsAClassicStage(t *testing.T) {
 		plan chplan.Node
 		want bool
 	}{
-		{"classic", guardedScan(chplan.FnThrowIf, chplan.ClassicBucketMergeBudgetMessage), true},
-		{"other", &chplan.Scan{Table: "otel_metrics_histogram"}, false},
+		{"classic", classicQuantileOver(histogramScan()), true},
+		{"other", histogramScan(), false},
 	} {
 		res := eng.buildRoutedCursorResult(Meta{}, tc.plan, "promql", decision, composedFakeCursor{}, nil, "retry")
 		var classic *ClassicHistogramMemoryLimitError

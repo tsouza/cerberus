@@ -71,7 +71,7 @@
  *     memory-limit message (MEMORY_LIMIT_MESSAGE below, byte-for-byte —
  *     pinned in lock-step with internal/api/prom/handler_memory_limit_test.go
  *     — or CLASSIC_HISTOGRAM_MEMORY_LIMIT_MESSAGE when the aborted statement
- *     carries a classic-histogram window or bucket-merge stage)
+ *     carries a classic-histogram quantile)
  *     OR one of cerberus's own emitter-planted resource-bound guard
  *     messages (RESOURCE_BOUND_GUARD_MESSAGES below) — a native-
  *     histogram-consuming panel (issue #3170/#3468) can trip its own

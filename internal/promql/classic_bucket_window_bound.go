@@ -27,9 +27,9 @@ import (
 // No check bounds the stage as a whole. A query whose stage exceeds the
 // ClickHouse per-query memory cap across many series fails when ClickHouse
 // reaches the cap (code 241); internal/engine recognises that the failing
-// statement carries a classic-histogram stage by this check's and the
-// bucket-merge check's throwIf messages, and the Prometheus head answers it
-// with its own HTTP 422 message.
+// statement carries a classic-histogram quantile by its
+// chplan.HistogramQuantile node, and the Prometheus head answers it with its
+// own HTTP 422 message.
 //
 // # Calibration
 //

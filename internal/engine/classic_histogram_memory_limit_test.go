@@ -28,51 +28,48 @@ func classicHistogramCHMemoryLimit() error {
 }
 
 // classicHistogramShapes are real PromQL lowerings, each marked with whether
-// it carries a classic-histogram window or bucket-merge stage under the
-// fan-out lowerers (classic) and under the auto selection on 26.8
-// (classicAuto). Auto lowers a range classic `rate` quantile through the
-// ts-grid per-rung path, which carries neither stage.
+// it carries a classic-histogram quantile. The fact is the plan node, so it
+// holds alike under the fan-out lowerers and under the auto selection on
+// 26.8, which lowers a range classic `rate` quantile through the ts-grid
+// per-rung path.
 var classicHistogramShapes = []struct {
-	name                 string
-	query                string
-	rangeQuery           bool
-	classic, classicAuto bool
+	name       string
+	query      string
+	rangeQuery bool
+	classic    bool
 }{
-	{"instant classic quantile", `histogram_quantile(0.5, sum by (le) (rate(` + adaptiveClassicMetric + `[5m])))`, false, true, true},
-	{"instant classic quantile over bare selector", `histogram_quantile(0.5, sum by (le) (` + adaptiveClassicMetric + `))`, false, true, true},
-	{"range classic rate quantile", `histogram_quantile(0.5, sum by (le) (rate(` + adaptiveClassicMetric + `[5m])))`, true, true, false},
-	{"range classic increase quantile", `histogram_quantile(0.5, sum by (le) (increase(` + adaptiveClassicMetric + `[5m])))`, true, true, true},
-	{"instant native quantile", `histogram_quantile(0.5, sum(rate(` + adaptiveExpMetric + `[5m])))`, false, false, false},
-	{"range native quantile", `histogram_quantile(0.5, sum(rate(` + adaptiveExpMetric + `[5m])))`, true, false, false},
-	{"instant bucket rate without a quantile", `sum by (le) (rate(` + adaptiveClassicMetric + `[5m]))`, false, false, false},
-	{"range counter rate", `sum(rate(http_requests_total[5m]))`, true, false, false},
+	{"instant classic quantile", `histogram_quantile(0.5, sum by (le) (rate(` + adaptiveClassicMetric + `[5m])))`, false, true},
+	{"instant classic quantile over bare selector", `histogram_quantile(0.5, sum by (le) (` + adaptiveClassicMetric + `))`, false, true},
+	{"instant classic quantiles", `histogram_quantiles(sum by (le) (rate(` + adaptiveClassicMetric + `[5m])), "q", 0.5, 0.9)`, false, true},
+	{"instant classic float-domain quantile", `histogram_quantile(0.5, topk(3, rate(` + adaptiveClassicMetric + `[5m])))`, false, true},
+	{"range classic rate quantile", `histogram_quantile(0.5, sum by (le) (rate(` + adaptiveClassicMetric + `[5m])))`, true, true},
+	{"range classic increase quantile", `histogram_quantile(0.5, sum by (le) (increase(` + adaptiveClassicMetric + `[5m])))`, true, true},
+	{"instant native quantile", `histogram_quantile(0.5, sum(rate(` + adaptiveExpMetric + `[5m])))`, false, false},
+	{"range native quantile", `histogram_quantile(0.5, sum(rate(` + adaptiveExpMetric + `[5m])))`, true, false},
+	{"instant bucket rate without a quantile", `sum by (le) (rate(` + adaptiveClassicMetric + `[5m]))`, false, false},
+	{"range counter rate", `sum(rate(http_requests_total[5m]))`, true, false},
 }
 
-// TestClassicHistogramStage_RealLowerings pins the plan fact on what the
+// TestClassicHistogramQuantile_RealLowerings pins the plan fact on what the
 // production lowerers build, after the optimizer the engine runs before it
 // inspects the plan, under both the fan-out lowerers and the auto selection
 // on 26.8.
-func TestClassicHistogramStage_RealLowerings(t *testing.T) {
+func TestClassicHistogramQuantile_RealLowerings(t *testing.T) {
 	t.Parallel()
 	autoLowerers, _ := adaptiveDispatch(t, adaptiveServer268)
 	for _, lowerers := range []struct {
 		name  string
 		table promql.RangeLowerers
-		auto  bool
 	}{
-		{"fan-out", promql.RangeLowerers{}, false},
-		{"auto 26.8", autoLowerers, true},
+		{"fan-out", promql.RangeLowerers{}},
+		{"auto 26.8", autoLowerers},
 	} {
 		for _, tc := range classicHistogramShapes {
 			t.Run(lowerers.name+"/"+tc.name, func(t *testing.T) {
 				t.Parallel()
-				want := tc.classic
-				if lowerers.auto {
-					want = tc.classicAuto
-				}
 				plan := optimizer.Default().Run(context.Background(), lowerPromQLWith(t, lowerers.table, tc.query, tc.rangeQuery))
-				if got := engine.ClassicHistogramStageForTest(plan); got != want {
-					t.Fatalf("classicHistogramStage = %v, want %v", got, want)
+				if got := engine.ClassicHistogramQuantileForTest(plan); got != tc.classic {
+					t.Fatalf("classicHistogramQuantile = %v, want %v", got, tc.classic)
 				}
 			})
 		}

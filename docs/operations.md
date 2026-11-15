@@ -553,10 +553,11 @@ stage:
   `CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_SERIES_MAX_ENTRIES` to a positive
   entry count pins it.
 
-The stage as a whole has no ceiling of its own: a query whose classic-histogram
-window or bucket-merge stage needs more memory than the cap runs until
-ClickHouse aborts it at `CERBERUS_CH_QUERY_MAX_MEMORY` (code 241). The
-Prometheus head answers that abort with HTTP 422, errorType `execution`, and
+The stage as a whole has no ceiling of its own: a classic-histogram quantile
+that needs more memory than the cap runs until ClickHouse aborts it at
+`CERBERUS_CH_QUERY_MAX_MEMORY` (code 241). For any query carrying a
+classic-histogram quantile, instant or range, the Prometheus head answers that
+abort with HTTP 422, errorType `execution`, and
 the message `classic-histogram quantile exceeds the ClickHouse memory limit
 (per-query cap <bytes> bytes)`, or the same message without the parenthesis
 when no per-query cap is configured. Every other query ClickHouse aborts at

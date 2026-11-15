@@ -17,9 +17,8 @@ import (
 // helper, so a drift in the production message fails this pin.
 const classicHistogramMemoryLimitWant = "classic-histogram quantile exceeds the ClickHouse memory limit (per-query cap 1073741824 bytes)"
 
-// classicHistogramQuantileQuery lowers through the classic-histogram window
-// stage on the instant path and through the bucket-merge stage on the range
-// path.
+// classicHistogramQuantileQuery is a classic-histogram quantile, on the
+// instant path and on the range path alike.
 const classicHistogramQuantileQuery = `histogram_quantile(0.5, sum by (le) (rate(req_bucket[5m])))`
 
 // assertMemoryLimitMessage decodes a Prom error envelope and pins HTTP 422,
@@ -38,7 +37,7 @@ func assertMemoryLimitMessage(t *testing.T, resp *http.Response, want string) {
 }
 
 // TestQuery_ClassicHistogramMemoryLimit422 pins the instant path: a code-241
-// abort of a classic-histogram quantile answers the stage's own 422 message,
+// abort of a classic-histogram quantile answers its own 422 message,
 // and the same abort of any other query keeps the generic memory-limit one.
 func TestQuery_ClassicHistogramMemoryLimit422(t *testing.T) {
 	t.Parallel()
@@ -64,7 +63,7 @@ func TestQuery_ClassicHistogramMemoryLimit422(t *testing.T) {
 
 // TestQueryRange_ClassicHistogramMemoryLimit422 pins the query_range drain:
 // ClickHouse aborts the classic-histogram quantile's cursor mid-stream with
-// code 241 and the handler answers the stage's own 422 message, while the
+// code 241 and the handler answers its own 422 message, while the
 // same mid-stream abort of any other query keeps the generic one.
 func TestQueryRange_ClassicHistogramMemoryLimit422(t *testing.T) {
 	t.Parallel()

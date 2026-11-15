@@ -1121,7 +1121,7 @@ func memoryLimitAPIError(e *chclient.MemoryLimitError) *apiError {
 
 // classicHistogramMemoryLimitMessage is the wire message for a ClickHouse
 // memory-limit abort (code 241) of a statement carrying a classic-histogram
-// window or bucket-merge stage: chplan.ClassicHistogramMemoryLimitMessage,
+// quantile: chplan.ClassicHistogramMemoryLimitMessage,
 // naming the per-query cap the way promMemoryLimitMessage does when one is
 // configured.
 func classicHistogramMemoryLimitMessage(limit int64) string {
@@ -1132,8 +1132,8 @@ func classicHistogramMemoryLimitMessage(limit int64) string {
 }
 
 // classicHistogramMemoryLimitAPIError is the rejection for a ClickHouse
-// memory-limit abort of a classic-histogram stage: the 422
-// errorType=execution shape of the stage's own throwIf guards, carrying
+// memory-limit abort of a classic-histogram quantile: the 422
+// errorType=execution shape of the quantile's own throwIf guards, carrying
 // classicHistogramMemoryLimitMessage, with the resource-exhausted telemetry
 // reason the generic memory-limit rejection carries. Reached from
 // classifySentinelError, so the instant path (classifyEngineError) and the
@@ -1661,9 +1661,9 @@ func classifySentinelError(err error) *apiError {
 		return drainBytesAPIError(byteBudget)
 	}
 	// ClickHouse memory-limit abort (code 241) of a statement carrying a
-	// classic-histogram window or bucket-merge stage: the engine marks it
-	// (engine.ClassicHistogramMemoryLimitError), and it answers as that
-	// stage's own guard rejection. Checked before the generic case below,
+	// classic-histogram quantile: the engine marks it
+	// (engine.ClassicHistogramMemoryLimitError), and it answers as the
+	// quantile's own guard rejection. Checked before the generic case below,
 	// which the marked error also unwraps to.
 	var classicMemLimit *engine.ClassicHistogramMemoryLimitError
 	if errors.As(err, &classicMemLimit) {
