@@ -18,6 +18,11 @@
 // checks the observed server behaviour against the version policy
 // internal/chopt records for that build.
 //
+// One test measures cerberus's own statement cost rather than a server
+// mechanism: the Loki compatibility lane's unwrap query, sent as many at once
+// as the lane's driver sends, must answer within the driver's request timeout
+// on a server bounded to a fraction of one CPU.
+//
 // The real-server tests carry the `integration` build tag (Docker required)
 // and run in the ch-server-safety job of strict-scan.yml through
 // `just ch-server-safety-integration`. The cancellation probes' judging logic
