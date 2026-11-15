@@ -349,3 +349,37 @@ func TestLowerMultiVariantMatrixGrouped(t *testing.T) {
 		}
 	}
 }
+
+// TestLowerMultiVariantReadsTheLineOnlyForAByteArm pins that variant arms
+// carry the log line through their row stage only when one of them reads
+// it: the line is the widest column of the logs table, and an arm set
+// that never reads it must not select it.
+func TestLowerMultiVariantReadsTheLineOnlyForAByteArm(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelLogs()
+	for _, tc := range []struct {
+		query    string
+		wantLine bool
+	}{
+		{`variants(count_over_time({job="api"}[5m]), rate({job="api"}[5m])) of ({job="api"}[5m])`, false},
+		{`variants(count_over_time({job="api"}[5m]), sum by (env) (count_over_time({job="api"}[5m]))) of ({job="api"}[5m])`, false},
+		{`variants(count_over_time({job="api"}[5m]), bytes_over_time({job="api"}[5m])) of ({job="api"}[5m])`, true},
+		{`variants(count_over_time({job="api"}[5m]), sum by (env) (bytes_rate({job="api"}[5m]))) of ({job="api"}[5m])`, true},
+	} {
+		expr, err := logql.ParseExprPermissive(tc.query)
+		if err != nil {
+			t.Fatalf("ParseExprPermissive(%q): %v", tc.query, err)
+		}
+		plan, err := logql.Lower(context.Background(), expr, s)
+		if err != nil {
+			t.Fatalf("Lower(%q): %v", tc.query, err)
+		}
+		sqlStr, _, err := chsql.Emit(context.Background(), plan)
+		if err != nil {
+			t.Fatalf("Emit(%q): %v", tc.query, err)
+		}
+		if got := strings.Contains(sqlStr, "`"+s.BodyColumn+"`"); got != tc.wantLine {
+			t.Errorf("%q: statement reads %s = %v, want %v\n%s", tc.query, s.BodyColumn, got, tc.wantLine, sqlStr)
+		}
+	}
+}

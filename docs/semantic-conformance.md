@@ -524,7 +524,7 @@ The from-scratch LogQL property oracle (test/property/oracle/logql.Evaluate, gat
 
 ### LOGQL-PIPELINE-STAGE-ORDER
 
-A LogQL pipeline evaluates its stream-selector matchers first, then its MultiStages entries strictly left-to-right in source order: each stage that only tests rows (a line filter, an ordinary label filter) drops non-matching rows without mutating the label set, and each stage that only mutates rows (\`label\_format\`) rewrites the label set without dropping rows — never the reverse for either kind. This matches both cerberus's own lowering (internal/logql/lower.go's lowerPipelineWithLabels, which ANDs each stage's SQL predicate onto the growing filter left-to-right) and the from-scratch property oracle's applyStages loop (test/property/oracle/logql/evaluator.go).
+A LogQL pipeline evaluates its stream-selector matchers first, then its MultiStages entries strictly left-to-right in source order: each stage that only tests rows (a line filter, an ordinary label filter) drops non-matching rows without mutating the label set, and each stage that only mutates rows (\`label\_format\`) rewrites the label set without dropping rows — never the reverse for either kind. This matches both cerberus's own lowering (internal/logql/lower.go's lowerPipelineStages, which ANDs each stage's SQL predicate onto the growing filter left-to-right) and the from-scratch property oracle's applyStages loop (test/property/oracle/logql/evaluator.go).
 
 - scope: `head` · applicable heads: `HEAD-LOGQL`
 - authority: `specification` · status: `active` · owner: `cerberus-core`
@@ -545,7 +545,7 @@ A LogQL pipeline evaluates its stream-selector matchers first, then its MultiSta
 **Blind spots:**
 
 - The property oracle's random generator draws at most one pipeline stage per query (test/property/gen/logql.go's drawLogQLShape single-shapeID switch), so it never exercises a genuine multi-stage composition; this contract's ordering claim rests entirely on the fixed TXTAR fixture set cited below, not on a property sweep.
-- Cerberus's real lowering (lowerPipelineWithLabels) carries per-stage rules materially richer than what this contract or the from-scratch oracle model: the \`| pattern\` dynamic-label gate and its \_\_error\_\_/\_\_error\_details\_\_ skip-ahead special case, and post-fetch-only stages (\`| line\_format\`, \`| decolorize\`) that return a nil SQL predicate and apply in Go after fetch. Neither the property oracle's two-stage-kind dispatch (LineFilterExpr, LabelFmtExpr) nor this contract's cited fixtures exercise that richer rule set as a swept property — only as fixed, pinned cases.
+- Cerberus's real lowering (lowerPipelineStages) carries per-stage rules materially richer than what this contract or the from-scratch oracle model: the \`| pattern\` dynamic-label gate and its \_\_error\_\_/\_\_error\_details\_\_ skip-ahead special case, and post-fetch-only stages (\`| line\_format\`, \`| decolorize\`) that return a nil SQL predicate and apply in Go after fetch. Neither the property oracle's two-stage-kind dispatch (LineFilterExpr, LabelFmtExpr) nor this contract's cited fixtures exercise that richer rule set as a swept property — only as fixed, pinned cases.
 
 **Complement gaps** (informational — does not change assurance above):
 
