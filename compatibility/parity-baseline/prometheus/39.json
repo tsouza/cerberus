@@ -10,6 +10,7 @@
     "demo_memory_usage_bytes > bool 1.2345",
     "demo_num_cpus < bool on(instance) demo_num_cpus",
     "histogram_quantile(0.9, demo_memory_usage_bytes)",
+    "histogram_quantile(0.9, last_over_time(demo_api_request_duration_seconds_bucket[1m]))",
     "irate(demo_cpu_usage_seconds_total[5m] offset 10m)",
     "rate(demo_cpu_usage_seconds_total[5m] offset 10m)",
     "rate(demo_disappearing_requests_total[15m])",
