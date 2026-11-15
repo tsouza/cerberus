@@ -1055,7 +1055,7 @@ func lowerUnaryOperation(u traceql.UnaryOperation, s schema.Traces, ctx notConte
 			// etc.) rather than a bare attribute. Reference Tempo accepts
 			// it: the inner expression always executes to a non-nil Static
 			// (a number when the attributes resolve, or StaticFalse via
-			// the isMatchingOperand guard when one is absent — both
+			// the comparableWith guard when one is absent — both
 			// non-nil), so `!= nil` (OpExists) is constant-true and
 			// `= nil` (OpNotExists) constant-false for every span. Fold to
 			// a constant rather than rejecting.
@@ -1424,7 +1424,7 @@ func lowerBinaryOperation(b *traceql.BinaryOperation, s schema.Traces, j lookupJ
 	// materialise (instrumentation-scoped attributes; the per-event
 	// intrinsics childCount / event:timeSinceStart) resolve to
 	// StaticNil in reference execution, so the comparison is
-	// constant-false (the isMatchingOperand guard never matches a nil
+	// constant-false (the comparableWith guard never matches a nil
 	// operand). Reference `/api/search` accepts these — fold them to a
 	// constant predicate instead of rejecting. Equality/inequality both
 	// collapse to false: `nil = x` and `nil != x` are both StaticFalse

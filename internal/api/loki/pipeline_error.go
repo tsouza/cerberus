@@ -70,14 +70,15 @@ func pipelineErrorFor(samples []chclient.Sample) *apiError {
 // byte-for-byte, including its trailing newline: the message is the wire
 // contract a client (and the compatibility differ) reads.
 func pipelineErrorMessage(kind string, lbls map[string]string) string {
-	return fmt.Sprintf(
-		"pipeline error: '%s' for series: '%s'.\n"+
-			"Use a label filter to intentionally skip this error. (e.g | __error__!=\"%s\").\n"+
-			"To skip all potential errors you can match empty errors.(e.g __error__=\"\")\n"+
-			"The label filter can also be specified after unwrap. (e.g | unwrap latency | __error__=\"\" )\n",
-		kind, promLabelsString(lbls), kind,
-	)
+	return fmt.Sprintf(pipelineErrorFormat, kind, promLabelsString(lbls), kind)
 }
+
+// pipelineErrorFormat is the pipeline-error message, formatted with the
+// error kind, the series labels and the error kind again.
+const pipelineErrorFormat = "pipeline error: '%s' for series: '%s'.\n" +
+	"Use a label filter to intentionally skip this error. (e.g | __error__!=\"%s\").\n" +
+	"To skip all potential errors you can match empty errors.(e.g __error__=\"\")\n" +
+	"The label filter can also be specified after unwrap. (e.g | unwrap latency | __error__=\"\" )\n"
 
 // promLabelsString renders a label map the way upstream interpolates it
 // into the message — prometheus/model/labels.Labels.String(), `{a="1",

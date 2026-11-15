@@ -265,6 +265,12 @@ func TestMatcher_Matches(t *testing.T) {
 			want:    []string{"x oops"},
 		},
 		{
+			name:    "a missing literal ends the match at the capture before it",
+			pattern: "<a> x <b> y <c>",
+			line:    "1 x 2 z 3",
+			want:    []string{"1", "2 z 3"},
+		},
+		{
 			name:    "empty line never matches",
 			pattern: "<a>",
 			line:    "",
@@ -400,54 +406,42 @@ func TestMatcher_Test(t *testing.T) {
 	}
 }
 
-// --- node rendering ---------------------------------------------------------
+// --- part rendering ---------------------------------------------------------
 
-func TestNodeString(t *testing.T) {
-	// The node Stringers back the validation error messages, which name
-	// the offending capture(s) verbatim.
-	if got, want := capture("foo").String(), "<foo>"; got != want {
-		t.Errorf("capture.String() = %q, want %q", got, want)
+func TestPartSource(t *testing.T) {
+	// A part's source form backs the validation error messages, which
+	// name the offending capture(s) verbatim.
+	if got, want := (part{name: "foo"}).source(), "<foo>"; got != want {
+		t.Errorf("capture source = %q, want %q", got, want)
 	}
-	if got, want := literals([]byte("a b")).String(), "a b"; got != want {
-		t.Errorf("literals.String() = %q, want %q", got, want)
+	if got, want := (part{text: []byte("a b")}).source(), "a b"; got != want {
+		t.Errorf("literal source = %q, want %q", got, want)
 	}
-	if !capture("_").isUnnamed() {
-		t.Error(`capture("_").isUnnamed() = false, want true`)
+	if (part{name: "_"}).extracts() {
+		t.Error(`the unnamed capture extracts, want it not to`)
 	}
-	if capture("x").isUnnamed() {
-		t.Error(`capture("x").isUnnamed() = true, want false`)
+	if !(part{name: "x"}).extracts() {
+		t.Error(`a named capture does not extract, want it to`)
+	}
+	if (part{text: []byte("x")}).extracts() {
+		t.Error(`a literal run extracts, want it not to`)
 	}
 }
 
-func TestParse_NodeShape(t *testing.T) {
-	// White-box: the tokeniser must emit strictly alternating literal
-	// runs and captures, in source order.
-	e, err := parse([]byte("a<b>c<_>"))
+func TestScan_PartShape(t *testing.T) {
+	// White-box: the scanner must emit strictly alternating literal runs
+	// and captures, in source order.
+	got, err := scan([]byte("a<b>c<_>"))
 	if err != nil {
-		t.Fatalf("parse: unexpected error: %v", err)
+		t.Fatalf("scan: unexpected error: %v", err)
 	}
-	want := []node{literals([]byte("a")), capture("b"), literals([]byte("c")), capture("_")}
-	if len(e) != len(want) {
-		t.Fatalf("parse produced %d nodes (%v), want %d (%v)", len(e), e, len(want), want)
+	want := []part{{text: []byte("a")}, {name: "b"}, {text: []byte("c")}, {name: "_"}}
+	if len(got) != len(want) {
+		t.Fatalf("scan produced %d parts (%v), want %d (%v)", len(got), got, len(want), want)
 	}
 	for i := range want {
-		switch w := want[i].(type) {
-		case literals:
-			got, ok := e[i].(literals)
-			if !ok {
-				t.Fatalf("node %d is %T, want literals", i, e[i])
-			}
-			if !bytes.Equal(got, w) {
-				t.Errorf("node %d = %q, want %q", i, got, w)
-			}
-		case capture:
-			got, ok := e[i].(capture)
-			if !ok {
-				t.Fatalf("node %d is %T, want capture", i, e[i])
-			}
-			if got != w {
-				t.Errorf("node %d = %q, want %q", i, got, w)
-			}
+		if got[i].name != want[i].name || !bytes.Equal(got[i].text, want[i].text) {
+			t.Errorf("part %d = %+v, want %+v", i, got[i], want[i])
 		}
 	}
 }

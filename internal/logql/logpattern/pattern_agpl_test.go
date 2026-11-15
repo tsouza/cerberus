@@ -13,8 +13,10 @@ package logpattern
 
 import (
 	"bytes"
+	"math/rand/v2"
 	"reflect"
 	"testing"
+	"unicode/utf8"
 
 	lokipattern "github.com/grafana/loki/v3/pkg/logql/log/pattern"
 )
@@ -141,5 +143,154 @@ func TestPattern_MatchesAndTest_MatchLoki(t *testing.T) {
 				t.Fatalf("Test(%q, %q) mismatch: loki=%v in-house=%v", p, line, lm.Test(line), gm.Test(line))
 			}
 		}
+	}
+}
+
+// randomPatternAlphabet is the rune set the generated patterns and lines
+// draw from: the capture delimiters, both name alphabets, the unnamed
+// capture, separators, and a multi-byte rune. It holds no invalid UTF-8:
+// the two implementations tokenise that differently, tracked in #4136.
+var randomPatternAlphabet = []rune("<<>>_ab1 -:\u00e9")
+
+// randomPatternSamples is how many generated patterns the random
+// differential compares, each against randomLinesPerPattern lines.
+const (
+	randomPatternSamples  = 4000
+	randomLinesPerPattern = 8
+	randomMaxLength       = 12
+)
+
+// randomText is up to n random runes from randomPatternAlphabet.
+func randomText(r *rand.Rand, n int) []byte {
+	var out []byte
+	for range r.IntN(n + 1) {
+		out = utf8.AppendRune(out, randomPatternAlphabet[r.IntN(len(randomPatternAlphabet))])
+	}
+	return out
+}
+
+func randomBytes(r *rand.Rand) []byte { return randomText(r, randomMaxLength) }
+
+// randomPatternTokens are whole captures, near-captures and literal text,
+// so a generated pattern often carries several named captures.
+var randomPatternTokens = []string{"<a>", "<b>", "<_>", "<ab1>", "x", " ", "-", "\u00e9", "<", ">", "<1>"}
+
+// randomPatternTokenRun is the most tokens a token-built pattern joins.
+const randomPatternTokenRun = 6
+
+// randomPattern is raw random text for one pattern in two, and a run of
+// randomPatternTokens for the other.
+func randomPattern(r *rand.Rand) []byte {
+	if r.IntN(2) == 0 {
+		return randomBytes(r)
+	}
+	var out []byte
+	for range 1 + r.IntN(randomPatternTokenRun) {
+		out = append(out, randomPatternTokens[r.IntN(len(randomPatternTokens))]...)
+	}
+	return out
+}
+
+// randomFiller is zero to two random runes, the text a generated line
+// puts around a pattern's literal runs.
+func randomFiller(r *rand.Rand) []byte { return randomText(r, 2) }
+
+func sameCaptures(a, b [][]byte) bool {
+	if (a == nil) != (b == nil) || len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !bytes.Equal(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// TestPattern_RandomDifferential_MatchesLoki compares the two
+// implementations on generated patterns and lines: accept/reject and the
+// validation error text of New and ParseLineFilter, the capture names, the
+// literal runs, and every Matches (including nil versus empty) and Test
+// result.
+func TestPattern_RandomDifferential_MatchesLoki(t *testing.T) {
+	r := rand.New(rand.NewPCG(4132, 1))
+	for range randomPatternSamples {
+		p := randomPattern(r)
+		lines := make([][]byte, randomLinesPerPattern)
+		for i := range lines {
+			lines[i] = randomBytes(r)
+		}
+		// Lines built from the pattern's own literal runs, every third one
+		// missing one run, exercise the matching paths that random bytes
+		// rarely reach.
+		if lits, err := ParseLiterals(string(p)); err == nil {
+			for i := range lines {
+				var b []byte
+				skip := -1
+				if i%3 == 0 && len(lits) > 0 {
+					skip = r.IntN(len(lits))
+				}
+				for j, l := range lits {
+					b = append(b, randomFiller(r)...)
+					if j != skip {
+						b = append(b, l...)
+					}
+				}
+				if i%2 == 0 {
+					b = append(b, randomFiller(r)...)
+				}
+				lines[i] = b
+			}
+		}
+
+		wantLits, wantErr := lokipattern.ParseLiterals(string(p))
+		gotLits, gotErr := ParseLiterals(string(p))
+		if (wantErr == nil) != (gotErr == nil) || (wantErr == nil && !sameCaptures(wantLits, gotLits)) {
+			t.Fatalf("ParseLiterals(%q): loki=(%q, %v) in-house=(%q, %v)", p, wantLits, wantErr, gotLits, gotErr)
+		}
+
+		lm, lErr := lokipattern.New(string(p))
+		gm, gErr := New(string(p))
+		compareErrors(t, "New", p, lErr, gErr)
+		if lErr == nil {
+			if !reflect.DeepEqual(lm.Names(), gm.Names()) {
+				t.Fatalf("New(%q).Names(): loki=%q in-house=%q", p, lm.Names(), gm.Names())
+			}
+			for _, line := range lines {
+				if want, got := lm.Matches(line), gm.Matches(line); !sameCaptures(want, got) {
+					t.Fatalf("New(%q).Matches(%q): loki=%q in-house=%q", p, line, want, got)
+				}
+				if want, got := lm.Test(line), gm.Test(line); want != got {
+					t.Fatalf("New(%q).Test(%q): loki=%v in-house=%v", p, line, want, got)
+				}
+			}
+		}
+
+		lf, lErr := lokipattern.ParseLineFilter(p)
+		gf, gErr := ParseLineFilter(p)
+		compareErrors(t, "ParseLineFilter", p, lErr, gErr)
+		if lErr == nil {
+			for _, line := range lines {
+				if want, got := lf.Matches(line), gf.Matches(line); !sameCaptures(want, got) {
+					t.Fatalf("ParseLineFilter(%q).Matches(%q): loki=%q in-house=%q", p, line, want, got)
+				}
+				if want, got := lf.Test(line), gf.Test(line); want != got {
+					t.Fatalf("ParseLineFilter(%q).Test(%q): loki=%v in-house=%v", p, line, want, got)
+				}
+			}
+		}
+	}
+}
+
+// compareErrors fails unless both sides accept, or both reject. A
+// validation rejection must also carry the same text; the empty pattern's
+// syntax error is the one rejection whose wording is not matched.
+func compareErrors(t *testing.T, fn string, p []byte, want, got error) {
+	t.Helper()
+	if (want == nil) != (got == nil) {
+		t.Fatalf("%s(%q) accept/reject: loki err=%v in-house err=%v", fn, p, want, got)
+	}
+	if want != nil && len(p) > 0 && want.Error() != got.Error() {
+		t.Fatalf("%s(%q) error text: loki=%q in-house=%q", fn, p, want, got)
 	}
 }

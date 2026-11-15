@@ -72,11 +72,15 @@ type UnaryOperation struct {
 
 func (UnaryOperation) isFieldExpression() {}
 
+// impliedType is the operand's type, except under the existence operators,
+// which test for presence and so yield a boolean.
 func (o UnaryOperation) impliedType() StaticType {
-	if o.Op == OpExists || o.Op == OpNotExists {
+	switch o.Op {
+	case OpExists, OpNotExists:
 		return TypeBoolean
+	default:
+		return o.Expression.impliedType()
 	}
-	return o.Expression.impliedType()
 }
 
 func (o UnaryOperation) String() string {
