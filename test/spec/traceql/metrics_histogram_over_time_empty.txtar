@@ -22,7 +22,7 @@ INSERT INTO otel_traces (ResourceAttributes, Duration, TraceId, SpanId) VALUES
   [0.000001024, 2]
 ]
 -- chplan --
-MetricsHistogramOverTime attr=Duration duration=true bucketAlias=__bucket valueAlias=Value
+MetricsHistogramOverTime attr=Duration duration=true bucketAlias=__bucket valueAlias=Value perTraceLookback=1h0m0s
   Filter predicate=(ResourceAttributes["service.name"] = "frontend")
     Scan(otel_traces)
 -- parity_exempt --
