@@ -200,7 +200,7 @@ func TestLokiUpstreamCorpusTagsImpossibleFilterAsEmptyResult(t *testing.T) {
 	var tagged []string
 	for _, def := range defs {
 		if !def.Skip && slices.Contains(def.Tags, "empty-result") {
-			tagged = append(tagged, corpus.OpaqueID(def.File()+"#"+def.Description))
+			tagged = append(tagged, corpus.OpaqueID(def.Identity()))
 		}
 	}
 	if !slices.Equal(tagged, []string{lokiImpossibleFilterCase}) {

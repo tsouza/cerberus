@@ -1412,7 +1412,7 @@ scoped_trace_duration_gt
 # trace duration (root span end - root span start) is >= that for every
 # trace, so this must match broadly across the fixture.
 -- query --
-{ trace:duration > 100ms }
+{ trace:duration > 120ms }
 -- endpoint --
 search
 -- expected_min_traces --
@@ -1437,20 +1437,20 @@ search
 
 # --- Grammar-derived scoped intrinsics + static boolean cases ---
 #
-# Generated from grafana/lezer-traceql (Apache-2.0, commit
+# Built from grafana/lezer-traceql (Apache-2.0, commit
 # 6158a4eb6cdeb1759739d2facc47b607837d97ae), the TraceQL grammar Grafana's
-# query editor uses. The generator is the rule below, applied by hand:
+# query editor uses, by this rule:
 #
-#   * Intrinsics: every scoped intrinsic the grammar's IntrinsicField rule
-#     lists that the seeder fixture either populates (span:kind,
-#     span:name, span:duration, span:status, span:id, span:parentID,
-#     instrumentation:name, instrumentation:version) or provably leaves
-#     empty (event:name, link:traceID — the seeder emits no span events
-#     and no links).
+#   * Intrinsics: scoped intrinsics the grammar's IntrinsicField rule
+#     lists that the seeder fixture populates with a value a case can
+#     bound (span:kind, span:name, span:duration, span:status,
+#     span:statusMessage, span:id, span:parentID, instrumentation:name,
+#     instrumentation:version) or provably leaves empty (event:name,
+#     link:traceID — the seeder emits no span events and no links).
 #   * Shapes: each intrinsic is compared with the operator of the
 #     matching seed in the grammar's test/expression.txt (`{ kind = client
-#     }`, `{ .a =~ "test" }`, `{ duration > 1s }`, `{ status = ok }`, and
-#     the `nil` static the grammar's Static rule lists for the
+#     }`, `{ .a =~ "test" }`, `{ duration > 1s }`, `{ status != error }`,
+#     and the `nil` static the grammar's Static rule lists for the
 #     presence checks), against a value the seeder writes.
 #   * Static booleans: the string-comparison seeds `{ "test" = "test" }`
 #     and `{ "test" != "test" }` composed with the grammar's `!` and `&&`.
@@ -1462,11 +1462,11 @@ search
 # either backend.
 
 -- name --
-scoped_span_kind_client
+scoped_span_kind_consumer
 # Seed `{ kind = client }`. The child spans rotate through every kind,
-# so client spans exist in most traces.
+# so consumer spans exist in many traces.
 -- query --
-{ span:kind = client }
+{ span:kind = consumer }
 -- endpoint --
 search
 -- expected_min_traces --
@@ -1502,10 +1502,24 @@ search
 500
 
 -- name --
-scoped_span_status_ok
-# Seed `{ status = ok }`. Every root span is seeded Ok.
+scoped_span_status_not_error
+# Seed `{ status != error }`. Every root span is seeded Ok, and only every
+# 5th child is an error.
 -- query --
-{ span:status = ok }
+{ span:status != error }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+scoped_span_status_message
+# Equality on span:statusMessage: every error child carries the
+# seeder's status message.
+-- query --
+{ span:statusMessage = "synthetic error" }
 -- endpoint --
 search
 -- expected_min_traces --
@@ -1565,7 +1579,7 @@ scoped_event_name_absent
 # The seeder emits no span events, so no trace matches on either
 # backend: a negative-space boundary check.
 -- query --
-{ event:name = "exception" }
+{ event:name = "compat.no-event" }
 -- endpoint --
 search
 -- expected_max_traces --
@@ -1584,12 +1598,14 @@ search
 -- name --
 static_and_not_operand_matches_all
 # Static-boolean seeds composed with `!` and `&&`: an AND whose operand
-# is a NOT over a single comparison. Reference Tempo drops such an
+# is a NOT over a single TRUE comparison. Evaluated logically the filter
+# is `true && false` and matches nothing. Reference Tempo drops such an
 # operand, and cerberus reproduces that (notContextAndOperand in
 # internal/traceql/lower.go), so the filter reduces to the true
-# `"test" = "test"` and matches every trace.
+# `"test" = "test"` and matches every trace; the minimum bound below
+# fails a backend that evaluates the NOT.
 -- query --
-{ ("test" = "test") && !("test" != "test") }
+{ ("test" = "test") && !("test" = "test") }
 -- endpoint --
 search
 -- expected_min_traces --

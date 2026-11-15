@@ -5243,7 +5243,7 @@
           },
           "evidence_class": "reference",
           "independence_group": "logql-wire-parity",
-          "test_ref": "compatibility/loki",
+          "test_ref": "compatibility/loki/cmd/loki-compliance-tester",
           "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
@@ -8812,7 +8812,7 @@
           },
           "evidence_class": "reference",
           "independence_group": "reference-stream-row-differential",
-          "test_ref": "compatibility/loki",
+          "test_ref": "compatibility/loki/cmd/loki-compliance-tester",
           "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
@@ -8939,7 +8939,7 @@
           },
           "evidence_class": "reference",
           "independence_group": "range-aggregation-reference-differential",
-          "test_ref": "compatibility/loki",
+          "test_ref": "compatibility/loki/cmd/loki-compliance-tester",
           "evidence_system": "source-path",
           "observed": {
             "status": "unknown",
@@ -9249,7 +9249,7 @@
       "replaces": null,
       "replaced_by": null,
       "blind_spots": [
-        "The trip-wire only catches drift relative to this pinned file; if a corpus re-snapshot both changes an entry's skip: true status and is manually re-pinned via -regen-baseline in the same change without genuine triage, this contract's evidence would show the baseline as internally consistent while a real upstream regression or newly-available query went unexamined — the README's own regen procedure calls this out as a reviewer-discipline step, not something the trip-wire itself enforces.",
+        "The trip-wire only catches drift relative to this pinned file; if a change to the pinned corpus version both changes an entry's skip: true status and is manually re-pinned via -regen-baseline in the same change without genuine triage, this contract's evidence would show the baseline as internally consistent while a real upstream regression or newly-available query went unexamined — the README's own regen procedure calls this out as a reviewer-discipline step, not something the trip-wire itself enforces.",
         "This is distinct from CLAUDE.md invariant 7's blanket \"no allow-lists, no tolerance files\" rule: the file records what upstream's OWN corpus declines to run (a fact about the pinned upstream corpus), never a cerberus-side exemption for a query cerberus and Loki both attempt — cerberus-test-queries.yml's complete absence of a should_skip: consumer, and the forbid-deferral-adjacent CI gate rejecting any non-empty should_skip: block, is the mechanism that keeps the two concepts from being conflated in practice."
       ],
       "required_evidence_classes": [

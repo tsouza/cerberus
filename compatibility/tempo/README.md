@@ -130,8 +130,12 @@ container image the harness pulls; no Tempo source code is committed here. The
 driver under `compatibility/tempo/driver/` is cerberus code, licensed like the
 rest of the repository. Its corpus, `driver/corpus/smoke.txtar`, carries no
 query text taken from Tempo: the cases are written for the seeder fixture, and
-the "Grammar-derived" block is generated from the Apache-2.0
+the "Grammar-derived" block is built from the Apache-2.0
 `grafana/lezer-traceql` grammar and test corpus by the rule its header states.
+A minimal sentence of the grammar — one intrinsic compared with one enumerated
+value, such as `{ status = error }` — can coincide with an example in Tempo's
+own tests, because the grammar admits few such sentences; those are grammar
+facts, not text taken from Tempo.
 Comments in the corpus cite Tempo source files and functions by name to explain
 a reference behaviour; they do not reproduce Tempo code.
 

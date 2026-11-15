@@ -32,12 +32,16 @@ type downloadInfo struct {
 
 // UpstreamQueriesDir fetches the pinned upstream module into the Go module
 // cache (a no-op when it is already there) and returns the path of its
-// corpus directory. It fails when the module's hash is not [UpstreamSum],
-// so a moved tag or a tampered cache cannot change the corpus silently.
+// corpus directory. It fails when the module's recorded hash is not
+// [UpstreamSum], so a moved tag or a different module zip cannot change
+// the corpus silently. It does not re-hash the extracted directory (the Go
+// toolchain keeps it read-only; `go mod verify` is the check for a cache
+// edited in place).
 //
-// The download runs in a scratch directory outside any module, so neither
-// the caller's go.mod nor its go.sum is consulted or modified. The answer
-// is computed once per process.
+// The download runs in a scratch directory outside any module, with
+// workspace mode off and GOFLAGS cleared, so neither the caller's go.mod,
+// go.sum or go.work nor its build flags are consulted or modified. The
+// answer is computed once per process.
 func UpstreamQueriesDir() (string, error) { return upstreamQueriesDir() }
 
 var upstreamQueriesDir = sync.OnceValues(downloadUpstreamQueries)
@@ -52,6 +56,7 @@ func downloadUpstreamQueries() (string, error) {
 	coord := UpstreamModule + "@" + UpstreamVersion
 	cmd := exec.Command("go", "mod", "download", "-json", coord) //nolint:gosec // fixed arguments
 	cmd.Dir = scratch
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, runErr := cmd.Output()

@@ -133,6 +133,7 @@ func TestLoad_Rejects(t *testing.T) {
 		"unknown kind":       {"queries:\n  - query: x\n    kind: logs\n    time_range: {length: 1h}\n", "kind"},
 		"unknown directions": {"queries:\n  - query: x\n    directions: sideways\n    time_range: {length: 1h}\n", "directions"},
 		"missing length":     {"queries:\n  - query: x\n    time_range: {step: 1m}\n", "time_range.length is required"},
+		"unknown log_format": {"queries:\n  - query: x\n    requires: {log_format: xml}\n    time_range: {length: 1h}\n", "log_format"},
 		"bad length":         {"queries:\n  - query: x\n    time_range: {length: soon}\n", "time_range.length"},
 		"bad step":           {"queries:\n  - query: x\n    time_range: {length: 1h, step: often}\n", "time_range.step"},
 		"malformed yaml":     {"queries: [\n", "fast/a.yaml"},

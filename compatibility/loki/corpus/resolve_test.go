@@ -1,6 +1,7 @@
 package corpus
 
 import (
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -47,7 +48,6 @@ func TestExpand_Fanout(t *testing.T) {
 		{Definition{Query: "${SELECTOR}", Kind: KindLog, Directions: DirectionsBackward, TimeRange: TimeRange{Length: "1h"}}, []Direction{Backward}, 0},
 		{Definition{Query: "${SELECTOR}", Kind: KindLog, Directions: DirectionsForward, TimeRange: TimeRange{Length: "1h"}}, []Direction{Forward}, 0},
 		{Definition{Query: "count_over_time(${SELECTOR}[1m])", Kind: KindMetric, TimeRange: TimeRange{Length: "1h", Step: "30s"}}, []Direction{Forward}, 30 * time.Second},
-		{Definition{Query: "${SELECTOR}", Kind: KindLog, TimeRange: TimeRange{Length: "1h"}}, nil, 0},
 	} {
 		cases, err := r.Expand(tc.def, false)
 		if err != nil {
@@ -66,6 +66,17 @@ func TestExpand_Fanout(t *testing.T) {
 		if !slices.Equal(got, tc.want) {
 			t.Fatalf("Expand(%+v) directions = %v, want %v", tc.def, got, tc.want)
 		}
+	}
+}
+
+// TestExpand_RejectsALogQueryWithNoDirections — a log definition that
+// reached the resolver without directions (Load always sets them) is an
+// error, never a silent zero-case expansion.
+func TestExpand_RejectsALogQueryWithNoDirections(t *testing.T) {
+	t.Parallel()
+	def := Definition{Query: "${SELECTOR}", Kind: KindLog, TimeRange: TimeRange{Length: "1h"}}
+	if cases, err := NewResolver(testMetadata(), 1).Expand(def, false); err == nil {
+		t.Fatalf("Expand accepted a log definition with no directions, returning %d cases", len(cases))
 	}
 }
 
@@ -233,12 +244,22 @@ func TestExpand_SameSeedSameCases(t *testing.T) {
 		return out
 	}
 	a, b := run(42), run(42)
-	for i := range a {
-		if a[i].Query != b[i].Query || !a[i].Start.Equal(b[i].Start) {
-			t.Fatalf("case %d differs between two runs with one seed: %+v vs %+v", i, a[i], b[i])
+	if !reflect.DeepEqual(a, b) {
+		t.Fatalf("two runs with one seed differ:\n%+v\n%+v", a, b)
+	}
+	// The seed must matter: across a handful of seeds the draws cannot
+	// all coincide with seed 42's.
+	for seed := int64(1); seed <= seedsThatMustDiffer; seed++ {
+		if !reflect.DeepEqual(run(seed), a) {
+			return
 		}
 	}
+	t.Fatalf("seeds 1..%d all reproduce seed 42's expansion; Expand ignores its seed", seedsThatMustDiffer)
 }
+
+// seedsThatMustDiffer bounds the search for a seed whose expansion differs
+// from seed 42's.
+const seedsThatMustDiffer = 8
 
 func TestIntersectSorted(t *testing.T) {
 	t.Parallel()

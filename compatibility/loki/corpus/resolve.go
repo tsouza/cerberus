@@ -116,6 +116,8 @@ func (r *Resolver) Expand(def Definition, instant bool) ([]Case, error) {
 		dirs = []Direction{Backward}
 	case DirectionsBoth:
 		dirs = []Direction{Forward, Backward}
+	default:
+		return nil, fmt.Errorf("log query %q has no directions; Load defaults them to both", def.Description)
 	}
 	cases := make([]Case, 0, len(dirs))
 	for _, dir := range dirs {

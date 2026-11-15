@@ -4,6 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -448,5 +451,45 @@ func TestWriteSkipBaseline_RoundTripsThroughRead(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("entry %d = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// TestCompareAll_CarriesProvenanceIntoTheLedger — compareAll hands each
+// case's provenance to its result on both paths (an expansion failure
+// and a case that reached the wire), so caseSet keys an upstream case
+// opaquely and a cerberus-owned case readably.
+func TestCompareAll_CarriesProvenanceIntoTheLedger(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	wire := func(desc string) corpus.Case {
+		return corpus.Case{Query: `{a="b"}`, Start: start, End: start.Add(time.Hour), Direction: corpus.Forward, Source: "fast/a.yaml:1", Description: desc}
+	}
+	cases := []loadedCase{
+		{def: corpus.Definition{Source: "fast/a.yaml:1", Description: "upstream wire"}, tc: wire("upstream wire"), upstream: true},
+		{def: corpus.Definition{Source: "fast/a.yaml:5", Description: "upstream expansion", Query: "${SELECTOR}"}, upstream: true, expandErr: errors.New("no selector")},
+		{def: corpus.Definition{Source: "regression/own.yaml:1", Description: "owned wire"}, tc: wire("owned wire")},
+	}
+	f := flags{addr1: srv.URL, addr2: srv.URL, timeout: 5 * time.Second, parallelism: 2}
+	results := compareAll(cases, f, false)
+	for i, want := range []bool{true, true, false} {
+		if results[i].TestCase.upstream != want {
+			t.Fatalf("result %d (%s) upstream = %v, want %v", i, results[i].TestCase.Description, results[i].TestCase.upstream, want)
+		}
+	}
+	var opaque, readable []string
+	for _, c := range caseSet(results) {
+		if strings.HasPrefix(c.ID, "upstream:") {
+			opaque = append(opaque, c.ID)
+		} else {
+			readable = append(readable, c.ID)
+		}
+	}
+	if len(opaque) != 2 || len(readable) != 1 || !strings.Contains(readable[0], "owned wire") {
+		t.Fatalf("ledger IDs: opaque %v, readable %v; want the two upstream cases opaque and only the owned case readable", opaque, readable)
 	}
 }

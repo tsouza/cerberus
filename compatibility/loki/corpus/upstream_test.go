@@ -34,6 +34,40 @@ func TestUpstreamQueriesDir_ResolvesThePinnedCorpus(t *testing.T) {
 	}
 }
 
+// repoRoot is the module root, whose go.mod and go.sum pin the upstream
+// module the root build requires.
+const repoRoot = "../../.."
+
+// TestUpstreamPin_MatchesTheRootModule keeps the corpus pin and the root
+// module's own requirement in step: the version is the one go.mod
+// requires and the hash is the one go.sum records for it, so the corpus
+// the harness reads is the module the rest of the tree builds against.
+func TestUpstreamPin_MatchesTheRootModule(t *testing.T) {
+	t.Parallel()
+	gomod, err := os.ReadFile(filepath.Join(repoRoot, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gosum, err := os.ReadFile(filepath.Join(repoRoot, "go.sum"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var required []string
+	for line := range strings.Lines(string(gomod)) {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == UpstreamModule {
+			required = append(required, f[1])
+		}
+	}
+	if !slices.Equal(required, []string{UpstreamVersion}) {
+		t.Fatalf("go.mod requires %s at %v, want exactly [%s] (UpstreamVersion)", UpstreamModule, required, UpstreamVersion)
+	}
+	want := UpstreamModule + " " + UpstreamVersion + " " + UpstreamSum + "\n"
+	if !strings.Contains(string(gosum), want) {
+		t.Fatalf("go.sum has no line %q; UpstreamSum must be the hash go.sum records for %s@%s", strings.TrimSpace(want), UpstreamModule, UpstreamVersion)
+	}
+}
+
 func TestOpaqueID(t *testing.T) {
 	t.Parallel()
 	a := OpaqueID("fast/a.yaml#some description")
@@ -57,8 +91,12 @@ const cerberusQueriesDir = "../cerberus-queries"
 
 // TestSchema_MatchesTheLoader keeps schema.json and the loader in step:
 // the properties the schema allows are exactly the YAML keys the loader
-// decodes (it rejects any other key), and the enumerations are the
-// values the loader accepts.
+// decodes (it rejects any other key), and the kind, directions and
+// log_format enumerations are the values the loader accepts. A name in
+// one of the other `requires` lists is not checked at load time: a name
+// the dataset metadata does not index leaves the definition with no
+// stream to resolve, so [Resolver.Expand] fails and the tester reports
+// the definition as an unexpected failure.
 func TestSchema_MatchesTheLoader(t *testing.T) {
 	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join(cerberusQueriesDir, "schema.json"))

@@ -95,6 +95,12 @@ func (d Definition) File() string {
 	return file
 }
 
+// Identity is the definition's readable identity, `<suite>/<file>#<description>`:
+// the input of its [OpaqueID] in the committed ledgers.
+func (d Definition) Identity() string {
+	return d.File() + "#" + d.Description
+}
+
 // length parses the definition's window length.
 func (d Definition) length() (time.Duration, error) {
 	return time.ParseDuration(d.TimeRange.Length)
@@ -240,6 +246,12 @@ func normalise(def *Definition) error {
 	case DirectionsForward, DirectionsBackward, DirectionsBoth:
 	default:
 		return fmt.Errorf("query %q: directions %q is not forward, backward or both", def.Description, def.Directions)
+	}
+
+	switch LogFormat(def.Requires.LogFormat) {
+	case "", LogFormatJSON, LogFormatLogfmt, LogFormatUnstructured:
+	default:
+		return fmt.Errorf("query %q: requires.log_format %q is not json, logfmt or unstructured", def.Description, def.Requires.LogFormat)
 	}
 
 	if def.TimeRange.Length == "" {

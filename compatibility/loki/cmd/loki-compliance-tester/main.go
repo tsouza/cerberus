@@ -502,19 +502,13 @@ func loadAllQueriesAndSplit(f flags) (runnable, upstreamSkipped []corpus.Definit
 	return runnable, upstreamSkipped, nil
 }
 
-// readableSkipKey is the human-readable identity of a skipped
-// definition, `<suite>/<file>#<description>`. It is never written to
-// the committed baseline — only its [corpus.OpaqueID] is — and appears
-// in drift messages so an operator can see which definition moved.
-func readableSkipKey(def corpus.Definition) string {
-	return def.File() + "#" + def.Description
-}
-
 // baselineKey is the committed key of a skipped definition: the opaque
-// ID of its readable key, so the baseline names the definition without
-// carrying upstream corpus text.
+// ID of its readable identity ([corpus.Definition.Identity]), so the
+// baseline names the definition without carrying upstream corpus text.
+// The readable identity appears only in drift messages, so an operator
+// can see which definition moved.
 func baselineKey(def corpus.Definition) string {
-	return corpus.OpaqueID(readableSkipKey(def))
+	return corpus.OpaqueID(def.Identity())
 }
 
 // readSkipBaseline parses the baseline file. Lines beginning with `#`
@@ -597,7 +591,7 @@ func checkSkipBaseline(path string, upstreamSkipped []corpus.Definition) error {
 	got := make([]string, 0, len(upstreamSkipped))
 	for _, def := range upstreamSkipped {
 		k := baselineKey(def)
-		readable[k] = readableSkipKey(def)
+		readable[k] = def.Identity()
 		got = append(got, k)
 	}
 	sort.Strings(got)
@@ -656,7 +650,7 @@ func checkSkipBaseline(path string, upstreamSkipped []corpus.Definition) error {
 // failure (with the originating definition for context). Carrying both
 // via the same slot lets compareAll emit a result row even for queries
 // that never reached the wire. upstream marks a case from the upstream
-// corpus, whose parity-ledger ID is opaque (see TestCase.ledgerID).
+// corpus, whose parity-ledger ID is opaque (see caseSet).
 type loadedCase struct {
 	def       corpus.Definition
 	tc        corpus.Case

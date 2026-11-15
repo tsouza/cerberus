@@ -7,11 +7,12 @@ import (
 	"testing"
 )
 
-// agplLicenceTitle is the title line of the GNU AGPL licence text, which
-// every AGPL-3.0 LICENSE file and every full licence notice carries.
-const agplLicenceTitle = "GNU AFFERO GENERAL PUBLIC LICENSE"
+// agplLicenceTitle is the licence's name. The search for it ignores case,
+// so it finds both the upper-case title of an AGPL-3.0 LICENSE file and
+// the mixed-case name a per-file AGPL notice carries.
+const agplLicenceTitle = "GNU Affero General Public License"
 
-// agplTitleReaders are the tracked files that name the title to detect it:
+// agplTitleReaders are the tracked files that name the licence to detect it:
 // the agpl-clean gate, its test, and this test.
 var agplTitleReaders = []string{
 	".github/scripts/agpl-clean.mjs",
@@ -27,7 +28,7 @@ var agplTitleReaders = []string{
 func TestNoTrackedFileCarriesTheAGPLLicenceText(t *testing.T) {
 	t.Parallel()
 
-	cmd := exec.Command("git", "grep", "-l", "-I", "-F", agplLicenceTitle)
+	cmd := exec.Command("git", "grep", "-l", "-I", "-i", "-F", agplLicenceTitle)
 	cmd.Dir = repoRoot
 	out, err := cmd.Output()
 	// git grep exits 1 when nothing matches.
