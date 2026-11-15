@@ -46,9 +46,10 @@ const resultCacheProbeTTLSeconds = 1
 // hardened/constrained deployment profile that pins or forbids
 // use_query_cache, or a server whose query cache is disabled entirely
 // (query_cache_max_size_in_bytes=0) — either of which answers with a typed
-// rejection rather than silently ignoring the stamped settings. cmd/cerberus
-// runs it as a fleet canary (ProbeFleet) alongside ProbeTSGridCapability and
-// hands the fleet's verdict to chopt.Resolve as Config.ResultCacheCapability.
+// rejection rather than silently ignoring the stamped settings. It is the
+// result_cache canary (ResultCacheCanary) run on its own; cmd/cerberus runs
+// ResultCacheCanary through ProbeFleet alongside TSGridCanary and hands the
+// fleet's verdict to chopt.Resolve as Config.ResultCacheCapability.
 //
 // Because the canary stamps the SAME use_query_cache=1 setting a real
 // eligible query does, queryContext's generic resultCacheStamped detection
@@ -58,6 +59,5 @@ const resultCacheProbeTTLSeconds = 1
 // real dashboard queries. Negligible next to real query volume and not worth
 // a second, probe-suppressing code path.
 func (c *Client) ProbeResultCacheCapability(ctx context.Context) chopt.Capability {
-	_, verdict, _ := c.probeCanaryNode(WithResultCacheSetting(ctx, resultCacheProbeTTLSeconds))
-	return verdict
+	return ResultCacheCanary().probe(ctx, c).verdict
 }

@@ -292,3 +292,28 @@ func TestWithTransportRetry_StopsOnCtxCancel(t *testing.T) {
 		t.Errorf("calls = %d; want 1 (cancelled ctx stops the retry loop)", calls)
 	}
 }
+
+// TestWithTransportRetry_CapabilityCanaryNotRetried: a capability canary's
+// broken connection is not retried, since a fresh dial behind a load balancer
+// can reach a server other than the one its identity read named; the same
+// failure outside a canary is.
+func TestWithTransportRetry_CapabilityCanaryNotRetried(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		ctx       context.Context
+		wantCalls int
+	}{
+		{"canary", withCapabilityCanary(t.Context()), 1},
+		{"query", t.Context(), 1 + maxTransportRetries},
+	} {
+		var calls int
+		_, err := withTransportRetry(tc.ctx, func() (struct{}, error) {
+			calls++
+			return struct{}{}, errBrokenPipe
+		})
+		if !errors.Is(err, syscall.EPIPE) || calls != tc.wantCalls {
+			t.Errorf("%s: err=%v after %d calls; want the broken pipe after %d", tc.name, err, calls, tc.wantCalls)
+		}
+	}
+}

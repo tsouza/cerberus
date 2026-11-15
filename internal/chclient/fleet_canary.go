@@ -2,7 +2,6 @@ package chclient
 
 import (
 	"context"
-	"slices"
 
 	"github.com/tsouza/cerberus/internal/chopt"
 )
@@ -75,17 +74,7 @@ func QueryLogUnionCanary() FleetCanary {
 	}}
 }
 
-// RotateCanaries returns canaries starting at index pass modulo their count,
-// for the fleet probe's pass number pass. A refusal closes the connection, and
-// the canaries after it run on whichever server the next connection reaches;
-// a balancer that routes connections in a fixed rotation would otherwise keep
-// a refusing server from ever running the canaries after the first. Rotating
-// the order runs every canary first within as many passes as there are
-// canaries.
-func RotateCanaries(canaries []FleetCanary, pass int) []FleetCanary {
-	if len(canaries) == 0 {
-		return canaries
-	}
-	start := pass % len(canaries)
-	return slices.Concat(canaries[start:], canaries[:start])
-}
+// CanaryOrder orders the canaries still pending in a pass for the server
+// named server, the one the next canary will run on. FleetMemory.CanaryOrder
+// is the one cerberus uses.
+type CanaryOrder func(server string, pending []FleetCanary) []FleetCanary

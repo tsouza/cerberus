@@ -46,10 +46,10 @@ func (c *Client) probeCanaryNode(ctx context.Context) (node FleetNode, verdict c
 
 // ProbeTSGridCapability runs the boot-time capability canary once and classifies
 // whether the connected ClickHouse server will run the experimental
-// timeSeries*ToGrid aggregate family. cmd/cerberus runs it as a fleet canary
-// (ProbeFleet) on every server the fleet probe reads over its
-// bootstrap/default-DB connection, then hands the fleet's verdict to
-// chopt.Resolve as Config.Capability.
+// timeSeries*ToGrid aggregate family: the ts_grid canary (TSGridCanary) run
+// on its own. cmd/cerberus runs TSGridCanary through ProbeFleet on every
+// server the fleet probe reads over its bootstrap/default-DB connection, then
+// hands the fleet's verdict to chopt.Resolve as Config.Capability.
 //
 // The probe stamps WithTSGridSetting's settings —
 // allow_experimental_time_series_aggregate_functions=1 and the
@@ -70,8 +70,7 @@ func (c *Client) probeCanaryNode(ctx context.Context) (node FleetNode, verdict c
 // means per selection mode (auto silently falls back, an explicit list errors
 // under enforcing).
 func (c *Client) ProbeTSGridCapability(ctx context.Context) chopt.Capability {
-	_, verdict, _ := c.probeCanaryNode(WithTSGridSetting(ctx))
-	return verdict
+	return TSGridCanary().probe(ctx, c).verdict
 }
 
 // classifyCapabilityFromProbeErr maps ANY boot capability canary's error into

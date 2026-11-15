@@ -87,7 +87,7 @@ func TestReprobeCHOptimizations_LoadBalancedCanaryHoldsTheRefusingReplica(t *tes
 	defer cancel()
 	inForceAt := map[int]chOptResolution{}
 	pass := 0
-	probe := func(context.Context) chclient.FleetPass {
+	probe := func(context.Context, chclient.CanaryOrder) chclient.FleetPass {
 		pass++
 		inForceAt[pass] = live.get()
 		if pass == lastPass+1 {

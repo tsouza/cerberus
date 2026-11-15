@@ -1380,14 +1380,35 @@ refusal to the server the new connection reached, at the cost of one trivial
 statement per canary that was not accepted, per address. An accepted canary keeps the connection,
 and its own row is the latest identity.
 
-**Why each probe starts the canaries at a different one.** After a refusal,
-the remaining canaries run on whichever server the next connection reaches.
-Behind a balancer that hands out connections in a fixed rotation, with as many
-connections per probe as replicas, the refusing replica would receive the
-first connection of every probe and run only the first canary. A refusal of
-any later canary would then never be read, and nothing would mark the fleet
-held. Rotating the start runs every canary first within as many probes as
-there are canaries.
+**Why each server runs the canary it ran longest ago first.** After a
+refusal, the remaining canaries run on whichever server the next connection
+reaches. With a fixed canary order, a balancer that hands out connections in
+a fixed rotation can give the refusing replica the first connection of every
+probe that reaches it, so it runs only the first canary, a refusal of any
+later canary is never read, and nothing marks the fleet held. Starting each
+probe one canary further along fixes that only when the probes that reach
+the replica fall on different starting canaries: with three replicas, two
+canaries and two connections per probe that reaches the refusing replica, the
+probes that reach it are every other probe, so they all start on the same
+canary. Ordering by the server's own history needs no such alignment: every
+probe that reaches the replica runs a canary it has not run there, or the one
+run there longest ago, first, so its refusals of every canary are read within
+as many of its probes as there are canaries.
+
+**Why a canary is not retried on a broken connection.** The driver's
+transport retry dials a new connection, which behind a load balancer can
+reach a server other than the one the identity read named, and the retry's
+refusal would be attributed to the wrong server. An unretried failure is an
+unreachable verdict, which decides nothing on its own (see below), so the
+cost is at most one probe without that canary's verdict.
+
+**Why an unreachable verdict keeps the remembered one.** A canary that got no
+verdict carries no evidence about the server: the failure belongs to the
+connection. Letting it replace a remembered refusal would turn the feature
+back on until the next probe that reads the refusal again; letting it replace
+a remembered permit would demote the fleet to unreachable on a transient
+failure. A server with nothing remembered takes the unreachable verdict,
+since that is all that is known about it.
 
 **Why the order is forbidden, then unreachable, then available.** A query can
 land on any remembered server, so the fleet permits a setting only when every
@@ -1407,16 +1428,21 @@ a cluster.
 **Why a remembered verdict in force holds the fast cadence.** A server's
 verdict can keep a feature off as long as the memory holds it, exactly like
 its build can hold the version down. When the verdict in force on a canary is
-one no server the last probe reached gave, the fleet is held, so the re-probe
+one no server the last probe reached holds — read by that probe or remembered
+for it — the fleet is held, so the re-probe
 runs every 10 seconds and the memory sees the replica's verdict change, or
 forgets a replica that left, within the time its retention is priced at. Only
 the verdict in force counts, unlike builds, where every remembered build
 counts: a build decides the version, the defect gates and the analyzer
 decision, each in its own direction, while a canary's verdicts decide only
 through their most conservative value. A probe that lands on the refusing
-replica reads the refusal in force and leaves the fleet unheld, so a replica
-that disagrees for good holds the fast cadence only on the probes that miss
-it.
+replica reaches the server holding the refusal in force and leaves the fleet
+unheld, so a replica that disagrees for good holds the fast cadence only on
+the probes that miss it. The remembered verdicts of a reached server count
+because a replica that refuses several canaries gives only one refusal per
+probe — the refusal closes the connection — so a probe that lands on it reads
+one of its refusals and remembers the others; counting only the verdicts read
+would hold the fleet on every probe, including the ones that reach it.
 
 ## Audited, not adopted
 

@@ -57,7 +57,7 @@ func TestProbeCanaries_AttributesEachVerdictToTheServerThatGaveIt(t *testing.T) 
 	ran := map[string]int{}
 	first := FleetNode{ID: replicaA, Version: memoryNewBuild}
 	onB := FleetNode{ID: replicaB, Version: memoryNewBuild}
-	nodes, read := probeCanaries(context.Background(), unreachableCanaryClient(t), first, []FleetCanary{
+	nodes, read := probeCanaries(context.Background(), unreachableCanaryClient(t), first, nil, []FleetCanary{
 		scriptedCanary("accepted on B", canaryAnswer{verdict: chopt.CapabilityAvailable, node: onB, identified: true}, ran),
 		scriptedCanary("unnamed", canaryAnswer{verdict: chopt.CapabilityAvailable}, ran),
 	})
@@ -79,7 +79,7 @@ func TestProbeCanaries_NoVerdictWithoutAnIdentityRead(t *testing.T) {
 	c := unreachableCanaryClient(t)
 	ran := map[string]int{}
 	first := FleetNode{ID: replicaA, Version: memoryNewBuild}
-	nodes, read := probeCanaries(context.Background(), c, first, []FleetCanary{
+	nodes, read := probeCanaries(context.Background(), c, first, nil, []FleetCanary{
 		scriptedCanary("refused", canaryAnswer{verdict: chopt.CapabilityForbidden}, ran),
 		scriptedCanary("next", canaryAnswer{verdict: chopt.CapabilityAvailable}, ran),
 	})
@@ -94,37 +94,59 @@ func TestProbeCanaries_NoVerdictWithoutAnIdentityRead(t *testing.T) {
 		t.Errorf("canary runs = %v; want the first once and the next never", ran)
 	}
 
-	if nodes, read := probeCanaries(context.Background(), c, first, nil); !read || len(nodes) != 1 || nodes[0].Verdicts != nil {
+	if nodes, read := probeCanaries(context.Background(), c, first, nil, nil); !read || len(nodes) != 1 || nodes[0].Verdicts != nil {
 		t.Errorf("probeCanaries with no canaries = %+v, %v; want the first node alone, unchanged, read", nodes, read)
 	}
 }
 
-// TestRotateCanaries_EveryCanaryRunsFirst: over as many consecutive passes as
-// there are canaries, each canary leads the order once, and every rotation
-// keeps every canary.
-func TestRotateCanaries_EveryCanaryRunsFirst(t *testing.T) {
+// TestProbeCanaries_FailedReadIsReadAgain: a canary that got no verdict (a
+// transport failure) closes the connection like a refusal, so the identity is
+// read again before the next canary; when that read fails, the next canary
+// does not run.
+func TestProbeCanaries_FailedReadIsReadAgain(t *testing.T) {
 	t.Parallel()
-	canaries := []FleetCanary{TSGridCanary(), ResultCacheCanary(), QueryLogUnionCanary(), QueryWorkloadCanary("w")}
-	names := func(cs []FleetCanary) []string {
-		out := make([]string, 0, len(cs))
-		for _, c := range cs {
-			out = append(out, c.Name)
+	ran := map[string]int{}
+	_, read := probeCanaries(context.Background(), unreachableCanaryClient(t), FleetNode{ID: replicaA, Version: memoryNewBuild}, nil, []FleetCanary{
+		scriptedCanary("failed", canaryAnswer{verdict: chopt.CapabilityUnreachable}, ran),
+		scriptedCanary("next", canaryAnswer{verdict: chopt.CapabilityAvailable}, ran),
+	})
+	if read || ran["next"] != 0 {
+		t.Fatalf("after an unreachable canary and a failed identity read: read=%v, runs %v; want not read and the next canary unrun", read, ran)
+	}
+}
+
+// TestProbeCanaries_OrdersForTheServerItRunsOn: before each canary, the order
+// is asked for the canaries still pending on the server the next one runs on
+// — the first server, then the one an accepted canary named — and the canary
+// it puts first is the one that runs.
+func TestProbeCanaries_OrdersForTheServerItRunsOn(t *testing.T) {
+	t.Parallel()
+	ran := map[string]int{}
+	onB := FleetNode{ID: replicaB, Version: memoryNewBuild}
+	var asked []string
+	order := func(server string, pending []FleetCanary) []FleetCanary {
+		asked = append(asked, server)
+		return slices.Concat(pending[1:], pending[:1])
+	}
+	var runs []string
+	record := func(name string, answer canaryAnswer) FleetCanary {
+		c := scriptedCanary(name, answer, ran)
+		probe := c.probe
+		c.probe = func(ctx context.Context, cl *Client) canaryAnswer {
+			runs = append(runs, name)
+			return probe(ctx, cl)
 		}
-		return out
+		return c
 	}
-	all := names(canaries)
-	var leaders []string
-	for pass := range len(canaries) {
-		order := names(RotateCanaries(canaries, len(canaries)+pass))
-		if !slices.Equal(slices.Sorted(slices.Values(order)), slices.Sorted(slices.Values(all))) {
-			t.Fatalf("pass %d order %v; want every canary of %v", pass, order, all)
-		}
-		leaders = append(leaders, order[0])
+	nodes, read := probeCanaries(context.Background(), unreachableCanaryClient(t), FleetNode{ID: replicaA, Version: memoryNewBuild}, order, []FleetCanary{
+		record("x", canaryAnswer{verdict: chopt.CapabilityAvailable}),
+		record("y", canaryAnswer{verdict: chopt.CapabilityAvailable, node: onB, identified: true}),
+	})
+	if !read || !slices.Equal(runs, []string{"y", "x"}) || !slices.Equal(asked, []string{replicaA, replicaB}) {
+		t.Fatalf("runs %v, order asked for %v, read=%v; want [y x] asked for [%s %s]", runs, asked, read, replicaA, replicaB)
 	}
-	if !slices.Equal(leaders, all) {
-		t.Fatalf("leaders over %d passes = %v; want each canary once, %v", len(canaries), leaders, all)
-	}
-	if got := RotateCanaries(nil, 1); len(got) != 0 {
-		t.Fatalf("RotateCanaries(nil) = %v; want none", got)
+	want := map[string]map[string]chopt.Capability{replicaA: {}, replicaB: {"y": chopt.CapabilityAvailable, "x": chopt.CapabilityAvailable}}
+	if got := verdictsByServer(nodes); !maps.EqualFunc(got, want, maps.Equal) {
+		t.Fatalf("verdicts %v; want %v", got, want)
 	}
 }

@@ -906,12 +906,17 @@ address, and each verdict is attributed to the server that gave it:
 - A refused canary, and the query-log union canary, are attributed to the
   server the identity read just before it on the same client named. A refusal
   closes the connection, so the identity is read again before the next
-  canary.
-- Each probe starts the canaries one further along their order, so every
-  canary runs first, on the first server the probe's connection reaches,
-  within as many probes as there are canaries.
-- A server a probe ran a canary on takes the verdict it gave; a canary the
-  probe did not run on it keeps the verdict remembered for it.
+  canary. A canary whose statement fails on a broken connection is not
+  retried: its verdict is **unreachable**, and the identity is read again
+  before the next canary as after a refusal.
+- On each server, the canaries run in the order of how long ago a probe last
+  ran them there: a canary never run on that server first, then the one run
+  there longest ago. A probe that lands on a replica refusing its first
+  canary therefore runs another canary first on that replica the next time
+  one lands there.
+- A server a probe ran a canary on takes the verdict it gave, except that an
+  **unreachable** verdict leaves the verdict remembered for it in place; a
+  canary the probe did not run on it keeps the verdict remembered for it.
 - The verdict in force for each canary is the most conservative one across
   the remembered servers: **forbidden** if any server refused, else
   **unreachable** if any server's canary failed, else **available**.
@@ -926,9 +931,9 @@ setting on one replica only — the first probe that lands on the refusing
 replica turns the feature off, and it stays off while that replica serves:
 probes that land on the other replicas do not turn it back on. The `forbidden`
 verdict clears on the first probe that lands on that replica and gets
-**available**, or once the replica is forgotten. While the verdict in force
-on a canary comes from a server the last probe did not reach, the
-[re-probe](#re-probe) runs every 10 seconds. The boot log reports each
+**available**, or once the replica is forgotten. While no server the last
+probe reached holds the verdict in force on a canary — read by that probe or
+remembered for it — the [re-probe](#re-probe) runs every 10 seconds. The boot log reports each
 canary's verdict in force (`server_ts_grid_capability`,
 `server_result_cache_capability`, `server_query_log_union_capability`,
 `server_query_workload_capability`).

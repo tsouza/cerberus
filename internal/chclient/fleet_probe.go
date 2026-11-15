@@ -38,9 +38,9 @@ type FleetVersions struct {
 	Verdicts map[string]chopt.Capability
 	Complete bool
 	// Held reports that Versions holds a build no server the pass reached
-	// runs, or that Verdicts holds a verdict no server the pass reached gave
-	// on that canary: a server an earlier pass reached, which the memory has
-	// not forgotten, gave it. Every decision read off the fleet may then rest
+	// runs, or that Verdicts holds a verdict no server the pass reached holds
+	// on that canary, read this pass or remembered for it: a server only an
+	// earlier pass reached, which the memory has not forgotten, gave it. Every decision read off the fleet may then rest
 	// on that server.
 	Held bool
 }
@@ -68,13 +68,14 @@ func (fv FleetVersions) Lowest() (chopt.Version, bool) {
 // pass reads it only when its connection lands on it, and FleetMemory holds
 // it between such passes.
 //
-// Every canary runs on each address's client, in the order given, and its
-// verdict is attributed to a server by probeCanaries. The cluster arm reads
+// Every canary runs on each address's client, in the order order gives for
+// the server it is about to run on (the given order when order is nil), and
+// its verdict is attributed to a server by probeCanaries. The cluster arm reads
 // builds only, so a replica read only through it carries no verdict.
 //
 // A failed dial, a failed read, or a failed cluster read leaves the pass
 // incomplete rather than silently reporting a smaller fleet.
-func ProbeFleet(ctx context.Context, cfg Config, cluster string, canaries ...FleetCanary) FleetPass {
+func ProbeFleet(ctx context.Context, cfg Config, cluster string, order CanaryOrder, canaries ...FleetCanary) FleetPass {
 	hosts := cfg.Addrs
 	if len(hosts) == 0 {
 		hosts = []string{cfg.Addr}
@@ -96,7 +97,7 @@ func ProbeFleet(ctx context.Context, cfg Config, cluster string, canaries ...Fle
 			_ = c.Close()
 			continue
 		}
-		nodes, read := probeCanaries(ctx, c, node, canaries)
+		nodes, read := probeCanaries(ctx, c, node, order, canaries)
 		pass.Nodes = append(pass.Nodes, nodes...)
 		if !read {
 			pass.Complete = false
@@ -125,20 +126,22 @@ func ProbeFleet(ctx context.Context, cfg Config, cluster string, canaries ...Fle
 
 // probeCanaries runs every canary over c and returns the servers they ran on,
 // each carrying the verdicts attributed to it. first is the server c's
-// connection reached last.
+// connection reached last. Before each canary, order (when set) orders the
+// canaries still pending for the server the next one will run on.
 //
 // A canary whose own statement names the server that answered (an accepted
 // settings canary) is attributed to that server. Any other verdict — a
-// refusal, or an answer that names no server — is attributed to the server
-// the connection's last identity read named. The driver closes a connection
-// on any error, so after a canary that did not answer available, the next
-// statement dials anew, and behind a load balancer it can reach a different
-// server: the identity is read again before the next canary. read is false
-// when that read failed, leaving the remaining canaries unrun.
-func probeCanaries(ctx context.Context, c *Client, first FleetNode, canaries []FleetCanary) (nodes []FleetNode, read bool) {
+// refusal, a failed read, or an answer that names no server — is attributed
+// to the server the connection's last identity read named. The driver closes
+// a connection on any error, so after a canary that did not answer
+// available, the next statement dials anew, and behind a load balancer it can
+// reach a different server: the identity is read again before the next
+// canary. read is false when that read failed, leaving the remaining canaries
+// unrun.
+func probeCanaries(ctx context.Context, c *Client, first FleetNode, order CanaryOrder, canaries []FleetCanary) (nodes []FleetNode, read bool) {
 	nodes = []FleetNode{first}
 	connected := true
-	for _, canary := range canaries {
+	for pending := canaries; len(pending) > 0; pending = pending[1:] {
 		if !connected {
 			node, err := c.ProbeNode(ctx)
 			if err != nil {
@@ -146,6 +149,10 @@ func probeCanaries(ctx context.Context, c *Client, first FleetNode, canaries []F
 			}
 			nodes = append(nodes, node)
 		}
+		if order != nil {
+			pending = order(nodes[len(nodes)-1].ID, pending)
+		}
+		canary := pending[0]
 		answer := canary.probe(ctx, c)
 		if answer.identified {
 			nodes = append(nodes, answer.node)

@@ -254,8 +254,8 @@ func TestFleetMemory_LoadBalancedCanaryHoldsTheRefusingReplica(t *testing.T) {
 // TestFleetMemory_CanaryNotRunKeepsTheRememberedVerdict: a pass that reads a
 // server without running a canary on it — the cluster arm, or a pass whose
 // identity read failed before that canary — keeps the server's remembered
-// verdict, enumerated or not, and the fleet is held on it, since no server the
-// pass reached gave it. A server no canary ever ran on adds no verdict.
+// verdict, enumerated or not, and the fleet is not held on it: the server the
+// pass reached holds it. A server no canary ever ran on adds no verdict.
 func TestFleetMemory_CanaryNotRunKeepsTheRememberedVerdict(t *testing.T) {
 	t.Parallel()
 	m := NewFleetMemory()
@@ -268,8 +268,8 @@ func TestFleetMemory_CanaryNotRunKeepsTheRememberedVerdict(t *testing.T) {
 		if got := fv.Capability(memoryCanary); got != chopt.CapabilityForbidden {
 			t.Fatalf("pass %+v that ran no canary: verdict %s; want B's remembered %s", pass, got, chopt.CapabilityForbidden)
 		}
-		if !fv.Held {
-			t.Fatalf("pass %+v gave no verdict: not held; want held on B's remembered one", pass)
+		if fv.Held {
+			t.Fatalf("pass %+v reached B: held; want not held, B holds the verdict in force", pass)
 		}
 	}
 	if got := NewFleetMemory().Observe(landed(replicaA, memoryNewBuild)).Capability(memoryCanary); got != chopt.CapabilityUnreachable {
@@ -293,5 +293,91 @@ func TestFleetMemory_OneServerTwoVerdictsInAPassKeepsTheConservativeOne(t *testi
 		if got := NewFleetMemory().Observe(FleetPass{Nodes: nodes, Complete: true}).Capability(memoryCanary); got != chopt.CapabilityForbidden {
 			t.Fatalf("pass %+v: verdict %s; want %s", nodes, got, chopt.CapabilityForbidden)
 		}
+	}
+}
+
+// TestFleetMemory_RefusingReplicaReachedIsNotHeld: a replica that refuses two
+// canaries gives one refusal per pass, since the refusal closes the
+// connection. A pass that lands on it still reaches the server holding both
+// refusals in force, so the fleet is not held; a pass that lands on the
+// permitting replica is.
+func TestFleetMemory_RefusingReplicaReachedIsNotHeld(t *testing.T) {
+	t.Parallel()
+	const second = "result_cache"
+	m := NewFleetMemory()
+	refusesOne := func(canary string) FleetPass {
+		return FleetPass{Nodes: []FleetNode{{ID: replicaB, Version: memoryNewBuild, Verdicts: map[string]chopt.Capability{canary: chopt.CapabilityForbidden}}}, Complete: true}
+	}
+	m.Observe(refusesOne(memoryCanary))
+	m.Observe(refusesOne(second))
+	for i := range 4 {
+		onB := i%2 == 0
+		pass := FleetPass{Nodes: []FleetNode{{ID: replicaA, Version: memoryNewBuild, Verdicts: map[string]chopt.Capability{
+			memoryCanary: chopt.CapabilityAvailable, second: chopt.CapabilityAvailable,
+		}}}, Complete: true}
+		if onB {
+			pass = refusesOne(memoryCanary)
+		}
+		fv := m.Observe(pass)
+		if fv.Capability(memoryCanary) != chopt.CapabilityForbidden || fv.Capability(second) != chopt.CapabilityForbidden {
+			t.Fatalf("pass %d: verdicts %v; want both refused", i+1, fv.Verdicts)
+		}
+		if fv.Held == onB {
+			t.Fatalf("pass %d (landed on B: %v): held=%v; want held exactly when the pass missed B", i+1, onB, fv.Held)
+		}
+	}
+}
+
+// TestFleetMemory_NoVerdictKeepsTheRememberedOne: a canary that got no verdict
+// from a server (unreachable) keeps the verdict remembered for it, refusal or
+// permit, since the failed read is no evidence; a server with nothing
+// remembered takes the unreachable verdict.
+func TestFleetMemory_NoVerdictKeepsTheRememberedOne(t *testing.T) {
+	t.Parallel()
+	for _, was := range []chopt.Capability{chopt.CapabilityForbidden, chopt.CapabilityAvailable} {
+		m := NewFleetMemory()
+		m.Observe(landedWith(replicaB, was))
+		if got := m.Observe(landedWith(replicaB, chopt.CapabilityUnreachable)).Capability(memoryCanary); got != was {
+			t.Fatalf("remembered %s, then unreachable: verdict %s; want %s kept", was, got, was)
+		}
+	}
+	if got := NewFleetMemory().Observe(landedWith(replicaB, chopt.CapabilityUnreachable)).Capability(memoryCanary); got != chopt.CapabilityUnreachable {
+		t.Fatalf("first verdict unreachable: %s; want %s", got, chopt.CapabilityUnreachable)
+	}
+}
+
+// TestFleetMemory_CanaryOrderFollowsTheServersOwnHistory: for each server, a
+// canary no pass has run on it comes first, then the one run on it longest
+// ago, keeping the given order among equals; another server's history does
+// not move it.
+func TestFleetMemory_CanaryOrderFollowsTheServersOwnHistory(t *testing.T) {
+	t.Parallel()
+	canaries := []FleetCanary{{Name: "a"}, {Name: "b"}, {Name: "c"}}
+	names := func(cs []FleetCanary) []string {
+		out := make([]string, 0, len(cs))
+		for _, c := range cs {
+			out = append(out, c.Name)
+		}
+		return out
+	}
+	ran := func(id string, canary ...string) FleetPass {
+		verdicts := map[string]chopt.Capability{}
+		for _, c := range canary {
+			verdicts[c] = chopt.CapabilityForbidden
+		}
+		return FleetPass{Nodes: []FleetNode{{ID: id, Version: memoryNewBuild, Verdicts: verdicts}}, Complete: true}
+	}
+	m := NewFleetMemory()
+	if got := names(m.CanaryOrder(replicaB, canaries)); !slices.Equal(got, []string{"a", "b", "c"}) {
+		t.Fatalf("unknown server: %v; want the given order", got)
+	}
+	m.Observe(ran(replicaB, "a"))
+	m.Observe(ran(replicaA, "b", "c"))
+	if got := names(m.CanaryOrder(replicaB, canaries)); !slices.Equal(got, []string{"b", "c", "a"}) {
+		t.Fatalf("after B ran a: %v; want [b c a]", got)
+	}
+	m.Observe(ran(replicaB, "c"))
+	if got := names(m.CanaryOrder(replicaB, canaries)); !slices.Equal(got, []string{"b", "a", "c"}) {
+		t.Fatalf("after B ran a then c: %v; want [b a c]", got)
 	}
 }

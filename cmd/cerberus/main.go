@@ -1392,7 +1392,7 @@ type chOptResolution struct {
 	FleetIncomplete bool
 	// FleetHeld records that the fleet behind the resolution holds a build
 	// no server that pass reached runs, or a canary verdict in force no
-	// server that pass reached gave
+	// server that pass reached holds
 	// (chclient.FleetVersions.Held), so the next pass runs at
 	// chOptFloorRetryInterval (nextReprobeDelay).
 	FleetHeld bool

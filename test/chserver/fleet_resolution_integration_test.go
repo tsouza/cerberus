@@ -4,6 +4,7 @@ package chserver
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"maps"
 	"net"
@@ -43,7 +44,7 @@ func TestFleetResolution_FollowsTheOldestAddress(t *testing.T) {
 		Password:        adminPassword,
 		BreakerDisabled: true,
 	}
-	pass := chclient.ProbeFleet(ctx, cfg, "")
+	pass := chclient.ProbeFleet(ctx, cfg, "", nil)
 	if !pass.Complete || len(pass.Nodes) != len(cfg.Addrs) {
 		t.Fatalf("fleet probe over %v = %+v; want a complete pass with one node per address", cfg.Addrs, pass)
 	}
@@ -121,7 +122,7 @@ func TestFleetProbe_ClusterArmReadsEveryReplicasIdentity(t *testing.T) {
 		Password:        adminPassword,
 		BreakerDisabled: true,
 	}
-	pass := chclient.ProbeFleet(ctx, cfg, fleetCluster)
+	pass := chclient.ProbeFleet(ctx, cfg, fleetCluster, nil)
 	if !pass.Complete || !pass.Enumerated {
 		t.Fatalf("fleet probe through %s with cluster %q = %+v; want a complete pass that read the replica list", newer.addr, fleetCluster, pass)
 	}
@@ -178,11 +179,18 @@ var fleetCanaries = []chclient.FleetCanary{chclient.TSGridCanary(), chclient.Res
 func startCanaryPair(ctx context.Context, t *testing.T) (pinned, open *server) {
 	t.Helper()
 	pinned = startServer(ctx, t, fleetNewImage)
-	open = startServer(ctx, t, fleetNewImage)
 	pinned.exec(ctx, t, "CREATE SETTINGS PROFILE "+canaryProfile+" SETTINGS "+chclient.SettingExperimentalTSGridAggregate+" = 0 CONST, "+chclient.SettingUseQueryCache+" = 0 CONST")
 	pinned.exec(ctx, t, "CREATE USER "+canaryUser+" IDENTIFIED BY '"+canaryPassword+"' SETTINGS PROFILE "+canaryProfile)
+	return pinned, startOpenCanaryServer(ctx, t)
+}
+
+// startOpenCanaryServer boots a server on the pair's build with the canary
+// user and nothing pinned.
+func startOpenCanaryServer(ctx context.Context, t *testing.T) *server {
+	t.Helper()
+	open := startServer(ctx, t, fleetNewImage)
 	open.exec(ctx, t, "CREATE USER "+canaryUser+" IDENTIFIED BY '"+canaryPassword+"'")
-	return pinned, open
+	return open
 }
 
 // canaryConfig is the canary user's bootstrap config over addrs.
@@ -226,7 +234,7 @@ func TestFleetProbe_CanaryVerdictsBelongToTheServerThatGaveThem(t *testing.T) {
 	ctx := context.Background()
 	pinned, open := startCanaryPair(ctx, t)
 	cfg := canaryConfig(pinned.addr, open.addr)
-	pass := chclient.ProbeFleet(ctx, cfg, "", fleetCanaries...)
+	pass := chclient.ProbeFleet(ctx, cfg, "", nil, fleetCanaries...)
 	if !pass.Complete {
 		t.Fatalf("fleet probe over %v = %+v; want a complete pass", cfg.Addrs, pass)
 	}
@@ -328,7 +336,7 @@ func TestFleetProbe_LoadBalancedCanaryHoldsTheRefusingReplica(t *testing.T) {
 		}
 		return open.addr
 	})
-	pass := chclient.ProbeFleet(ctx, cfg, "", fleetCanaries...)
+	pass := chclient.ProbeFleet(ctx, cfg, "", nil, fleetCanaries...)
 	want := map[string]map[string]chopt.Capability{
 		pinnedID: {chclient.CanaryTSGrid: chopt.CapabilityForbidden},
 		openID:   {chclient.CanaryResultCache: chopt.CapabilityAvailable},
@@ -346,7 +354,7 @@ func TestFleetProbe_LoadBalancedCanaryHoldsTheRefusingReplica(t *testing.T) {
 			backend = pinned.addr
 		}
 		balancer.routeEach(func(int) string { return backend })
-		fv := memory.Observe(chclient.ProbeFleet(ctx, cfg, "", fleetCanaries...))
+		fv := memory.Observe(chclient.ProbeFleet(ctx, cfg, "", nil, fleetCanaries...))
 		want := chopt.CapabilityAvailable
 		if n > 0 {
 			want = chopt.CapabilityForbidden
@@ -359,38 +367,43 @@ func TestFleetProbe_LoadBalancedCanaryHoldsTheRefusingReplica(t *testing.T) {
 	}
 }
 
-// canaryRoundRobinPasses is how many passes the round-robin test runs: every
-// canary leads the order at least twice.
-const canaryRoundRobinPasses = 4
-
 // TestFleetProbe_RoundRobinBalancerRunsEveryCanaryOnTheRefusingServer puts
-// the two servers behind a balancer that alternates every connection between
-// them, starting on the pinned server. Each pass's first connection reaches
-// the pinned server, whose refusal of the first canary closes it, so the
-// canaries after it run on the open server. The fleet probe starts each pass
-// one canary further along (RotateCanaries), so from the second pass on the
-// pinned server has refused both canaries and the fleet refuses both.
+// the pinned server and one or two open servers behind a balancer that sends
+// each connection to the next of them in turn, starting on the pinned server.
+// A pass that reaches the pinned server has its first canary refused, which
+// closes the connection, so the canaries after it run elsewhere. The memory
+// orders each pass's canaries for the server they run on, the one run there
+// longest ago first (FleetMemory.CanaryOrder), so the second pass that lands
+// on the pinned server runs the canary its first one did not, and from then
+// on the fleet refuses both.
 func TestFleetProbe_RoundRobinBalancerRunsEveryCanaryOnTheRefusingServer(t *testing.T) {
-	ctx := context.Background()
-	pinned, open := startCanaryPair(ctx, t)
-	balancer := startSwitchingBalancer(t)
-	balancer.routeEach(func(conn int) string {
-		if conn%2 == 0 {
-			return pinned.addr
-		}
-		return open.addr
-	})
-	cfg := canaryConfig(balancer.addr)
-	memory := chclient.NewFleetMemory()
-	for pass := range canaryRoundRobinPasses {
-		fv := memory.Observe(chclient.ProbeFleet(ctx, cfg, "", chclient.RotateCanaries(fleetCanaries, pass)...))
-		if pass == 0 {
-			continue
-		}
-		for _, canary := range []string{chclient.CanaryTSGrid, chclient.CanaryResultCache} {
-			if got := fv.Capability(canary); got != chopt.CapabilityForbidden {
-				t.Errorf("pass %d: %s %s; want %s, refused by the pinned server", pass+1, canary, got, chopt.CapabilityForbidden)
+	for _, openServers := range []int{1, 2} {
+		t.Run(fmt.Sprintf("open_servers_%d", openServers), func(t *testing.T) {
+			ctx := context.Background()
+			pinned, open := startCanaryPair(ctx, t)
+			backends := []string{pinned.addr, open.addr}
+			for range openServers - 1 {
+				backends = append(backends, startOpenCanaryServer(ctx, t).addr)
 			}
-		}
+			balancer := startSwitchingBalancer(t)
+			balancer.routeEach(func(conn int) string { return backends[conn%len(backends)] })
+			cfg := canaryConfig(balancer.addr)
+			memory := chclient.NewFleetMemory()
+			// Pass k reaches the pinned server again once every open
+			// server has taken one connection after the refusal: pass
+			// len(backends)-1, counted from zero.
+			refusedFrom := len(backends) - 1
+			for pass := range 2 * len(backends) {
+				fv := memory.Observe(chclient.ProbeFleet(ctx, cfg, "", memory.CanaryOrder, fleetCanaries...))
+				if pass < refusedFrom {
+					continue
+				}
+				for _, canary := range []string{chclient.CanaryTSGrid, chclient.CanaryResultCache} {
+					if got := fv.Capability(canary); got != chopt.CapabilityForbidden {
+						t.Errorf("pass %d: %s %s; want %s, refused by the pinned server", pass+1, canary, got, chopt.CapabilityForbidden)
+					}
+				}
+			}
+		})
 	}
 }

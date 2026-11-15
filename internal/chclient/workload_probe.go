@@ -31,15 +31,15 @@ const workloadCapabilityProbeName = "cerberus_probe"
 // same tri-state classification (classifyCapabilityFromProbeErr) over the
 // same trivial canary body (capabilityCanarySQL), and the same "never returns
 // an error" contract.
-// cmd/cerberus runs it as a fleet canary (ProbeFleet), ONLY when
+// It is the query_workload canary (QueryWorkloadCanary) run on its own;
+// cmd/cerberus runs QueryWorkloadCanary through ProbeFleet, ONLY when
 // CERBERUS_CH_QUERY_WORKLOAD is non-empty (an unconfigured deployment skips
 // the probe entirely — the knob's mere absence is already the full gate),
 // and combines the verdict with CERBERUS_CH_OPTIMIZATIONS_MODE to decide
 // FATAL (enforcing) vs WARN-and-skip (permissive) on a Forbidden/Unreachable
 // verdict.
 func (c *Client) ProbeQueryWorkloadCapability(ctx context.Context, workloadName string) chopt.Capability {
-	_, verdict, _ := c.probeCanaryNode(WithWorkloadSetting(ctx, workloadProbeName(workloadName)))
-	return verdict
+	return QueryWorkloadCanary(workloadName).probe(ctx, c).verdict
 }
 
 // workloadProbeName returns configured unchanged when non-empty, else the

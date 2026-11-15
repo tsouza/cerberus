@@ -30,9 +30,10 @@ const AllNativeOptimizations = "auto," + chopt.FeatureTSGridChanges + "," + chop
 
 // ResolveEnabledSet probes client's connected server version and ts_grid
 // experimental capability, then resolves optimizations against them in
-// chopt.Enforcing mode — the same probe -> chopt.Resolve sequence
-// cmd/cerberus's own boot-time resolveCHOptimizations runs, reused here so an
-// integration test's activation decision is made the identical way a real
+// chopt.Enforcing mode — the inputs cmd/cerberus's boot-time
+// resolveCHOptimizations reads from its fleet probe (the oldest build and the
+// ts_grid canary's verdict), here read from the one connected server, so an
+// integration test's activation decision is made the way a single-server
 // deployment's is. Enforcing mode means a version or capability shortfall
 // fails the test loudly (t.Fatalf) instead of silently degrading to
 // fan-out and leaving a caller's activation assertions vacuously

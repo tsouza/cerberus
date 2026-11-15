@@ -125,8 +125,17 @@ func isBrokenConnError(err error) bool {
 // ctx is honoured between attempts: a cancelled/expired ctx stops the retry
 // loop immediately (the next call would fail with the ctx error anyway;
 // short-circuiting avoids a needless dial).
+//
+// A capability canary (withCapabilityCanary) is never retried: the fleet
+// probe attributes a canary's refusal to the server the connection's last
+// identity read named, and a retry dials anew, which behind a load balancer
+// can reach another server. Its broken-connection failure stays an
+// unreachable verdict instead.
 func withTransportRetry[T any](ctx context.Context, call func() (T, error)) (T, error) {
 	res, err := call()
+	if isCapabilityCanary(ctx) {
+		return res, err
+	}
 	for attempt := 0; attempt < maxTransportRetries && isBrokenConnError(err); attempt++ {
 		if ctx.Err() != nil {
 			break
