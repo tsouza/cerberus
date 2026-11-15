@@ -334,9 +334,14 @@ const (
 // parsePipelineStage parses one stage of a spanset pipeline. Every stage
 // permits the same scalar-filter, grouping and selection forms. Only a later
 // stage may be coalesce, and only a leading stage may open a parenthesised
-// pipeline. A parenthesised scalar expression is not parsed in either
-// position (#4178).
+// pipeline. A later stage that opens with a parenthesis is a parenthesised
+// spanset expression or the parenthesised scalar expression a scalar filter
+// begins with (parseLaterParenStage); a leading stage does not parse a
+// parenthesised scalar expression (#4178).
 func (c *cursor) parsePipelineStage(at stagePosition) PipelineElement {
+	if c.kind() == tokOpenParen && at == laterStage {
+		return c.parseLaterParenStage()
+	}
 	switch c.kind() {
 	case tokBy:
 		return c.parseGroupOperation()
@@ -361,6 +366,29 @@ func (c *cursor) parsePipelineStage(at stagePosition) PipelineElement {
 		}
 		return c.parseSpansetExpr(2, filterOperands)
 	}
+}
+
+// parseLaterParenStage parses a later pipeline stage that opens with a
+// parenthesis. The first token past the run of opening parentheses decides
+// what they open: a spanset filter opens a parenthesised spanset expression,
+// and an aggregate or a number opens the parenthesised scalar expression on
+// the left of a scalar filter, so `{ } | (count()) > 1` is that filter and
+// `{ } | (count() > 1)` is a syntax error at its `>`. Any other token is
+// unexpected where it stands.
+func (c *cursor) parseLaterParenStage() PipelineElement {
+	first := c.pos
+	for c.p.toks[first].kind == tokOpenParen && first < len(c.p.toks)-1 {
+		first++
+	}
+	switch c.p.toks[first].kind {
+	case tokOpenBrace:
+		return c.parseSpansetExpr(2, filterOperands)
+	case tokCount, tokMax, tokMin, tokAvg, tokSum, tokInteger, tokFloat, tokDuration, tokSub:
+		return c.parseScalarStage()
+	}
+	c.pos = first
+	c.fail("syntax error: unexpected %s", c.kind())
+	return nil
 }
 
 // parseScalarStage parses an aggregate-or-literal-led stage, which is a
@@ -708,7 +736,12 @@ func (c *cursor) parseScalarPrimary() ScalarExpression {
 	case tokOpenParen:
 		c.advance()
 		inner := c.parseScalarExpr(0)
-		c.expect(tokCloseParen)
+		// The parenthesis may close, or the expression inside it continue
+		// with an arithmetic operator, so a token that does neither is
+		// unexpected without a single expected alternative.
+		if _, ok := c.accept(tokCloseParen); !ok {
+			c.fail("syntax error: unexpected %s", c.kind())
+		}
 		return inner
 	}
 	if s, ok := c.tryParseStatic(); ok {

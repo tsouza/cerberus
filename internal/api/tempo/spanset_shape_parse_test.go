@@ -8,7 +8,8 @@ import (
 
 // TestSpansetShapeSyntaxErrorsAre400 pins that a spanset operation mixing
 // a parenthesised pipeline with an operand that is not one, an aggregate
-// stage with no comparison after it, and a pipeline led by coalesce() are
+// stage with no comparison after it, a pipeline led by coalesce(), and a
+// comparison inside the parenthesised scalar expression of a later stage are
 // syntax errors on every surface that parses a client's TraceQL: a 400
 // carrying the reference parser's message, before any search or metrics
 // routing.
@@ -25,6 +26,7 @@ func TestSpansetShapeSyntaxErrorsAre400(t *testing.T) {
 		{`{ } | avg(duration)`, "parse error at line 1, col 20: syntax error: unexpected $end"},
 		{`{ } | count() | rate()`, "parse error at line 1, col 15: syntax error: unexpected |"},
 		{`coalesce() | { }`, "parse error at line 1, col 1: syntax error: unexpected coalesce"},
+		{`{ } | (count() > 1)`, "parse error at line 1, col 16: syntax error: unexpected >"},
 	}
 	surfaces := parseSurfaces(t)
 	for _, c := range cases {

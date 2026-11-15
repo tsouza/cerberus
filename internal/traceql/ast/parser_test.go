@@ -1,6 +1,7 @@
 package ast
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -715,6 +716,66 @@ func TestParseRejectsLeadingCoalesce(t *testing.T) {
 			}
 			if err.Error() != tc.want {
 				t.Errorf("Parse(%q) = %q, want %q", tc.query, err, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseLaterParenthesisedStage pins a later pipeline stage that opens
+// with a parenthesis. The first token inside the parentheses decides what
+// they open: an aggregate or a number opens the parenthesised scalar
+// expression a scalar filter begins with, so a comparison inside the
+// parentheses is a syntax error at its operator, and a parenthesised operand
+// compared afterwards parses as the same scalar filter without the
+// parentheses. Any token other than a spanset filter, an aggregate or a
+// number is unexpected where it stands.
+func TestParseLaterParenthesisedStage(t *testing.T) {
+	t.Parallel()
+	rejects := []struct{ query, want string }{
+		{`{ } | (count() > 1)`, "parse error at line 1, col 16: syntax error: unexpected >"},
+		{`{ } | ((count() > 1))`, "parse error at line 1, col 17: syntax error: unexpected >"},
+		{`{ } | (avg(duration) > 1s)`, "parse error at line 1, col 22: syntax error: unexpected >"},
+		{`{ } | (1 > 2)`, "parse error at line 1, col 10: syntax error: unexpected >"},
+		{`{ } | (count())`, "parse error at line 1, col 16: syntax error: unexpected $end"},
+		{`{ } | (count()) | rate()`, "parse error at line 1, col 17: syntax error: unexpected |"},
+		{`{ } | (by(.a))`, "parse error at line 1, col 8: syntax error: unexpected by"},
+		{`{ } | (select(.a))`, "parse error at line 1, col 8: syntax error: unexpected select"},
+		{`{ } | ( )`, "parse error at line 1, col 9: syntax error: unexpected )"},
+	}
+	for _, tc := range rejects {
+		t.Run(tc.query, func(t *testing.T) {
+			t.Parallel()
+			_, err := Parse(tc.query)
+			if err == nil {
+				t.Fatalf("Parse(%q): expected a syntax error, got nil", tc.query)
+			}
+			if err.Error() != tc.want {
+				t.Errorf("Parse(%q) = %q, want %q", tc.query, err, tc.want)
+			}
+		})
+	}
+	accepts := []struct{ query, unwrapped string }{
+		{`{ } | (count()) > 1`, `{ } | count() > 1`},
+		{`{ } | ((count())) > 1`, `{ } | count() > 1`},
+		{`{ } | (1) = count()`, `{ } | 1 = count()`},
+		{`{ } | (count()) > (count())`, `{ } | count() > count()`},
+		{`{ } | (2s) < avg(duration)`, `{ } | 2s < avg(duration)`},
+		{`{ } | (count()) > 1 | count() < 3`, `{ } | count() > 1 | count() < 3`},
+		{`{ } | ({ }) | count() > 1`, `{ } | { } | count() > 1`},
+	}
+	for _, tc := range accepts {
+		t.Run(tc.query, func(t *testing.T) {
+			t.Parallel()
+			got, err := Parse(tc.query)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tc.query, err)
+			}
+			want, err := Parse(tc.unwrapped)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tc.unwrapped, err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("Parse(%q) = %#v, want the parse of %q, %#v", tc.query, got, tc.unwrapped, want)
 			}
 		})
 	}

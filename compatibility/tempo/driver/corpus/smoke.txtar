@@ -1854,3 +1854,18 @@ metrics_range
 60s
 -- expect_status --
 400
+
+-- name --
+parenthesised_scalar_filter_stage_rejected
+# After a pipe, a parenthesis followed by an aggregate opens the
+# parenthesised scalar expression a scalar filter begins with, so a
+# comparison inside it is a syntax error at its operator on both backends
+# ("syntax error: unexpected >").
+-- query --
+{ } | (count() > 1)
+-- endpoint --
+search
+-- expect_status --
+400
+-- expect_grpc_code --
+InvalidArgument
