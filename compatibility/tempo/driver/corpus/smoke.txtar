@@ -1452,8 +1452,9 @@ search
 #     }`, `{ .a =~ "test" }`, `{ duration > 1s }`, `{ status != error }`,
 #     and the `nil` static the grammar's Static rule lists for the
 #     presence checks), against a value the seeder writes.
-#   * Static booleans: the string-comparison seeds `{ "test" = "test" }`
-#     and `{ "test" != "test" }` composed with the grammar's `!` and `&&`.
+#   * Static booleans: the string-comparison seed `{ "test" = "test" }`
+#     composed with the grammar's `!` and `&&` diverges from reference
+#     Tempo (#4139), so no such case is in the corpus until that is fixed.
 #   * Cross-scope comparison: the attribute seeds `{ span.a != 3 }` /
 #     `{ resource.a != 3 }` with both operands made attributes.
 #
@@ -1594,24 +1595,6 @@ scoped_link_trace_id_absent
 search
 -- expected_max_traces --
 0
-
--- name --
-static_and_not_operand_matches_all
-# Static-boolean seeds composed with `!` and `&&`: an AND whose operand
-# is a NOT over a single TRUE comparison. Evaluated logically the filter
-# is `true && false` and matches nothing. Reference Tempo drops such an
-# operand, and cerberus reproduces that (notContextAndOperand in
-# internal/traceql/lower.go), so the filter reduces to the true
-# `"test" = "test"` and matches every trace; the minimum bound below
-# fails a backend that evaluates the NOT.
--- query --
-{ ("test" = "test") && !("test" = "test") }
--- endpoint --
-search
--- expected_min_traces --
-1
--- expected_max_traces --
-500
 
 -- name --
 cross_scope_attribute_never_equal

@@ -2,5 +2,7 @@
   "schema_version": 1,
   "head": "tempo-grpc",
   "bucket": "1c",
-  "cases": []
+  "cases": [
+    "search | scoped_span_status_not_error"
+  ]
 }

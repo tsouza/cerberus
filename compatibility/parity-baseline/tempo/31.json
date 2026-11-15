@@ -2,5 +2,7 @@
   "schema_version": 1,
   "head": "tempo",
   "bucket": "31",
-  "cases": []
+  "cases": [
+    "search | scoped_link_trace_id_absent"
+  ]
 }
