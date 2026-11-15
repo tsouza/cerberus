@@ -616,27 +616,16 @@ func TestLowerRangeAggregationParserUnwrapIdentityReadsLabelsColumn(t *testing.T
 }
 
 // TestLowerRangeAggregationUnwrapPostFilterPreservesStreamSelector pins
-// the `pred == nil` accumulator branch in [applyUnwrapPostFilters] —
-// the one whose then-arm is range_aggregation.go:`pred = extra`, not
-// the post-loop return guard that shares its condition:
+// that an unwrap post-filter is AND-folded onto the predicate below it,
+// never put in its place. [applyUnwrapPostFilters] hands each post-filter
+// to [rowLayers.filter], which folds it through [andFilter]; on a row
+// whose top node is already a Filter, the fold is
+// range_aggregation.go:`Predicate: &chplan.Binary{Op: chplan.OpAnd, Left: f.Predicate, Right: extra},`
 //
-//	if pred == nil {
-//	    pred = extra
-//	} else {
-//	    pred = &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: extra}
-//	}
-//
-// On entry, `pred` is initialised from the inner Filter's Predicate
-// (which carries the stream-selector matchers AND any time-window
-// clamp). The original `==` takes the AND-fold branch on the first
-// post-filter iteration when `pred` is already non-nil — preserving
-// the stream selector.
-//
-// A CONDITIONALS_NEGATION mutant flips `==` to `!=`:
-//   - With pred = P (non-nil from f.Predicate), `P != nil` is true →
-//     `pred = extra` REPLACES the accumulated predicate with just the
-//     post-filter. The stream selector ("app" = "api") and the
-//     time-window clamp are SILENTLY DROPPED from the emitted SQL.
+// That Filter's predicate carries the stream-selector matchers AND the
+// time-window clamp. A fold that kept only the post-filter would drop
+// the stream selector ("app" = "api") and the clamp from the emitted
+// SQL silently.
 //
 // The killer assertion: every component of the inner predicate MUST
 // surface in the emitted args:
@@ -645,9 +634,9 @@ func TestLowerRangeAggregationParserUnwrapIdentityReadsLabelsColumn(t *testing.T
 //   - the formatted Start time — time-window lower bound
 //
 // The existing [TestLowerRangeAggregationAppliesUnwrapPostFilters] only
-// checks "status" survives — a `!=` mutant would still emit "status"
-// (the post-filter replaces, not omits) but would drop the stream
-// selector and the time clamp. This stricter assertion catches that.
+// checks "status" survives — a replacing fold would still emit "status"
+// but would drop the stream selector and the time clamp. This stricter
+// assertion catches that.
 func TestLowerRangeAggregationUnwrapPostFilterPreservesStreamSelector(t *testing.T) {
 	t.Parallel()
 
@@ -689,15 +678,13 @@ func TestLowerRangeAggregationUnwrapPostFilterPreservesStreamSelector(t *testing
 	}
 
 	// LOAD-BEARING: stream selector survives the post-filter AND-fold.
-	// A `==` → `!=` mutant on the accumulator branch would replace
-	// `pred` with the post-filter on its first iteration, dropping the
-	// stream selector. Both "app" (the matcher's label key) and "api"
-	// (its value) MUST surface as bound args.
+	// A fold that replaced the predicate below with the post-filter
+	// would drop the stream selector. Both "app" (the matcher's label
+	// key) and "api" (its value) MUST surface as bound args.
 	for _, want := range []string{"app", "api"} {
 		if !argsContain(args, want) {
 			t.Errorf("emitted SQL args missing stream-selector token %q "+
-				"— the accumulator branch's `pred == nil` may have flipped to `!=`, "+
-				"replacing the stream predicate with just the post-filter\nargs=%v",
+				"— the post-filter fold replaced the stream predicate instead of AND-ing onto it\nargs=%v",
 				want, args)
 		}
 	}
@@ -706,13 +693,12 @@ func TestLowerRangeAggregationUnwrapPostFilterPreservesStreamSelector(t *testing
 	// filter AND-fold. The pre-scan clamp uses the EXTENDED
 	// `innerLc.Start = start - (Interval + Offset) = start - 5m`
 	// (rendered by [timeLiteralExpr]). The formatted timestamp MUST
-	// appear in the args; an accumulator-branch mutation that drops the
-	// clamp would erase it.
+	// appear in the args; a fold that drops the clamp would erase it.
 	extendedStart := start.Add(-(ra.Left.Interval + ra.Left.Offset))
 	wantExtendedStart := extendedStart.Format("2006-01-02 15:04:05.000000000")
 	if !argsContain(args, wantExtendedStart) {
 		t.Errorf("emitted SQL args missing pre-scan clamp lower-bound %q "+
-			"— an accumulator-branch mutation may have dropped the time-window predicate\nargs=%v",
+			"— the post-filter fold dropped the time-window predicate\nargs=%v",
 			wantExtendedStart, args)
 	}
 }

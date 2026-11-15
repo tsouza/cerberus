@@ -222,7 +222,7 @@ func rangeWindowIdentityExpr(t *testing.T, n chplan.Node) chplan.Expr {
 
 // The two tests below pin both mutant halves of the
 // [applyUnwrapPostFilters] hasMarks return
-// range_aggregation.go:`&chplan.Filter{Input: inner, Predicate: pred}, labelsExpr, len(marks) > 0, nil`.
+// range_aggregation.go:`return labelsExpr, len(marks) > 0, nil`.
 //
 // They call applyUnwrapPostFilters DIRECTLY rather than observing the
 // lowered plan's series identity, because the plan-level observation
