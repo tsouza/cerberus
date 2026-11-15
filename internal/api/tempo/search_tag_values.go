@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/telemetry"
 	traceql "github.com/tsouza/cerberus/internal/traceql/ast"
 
@@ -196,7 +197,8 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, route
 		// statement's own scan count. The auto-scope shape UNION-ALLs a span
 		// arm and a resource arm over the SAME spans table, and each arm is
 		// its own Distributed fan-out on a multi-data-shard deployment.
-		values, err = h.Client.QueryStrings(chclient.WithDataShardFanoutMultiplier(ctx, physicalScans), sqlStr, args...)
+		stmtCtx := engine.WithStatementShape(chclient.WithDataShardFanoutMultiplier(ctx, physicalScans), tagValuesStatementShape(h.Schema, resolved))
+		values, err = h.Client.QueryStrings(stmtCtx, sqlStr, args...)
 		if err != nil {
 			h.Logger.Error("cerberus tempo /search/tag/values CH query failed", "err", err, "tag", name)
 			writeError(w, tagsErrStatus(err), "", "", err)
@@ -719,6 +721,33 @@ func (s attrMapScope) String() string {
 		// of plausible (cerberus issue #3019).
 		return fmt.Sprintf("attrMapScope(%d)", int(s))
 	}
+}
+
+// distinctSpillHarmfulIntrinsics are the intrinsics whose tag-value
+// statement a DISTINCT spill was measured to harm (engine.StatementShape).
+var distinctSpillHarmfulIntrinsics = map[string]bool{"name": true, "kind": true, "status": true}
+
+// tagValuesStatementShape returns the engine.StatementShape of the tag-value
+// statement buildIntrinsicValuesSQL or buildAttributeValuesSQL builds for r:
+// a spill harms the DISTINCT of the name, kind and status intrinsic values
+// and of the values a span- or resource-scoped lookup reads off a
+// LowCardinality(String) materialized column. Every other tag-value
+// statement — a numeric materialized column, the plain-map and the
+// auto-scope lookups among them — reports no shape and keeps the DISTINCT
+// spill threshold.
+func tagValuesStatementShape(s schema.Traces, r resolvedTagName) engine.StatementShape {
+	harmful := false
+	switch {
+	case r.IsIntrinsic:
+		harmful = distinctSpillHarmfulIntrinsics[r.IntrinsicName]
+	case r.MapScope == attrMapScopeSpan:
+		_, materialized := s.MaterializedSpanAttributeColumns[r.Key]
+		harmful = materialized && !materializedColumnNumeric(r.Key)
+	case r.MapScope == attrMapScopeResource:
+		_, materialized := s.MaterializedResourceAttributeColumns[r.Key]
+		harmful = materialized && !materializedColumnNumeric(r.Key)
+	}
+	return engine.StatementShape{DistinctSpillHarmful: harmful}
 }
 
 // resolvedTagName carries the outcome of running the URL path segment

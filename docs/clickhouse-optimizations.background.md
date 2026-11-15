@@ -724,6 +724,73 @@ the 26.8 LTS. Flipping `AutoSelect` is tracked in
   `DISTINCT` feeds a `GLOBAL IN` set of the same rows, which the threshold
   does not bound.
 
+**Why seven Tempo tag-discovery shapes go without the threshold.** The set is
+the statements a spill was measured to harm, not a shape rule.
+`test/chserver`'s `TestDistinctSpill_WithheldShapesAnswer` drives each
+through the handler over 1M spans carrying unique 256-byte values on
+26.9.25.15. It takes the unspilled peak P as the largest of three runs under
+a 4 GiB cap, then forces the threshold to half a cap of 1.11 × P. Two runs
+of the test measured:
+
+| Statement                                         | Unspilled peak P | Threshold forced at 1.11 × P | As dispatched at 1.11 × P |
+| ------------------------------------------------- | ---------------- | ---------------------------- | ------------------------- |
+| intrinsic `name` values                           | 94.7–106.4 MiB   | code 241                     | answers every value       |
+| intrinsic `kind` values                           | 98.1–100.9 MiB   | code 241                     | answers every value       |
+| intrinsic `status` values                         | 94.5–102.9 MiB   | code 241                     | answers every value       |
+| materialized span `rpc.method` values             | 98.0–106.5 MiB   | code 241                     | answers every value       |
+| materialized resource `k8s.namespace.name` values | 99.9–107.7 MiB   | code 241                     | answers every value       |
+| span tag names                                    | 123.8–168.3 MiB  | code 241                     | answers every value       |
+| resource tag names                                | 123.8–125.3 MiB  | code 241                     | answers every value       |
+
+A single statement's peak varies from run to run (the span tag names by a
+third), which is why the test sizes its caps from the largest of several.
+An earlier replay of the captured handler SQL found the intrinsic `name`
+values, the materialized values and the span tag names harmed across a band
+from just above P to about twice it.
+
+All seven read one `LowCardinality(String)` column. Held in memory, that
+set keeps a fixed-size entry per value whatever the value's length; spilled,
+it writes the whole values out and reads them back to merge. That explains
+how a spill can need more memory than no spill, not which statements it
+harms: the Prom label-name and `__name__`-value statements and the Loki
+label statement also read `LowCardinality(String)` columns, and they
+measured the same with and without the threshold at every cap from 0.6 to
+1.9 times their unspilled peaks.
+
+**Why every other statement keeps it.** Spilling is not harmful as such.
+`TestMetadataSpill_TagValuesUnderCappedMemory` drives plain-map span tag
+values, 3M unique 96-byte `String` values, under a 512 MiB cap: without the
+threshold the statement aborts with code 241, needing about 742 MiB; with it,
+it spills five parts and completes at a peak under 405 MB. A rule that
+withheld the threshold from every discovery statement would lose that.
+
+The event and link tag names read their keys out of the nested
+`Events.Attributes` / `Links.Attributes` arrays. Over the same 1M unique
+256-byte keys (P about 397 and 392 MiB), each completed with the threshold
+forced at every cap tried, 1.05, 1.08, 1.11, 1.15, 1.2, 1.4 and 1.6 × P: 7
+of 7 for each. An earlier replay had seen the event tag names abort once
+with the threshold at a 496 MiB cap over a 451 MiB peak while completing at
+587, 722 and 857 MiB, and earlier runs went both ways at a single cap; that
+abort did not reproduce, so neither shape is withheld.
+
+The auto-scope tag values are harmed at 1M × 256 bytes, in a narrow band just
+above their unspilled peak of about 440 MiB, but their statement shape is
+the one the plain-map values share, where the threshold rescues. Withholding
+it by shape would lose that rescue, so they keep the threshold, and
+[#4125](https://github.com/tsouza/cerberus/issues/4125) tracks a fix for the
+auto-scope statement itself.
+
+The instrumentation-scope tag names take the same Map-key `DISTINCT` as the
+span and resource tag names, but the default traces DDL carries no
+instrumentation-scope attribute column, so that statement has not been
+measured, and it keeps the threshold like every unmeasured statement
+([#4146](https://github.com/tsouza/cerberus/issues/4146) measures it).
+
+A data-plane `DISTINCT` keeps it too: the Prom `unless on(__name__)` set
+operation, instant and range, measured the same with and without it, and
+the structural closures and set-operation subqueries above are what it
+exists to bound.
+
 ## Why `lazy_materialization` replaced the hand-rolled `late_mat.go` rewrite
 
 This replaces cerberus's own hand-rolled late-materialisation rewrite (formerly

@@ -124,8 +124,8 @@ func TestSentinels_DistinctSpillStampIsAsserted(t *testing.T) {
 
 // TestSentinels_MetadataSpillStampsAreAsserted pins what makes the
 // metadata-spill sentinel falsifiable and reachable: on a tag-name statement
-// the Tempo handler dispatches without the engine, whose DISTINCT runs over
-// attribute-map keys, it must require the GROUP BY, sort and JOIN spill
+// the Tempo handler dispatches without the engine, a shape whose DISTINCT a
+// spill harms, it must require the GROUP BY, sort and JOIN spill
 // thresholds, each at half the live memory cap, require the DISTINCT one
 // absent, and run on the 26.9 tier's opt-in lane, where both version-gated
 // thresholds are in force.

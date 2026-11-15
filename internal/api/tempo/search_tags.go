@@ -280,12 +280,14 @@ func (h *Handler) collectAttributeTagScopes(
 }
 
 // attributeTagScope binds one scope bucket to the CH projection that
-// enumerates its attribute keys. mapKeys reports that the projection's
-// DISTINCT runs over Map keys rather than JSON paths.
+// enumerates its attribute keys. distinctSpillHarmful reports that the
+// projection is a tag-name shape a DISTINCT spill harms
+// (engine.StatementShape): the span and resource keys read off a Map
+// column.
 type attributeTagScope struct {
-	name    string
-	keys    chsql.Frag
-	mapKeys bool
+	name                 string
+	keys                 chsql.Frag
+	distinctSpillHarmful bool
 }
 
 // attributeTagScopes returns the scope buckets whose keys come from a
@@ -301,22 +303,25 @@ type attributeTagScope struct {
 // and answers with whatever its storage reports, which is nothing.
 func attributeTagScopes(s schema.Traces, strategies chsql.SchemaStrategies) []attributeTagScope {
 	out := make([]attributeTagScope, 0, 5)
-	attrs := func(name, col string) {
+	// attrs adds a flat attribute-map bucket; harmful says the bucket is
+	// one whose Map-key DISTINCT a spill was measured to harm.
+	attrs := func(name, col string, harmful bool) {
 		out = append(out, attributeTagScope{
-			name: name, keys: chsql.DistinctAttrKeys(strategies.Attrs, col), mapKeys: chsql.AttrKeysFromMap(strategies.Attrs, col),
+			name: name, keys: chsql.DistinctAttrKeys(strategies.Attrs, col),
+			distinctSpillHarmful: harmful && chsql.AttrKeysFromMap(strategies.Attrs, col),
 		})
 	}
 	nested := func(name, col string) {
-		out = append(out, attributeTagScope{name: name, keys: distinctNestedMapKeysFrag(col), mapKeys: true})
+		out = append(out, attributeTagScope{name: name, keys: distinctNestedMapKeysFrag(col)})
 	}
 	if s.ResourceAttributesColumn != "" {
-		attrs(tagScopeResource, s.ResourceAttributesColumn)
+		attrs(tagScopeResource, s.ResourceAttributesColumn, true)
 	}
 	if s.ScopeAttributesColumn != "" {
-		attrs(tagScopeInstrumentation, s.ScopeAttributesColumn)
+		attrs(tagScopeInstrumentation, s.ScopeAttributesColumn, false)
 	}
 	if s.AttributesColumn != "" {
-		attrs(tagScopeSpan, s.AttributesColumn)
+		attrs(tagScopeSpan, s.AttributesColumn, true)
 	}
 	if s.EventsColumn != "" {
 		nested(tagScopeEvent, s.EventsColumn)
@@ -355,10 +360,6 @@ func (e *tagScopeError) Error() string { return "invalid scope: " + e.raw }
 // Keeping one query per scope (rather than one with arrayConcat) is
 // what lets the V2 partition skip the buckets the caller didn't ask
 // for — V1 unions the surviving slices in Go.
-//
-// A DISTINCT over Map keys holds a fixed-size entry per key and outgrows it
-// once spilled, so a Map-keyed bucket's statement is marked for the handler
-// client to withhold the DISTINCT spill threshold (engine.StatementShape).
 func (h *Handler) fetchTagKeys(
 	ctx context.Context,
 	src attributeTagScope,
@@ -369,7 +370,7 @@ func (h *Handler) fetchTagKeys(
 	sqlStr, args := buildSearchTagsSQL(h.Schema, src.keys, filter, start, end, strategies)
 	h.Logger.Debug("cerberus tempo /search/tags", "scope", src.name, "sql", sqlStr,
 		"args", telemetry.SanitizeArgsForLog(args))
-	ctx = engine.WithStatementShape(ctx, engine.StatementShape{DistinctOverMapKeys: src.mapKeys})
+	ctx = engine.WithStatementShape(ctx, engine.StatementShape{DistinctSpillHarmful: src.distinctSpillHarmful})
 	return h.Client.QueryStrings(ctx, sqlStr, args...)
 }
 

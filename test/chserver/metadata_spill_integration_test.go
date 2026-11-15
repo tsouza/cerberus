@@ -46,17 +46,6 @@ const (
 	settingExternalSort           = "max_bytes_before_external_sort"
 )
 
-// Tag-name probe shape. Every seeded span carries one span attribute whose key
-// is unique and tagNameKeyBytes long. The key column is LowCardinality, so the
-// tag-name statement's unspilled DISTINCT holds a fixed-size hash per key and
-// fits under tagNameQueryMemoryBytes, while a DISTINCT spilled at half that
-// cap writes every key out whole and aborts with MEMORY_LIMIT_EXCEEDED.
-const (
-	tagNameSpans            = 1_000_000
-	tagNameKeyBytes         = 256
-	tagNameQueryMemoryBytes = 160 << 20
-)
-
 // metadataSpillSmallProbeBudget bounds a probe whose seed is
 // metadataRolledBackSpans spans: only the request's outcome and the settings
 // it ran with are under test there, not memory.
@@ -127,63 +116,6 @@ func TestMetadataSpill_TagValuesUnderCappedMemory(t *testing.T) {
 		t.Logf("with the engine's thresholds: %d tag values, %s = %d, peak memory %d of %d bytes",
 			len(resp.TagValues), externalDistinctWritePart, parts, s.peakMemory(ctx, t, qid), metadataSpillQueryMemoryBytes)
 	}
-}
-
-// TestMetadataSpill_TagNamesKeepAnswering drives tag-name discovery, a
-// statement the Tempo handler dispatches without the engine and whose
-// DISTINCT runs over the LowCardinality attribute-map keys, through the
-// production handler under a capped max_memory_usage, with the engine's
-// settings rules resolved from "auto,distinct_spill":
-//
-//   - with the DISTINCT threshold forced onto the statement at cap/2 the
-//     request fails and the statement aborts with MEMORY_LIMIT_EXCEEDED (code
-//     241): the spilled DISTINCT holds every key whole;
-//   - as dispatched the request answers every seeded key, and the statement
-//     ran with the group_by/sort/join thresholds at cap/2 and without the
-//     DISTINCT one (system.query_log's Settings).
-func TestMetadataSpill_TagNamesKeepAnswering(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), metadataSpillProbeBudget)
-	defer cancel()
-	s := startServer(ctx, t, metadataSpillImage)
-	rules := resolveDistinctSpillRules(t, s)
-	seedTagNameProbe(ctx, t, s, tagNameSpans)
-	client := s.client(t, adminUser, adminPassword, chclient.Config{MaxQueryMemoryBytes: tagNameQueryMemoryBytes})
-	threshold := strconv.FormatInt(tagNameQueryMemoryBytes/2, 10)
-	params := func() url.Values { return url.Values{"scope": {"span"}} }
-
-	qid := fmt.Sprintf("tag-names-forced-%d", time.Now().UnixNano())
-	forced := chclient.WithQuerySetting(chclient.WithQueryID(ctx, qid), chopt.SettingMaxBytesBeforeExternalDistinct, tagNameQueryMemoryBytes/2)
-	code, body := runTempoProbe(forced, t, client, rules, "/api/search/tags", params())
-	if code == http.StatusOK {
-		t.Fatalf("with the DISTINCT threshold forced the probe answered 200; spilling no longer harms it under the %d-byte cap, so the run below proves nothing",
-			tagNameQueryMemoryBytes)
-	}
-	if got, msg := s.finishedException(ctx, t, qid); got != memoryLimitExceeded {
-		t.Fatalf("with the DISTINCT threshold forced the probe failed with HTTP %d (%.200s) and server code %d (%s); want code %d",
-			code, body, got, msg, memoryLimitExceeded)
-	} else {
-		t.Logf("with the DISTINCT threshold forced: HTTP %d, server code %d: %s", code, got, msg)
-	}
-
-	qid = fmt.Sprintf("tag-names-dispatched-%d", time.Now().UnixNano())
-	code, body = runTempoProbe(chclient.WithQueryID(ctx, qid), t, client, rules, "/api/search/tags", params())
-	if code != http.StatusOK {
-		t.Fatalf("as dispatched the probe answered HTTP %d: %.500s", code, body)
-	}
-	var resp tempo.SearchTagsResponse
-	decodeJSON(t, body, &resp)
-	if len(resp.TagNames) != tagNameSpans {
-		t.Errorf("as dispatched the probe returned %d tag names; want %d", len(resp.TagNames), tagNameSpans)
-	}
-	for _, name := range []string{settingExternalGroupBy, settingExternalSort, chopt.SettingMaxBytesBeforeExternalJoin} {
-		s.assertEffectiveSetting(ctx, t, qid, name, threshold)
-	}
-	if s.finishedCarries(ctx, t, qid, chopt.SettingMaxBytesBeforeExternalDistinct) {
-		t.Errorf("as dispatched the tag-name statement carries %s; want it withheld from a DISTINCT over map keys",
-			chopt.SettingMaxBytesBeforeExternalDistinct)
-	}
-	t.Logf("as dispatched: %d tag names, peak memory %d of %d bytes",
-		len(resp.TagNames), s.peakMemory(ctx, t, qid), tagNameQueryMemoryBytes)
 }
 
 // TestMetadataSpill_ExemplarsCarryThresholds drives a structural TraceQL
@@ -303,14 +235,6 @@ func seedMetadataSpillProbe(ctx context.Context, t *testing.T, s *server, spans 
 	seedSpans(ctx, t, s, spans, fmt.Sprintf("map('%s', leftPad(toString(number), %d, 'v'))", metadataSpillTag, metadataSpillValueBytes))
 }
 
-// seedTagNameProbe applies cerberus's traces DDL and writes spans spans
-// inside the probe window, span n carrying a single span attribute whose key
-// is n left-padded to tagNameKeyBytes.
-func seedTagNameProbe(ctx context.Context, t *testing.T, s *server, spans int) {
-	t.Helper()
-	seedSpans(ctx, t, s, spans, fmt.Sprintf("map(leftPad(toString(number), %d, 'k'), 'v')", tagNameKeyBytes))
-}
-
 // seedSpans applies cerberus's traces DDL and writes spans spans inside the
 // probe window, each server span its own trace with the SpanAttributes
 // spanAttributes renders over the row's number.
@@ -357,7 +281,16 @@ func runTempoProbe(
 	ctx context.Context, t *testing.T, client *chclient.Client, rules engine.SettingsRules, path string, params url.Values,
 ) (int, string) {
 	t.Helper()
-	th := tempo.New(client, schema.DefaultOTelTraces(), "chserver-metadata-spill", nil)
+	return runTempoProbeOn(ctx, t, client, rules, schema.DefaultOTelTraces(), path, params)
+}
+
+// runTempoProbeOn is runTempoProbe through a handler reading the traces
+// schema traces.
+func runTempoProbeOn(
+	ctx context.Context, t *testing.T, client *chclient.Client, rules engine.SettingsRules, traces schema.Traces, path string, params url.Values,
+) (int, string) {
+	t.Helper()
+	th := tempo.New(client, traces, "chserver-metadata-spill", nil)
 	th.Engine.SetSettings(rules)
 	mux := http.NewServeMux()
 	th.Mount(mux)
