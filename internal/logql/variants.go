@@ -80,13 +80,15 @@ func lowerMultiVariant(e *syntax.MultiVariantExpr, s schema.Logs, lc lowerCtx) (
 		return nil, fmt.Errorf("logql: variants(...) has no variant arms")
 	}
 
+	armCtx := lc
+	armCtx.variantArm = true
 	lowered := make([]chplan.Node, 0, len(variants))
 	for i, v := range variants {
 		ve, ok := v.(syntax.Expr)
 		if !ok {
 			return nil, fmt.Errorf("logql: variant %d is not an Expr (%T)", i, v)
 		}
-		inner, err := lower(ve, s, lc)
+		inner, err := lower(ve, s, armCtx)
 		if err != nil {
 			return nil, fmt.Errorf("logql: variant %d: %w", i, err)
 		}

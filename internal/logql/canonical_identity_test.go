@@ -77,7 +77,7 @@ func TestCanonicalIdentityExpr_Idempotent(t *testing.T) {
 // exclusive identity shapes [lowerRangeAggregation] can project — the
 // default per-stream identity, the `by (...)` / `without (...)`
 // group-key override, and the unwrap conversion-error bypass — plus the
-// unwrap-with-parser variant that materialises `_logql_merged_labels`.
+// unwrap-with-parser variant that reads the merged labels column.
 // Each must reach the RangeWindow GROUP BY canonicalised; the GROUP BY
 // itself must stay a bare alias reference so ClickHouse's "SELECT alias
 // shadows the FROM column" resolution order never bites.

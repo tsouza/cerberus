@@ -64,7 +64,7 @@ func TestDurationSecondsMatchesGo(t *testing.T) {
 		}
 	}
 
-	parse := newDurationParse(&chplan.ColumnRef{Name: "Raw"})
+	parse := newDurationParse(&chplan.ColumnRef{Name: "Raw"}, inlineDefine)
 	validSQL, validArgs := emitBytesExpr(t, parse.valid)
 	secondsSQL, secondsArgs := emitBytesExpr(t, parse.seconds)
 	args := append(append([]any{}, validArgs...), secondsArgs...)

@@ -61,32 +61,31 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 	// `[start, anchor_ts]` slice. Mirrors reference Loki / Prom, which
 	// have no equivalent pre-scan clamp. See lowerCtx.withMatcherWindowExtension.
 	innerLc := lc.withMatcherWindowExtension(e.Left.Interval + e.Left.Offset)
-	inner, labelsExpr, err := lowerLogRange(e.Left, s, innerLc)
+	rows, labelsExpr, err := lowerLogRange(e.Left, s, innerLc)
 	if err != nil {
 		return nil, err
 	}
 
-	inner, labelsExpr, unwrapHasErrorMarks, err := applyUnwrapRowSemantics(e, s, inner, labelsExpr)
+	labelsExpr, unwrapValue, unwrapHasErrorMarks, err := applyUnwrapRowSemantics(e, s, rows, labelsExpr)
 	if err != nil {
 		return nil, err
 	}
 
-	value, err := rangeValueExpr(e, s, labelsExpr)
+	value, err := rangeValueExpr(e, s, unwrapValue)
 	if err != nil {
 		return nil, err
 	}
 
-	// A parser-merged labels map has to become a plain column before
-	// either the unwrap identity or an outer-by key can read it; see
-	// [materialiseParserMergedLabels] for why. A nil mergedCol means no
-	// materialisation was called for and every read below stays on the
-	// raw columns.
-	innerNode, mergedCol := materialiseParserMergedLabels(inner, labelsExpr, s, lc, e.Left.Unwrap != nil)
+	// The parser-merged labels column, when the unwrap identity or an
+	// outer-by key reads the merged map; see [mergedLabelsColumn]. A nil
+	// mergedCol means no merged map is read and every read below stays on
+	// the raw columns.
+	mergedCol := mergedLabelsColumn(labelsExpr, s, lc, e.Left.Unwrap != nil)
 
 	// What the outer-by inflation resolves its keys against. It stays the
-	// raw column unless the merge was materialised, so an un-materialised
-	// `mapConcat(...)` — which carries lambdas CH would reject nested
-	// inside the inflation's own — can never reach the identity.
+	// raw column unless the merged map was defined as a column, so an
+	// inline `mapConcat(...)` — which carries lambdas CH would reject
+	// nested inside the inflation's own — can never reach the identity.
 	parsedLabels := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
 	if mergedCol != nil {
 		parsedLabels = mergedCol
@@ -100,16 +99,12 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 	// (keyed on the ResourceAttributesColumn alias) then collapses one
 	// row per (stream, detected_level) tuple — matching upstream Loki's
 	// matrix shape (16 of the 19 loki-compat failures came from cerberus
-	// collapsing 4 levels into 1 series here). `| unwrap` replaces all
-	// three of identity, value and error bypass at once.
+	// collapsing 4 levels into 1 series here). `| unwrap` replaces both
+	// the identity and the error bypass.
 	identityBase := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
-	valueExpr := value
 	var errorBypassLabels chplan.Expr
 	if e.Left.Unwrap != nil {
-		identityBase, valueExpr, errorBypassLabels, err = unwrapSeriesIdentity(e, s, labelsExpr, mergedCol, value, unwrapHasErrorMarks)
-		if err != nil {
-			return nil, err
-		}
+		identityBase, errorBypassLabels = unwrapSeriesIdentity(e, labelsExpr, mergedCol, unwrapHasErrorMarks)
 	}
 	// `| drop` / `| keep` narrow the series identity before it becomes a
 	// grouping key. On a log query the same projection runs post-fetch in
@@ -124,11 +119,10 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 	// mapFilter above has already run, so the stage's effect on it
 	// rides on the VALUE instead (issue #1607). A nil result means the
 	// pipeline removes the label on every row and the key is left out
-	// of the identity entirely. It is a factory rather than one value
-	// because several positions below are simultaneously live (the two
-	// arms of the error bypass, one entry per `by (...)` label), and a
-	// plan node must not be aliased into two of them.
-	newLevelValue := func() chplan.Expr { return detectedLevelIdentityExpr(s, e.Left.Left) }
+	// of the identity entirely. The value is a column of the row stage
+	// ([detectedLevelColumn]); several positions below read it at once
+	// (the two arms of the error bypass, one entry per `by (...)` label).
+	newLevelValue := detectedLevelColumn(rows, s, e.Left.Left)
 
 	// The grouping key is computed AGAINST identityBase — the full
 	// series identity (parser-merged labels minus the unwrap target
@@ -165,13 +159,18 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 	projections := []chplan.Projection{
 		{Expr: canonicalIdentityExpr(identityExpr), Alias: s.ResourceAttributesColumn},
 		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
-		{Expr: valueExpr, Alias: rangeAggSynthValueColumn},
+		{Expr: value, Alias: rangeAggSynthValueColumn},
 	}
 	projected := &chplan.Project{
 		Roles:       logRoles(s),
-		Input:       innerNode,
+		Input:       rows.node,
 		Projections: projections,
 	}
+	var carry []string
+	if lc.variantArm {
+		carry = []string{s.BodyColumn}
+	}
+	rows.seal(projected, carry...)
 
 	chFunc, err := rangeFuncName(e.Operation)
 	if err != nil {
@@ -302,24 +301,25 @@ func canonicalIdentityExpr(identity chplan.Expr) chplan.Expr {
 // row presence, so the labels/marks outputs are deliberately unused.
 func lowerAbsentOverTime(e *syntax.RangeAggregationExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	innerLc := lc.withMatcherWindowExtension(e.Left.Interval + e.Left.Offset)
-	inner, labelsExpr, err := lowerLogRange(e.Left, s, innerLc)
+	rows, labelsExpr, err := lowerLogRange(e.Left, s, innerLc)
 	if err != nil {
 		return nil, err
 	}
-	inner, _, _, err = applyUnwrapRowSemantics(e, s, inner, labelsExpr)
-	if err != nil {
+	if _, _, _, err = applyUnwrapRowSemantics(e, s, rows, labelsExpr); err != nil {
 		return nil, err
 	}
 
 	const tsAlias = sampleTimeUnixCol
-	a := &chplan.AbsentOverTime{
-		Input: &chplan.Project{
-			Roles: logRoles(s),
-			Input: inner,
-			Projections: []chplan.Projection{
-				{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: tsAlias},
-			},
+	timestamps := &chplan.Project{
+		Roles: logRoles(s),
+		Input: rows.node,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: tsAlias},
 		},
+	}
+	rows.seal(timestamps)
+	a := &chplan.AbsentOverTime{
+		Input:            timestamps,
 		SynthLabels:      absentSynthLabels(e.Left.Left),
 		Range:            e.Left.Interval,
 		Offset:           e.Left.Offset,
@@ -376,24 +376,30 @@ func absentSynthLabels(sel syntax.LogSelectorExpr) []chplan.SynthLabel {
 }
 
 // lowerLogRange unwraps the LogRangeExpr's inner selector (either bare
-// matchers or a pipeline) and returns the resulting Node plus the final
-// labelsExpr the pipeline produced. Range aggregations thread this
+// matchers or a pipeline) into a materialising per-row stage
+// ([rowLayers]) and returns it plus the final labelsExpr the pipeline
+// produced. Range aggregations thread this
 // labelsExpr to unwrap's value extraction and any unwrap-post filters
 // so they resolve against the same map that ordinary label filters do.
-func lowerLogRange(lr *syntax.LogRangeExpr, s schema.Logs, lc lowerCtx) (chplan.Node, chplan.Expr, error) {
+func lowerLogRange(lr *syntax.LogRangeExpr, s schema.Logs, lc lowerCtx) (*rowLayers, chplan.Expr, error) {
 	switch left := lr.Left.(type) {
 	case *syntax.MatchersExpr:
 		// No pipeline — labels-map is the ResourceAttributes column.
-		return lowerMatchers(left, s, lc), &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, nil
+		return newRowLayers(lowerMatchers(left, s, lc), true), &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, nil
 	case *syntax.PipelineExpr:
-		return lowerPipelineWithLabels(left, s, lc)
+		rows := newRowLayers(lowerMatchers(left.Left, s, lc), true)
+		labelsExpr, err := lowerPipelineStages(left, s, lc, rows)
+		if err != nil {
+			return nil, nil, err
+		}
+		return rows, labelsExpr, nil
 	}
 	return nil, nil, fmt.Errorf("logql: range-aggregation inner is %T (not MatchersExpr or PipelineExpr)", lr.Left)
 }
 
 // applyUnwrapRowSemantics folds reference Loki's per-row unwrap
 // contract (streamLabelSampleExtractor.Process,
-// pkg/logql/log/metrics_extraction.go) onto the lowered inner node and
+// pkg/logql/log/metrics_extraction.go) onto the per-row stage and the
 // labels expression:
 //
 //  1. an EMPTY (or absent — Get on a CH Map yields ”) unwrap source
@@ -413,78 +419,85 @@ func lowerLogRange(lr *syntax.LogRangeExpr, s schema.Logs, lc lowerCtx) (chplan.
 // through labelFiltererLower, so numeric and bytes post-filters
 // keep-and-mark per [numericLabelFilterExpr] / [bytesLabelFilterExpr]
 // in the same way.
-// hasErrorMarks reports whether the returned labels expression carries
-// any conditional `__error__` stamp — the identity construction uses
-// it to gate the reference engine's error-series grouping bypass.
+//
+// It returns the labels map with every mark stamped, the unwrap source
+// column the sample value converts, and hasErrorMarks: whether the
+// returned labels expression carries any conditional `__error__` stamp —
+// the identity construction uses it to gate the reference engine's
+// error-series grouping bypass.
 //
 // No-op (and mark-free) for range aggregations without an unwrap
 // clause.
-func applyUnwrapRowSemantics(e *syntax.RangeAggregationExpr, s schema.Logs, inner chplan.Node, labelsExpr chplan.Expr) (chplan.Node, chplan.Expr, bool, error) {
+func applyUnwrapRowSemantics(e *syntax.RangeAggregationExpr, s schema.Logs, rows *rowLayers, labelsExpr chplan.Expr) (labels, value chplan.Expr, hasErrorMarks bool, err error) {
 	if e.Left.Unwrap == nil {
-		return inner, labelsExpr, false, nil
+		return labelsExpr, nil, false, nil
 	}
-	hasErrorMarks := false
-	unwrapAccess := structuredOrStreamLookupOnMap(s, labelsExpr, e.Left.Unwrap.Identifier)
-	// Every conversion reference Loki performs at this stage can reject
-	// a value, and all three reject it the same way — `convFn` returns
-	// `(0, err)` and Process stamps `__error__="SampleExtractionErr"` +
-	// `__error_details__` on the sample's labels
-	// (pkg/logql/log/metrics_extraction.go's streamLabelSampleExtractor.Process).
-	// The three conversions are convertFloat (`strconv.ParseFloat`),
-	// convertDuration (`time.ParseDuration`) and convertBytes
-	// (`humanize.ParseBytes`); cerberus models each with the parse
-	// helper of the same name.
-	var parseValid, parseDetails chplan.Expr
-	switch e.Left.Unwrap.Operation {
-	case "":
-		// Bare `| unwrap x`: convertFloat. This arm was missing, so an
-		// unparseable value became a silent 0 in the NORMAL series and
-		// the error series reference Loki splits off never appeared
-		// (cerberus issue #3183).
-		parse := newNumericParse(unwrapAccess)
-		parseValid, parseDetails = parse.valid, parse.details
-	case syntax.OpConvDuration, syntax.OpConvDurationSeconds:
-		parse := newDurationParse(unwrapAccess)
-		parseValid, parseDetails = parse.valid, parse.details
-	case syntax.OpConvBytes:
-		// `| unwrap bytes(x)`: convertBytes. Missing for the same
-		// reason, and doubly wrong before — see [unwrapValueExpr].
-		parse := newBytesParse(unwrapAccess)
-		parseValid, parseDetails = parse.valid, parse.details
+	if e.Left.Unwrap.Identifier == "" {
+		return nil, nil, false, fmt.Errorf("logql: `| unwrap` has empty identifier")
 	}
-	if parseValid != nil {
-		labelsExpr = wrapLabelsWithMarks(labelsExpr, []labelFilterMark{{
-			cond: &chplan.Binary{
-				Op: chplan.OpAnd,
-				Left: &chplan.Binary{
-					Op:    chplan.OpNe,
-					Left:  unwrapAccess,
-					Right: &chplan.LitString{V: ""},
-				},
-				Right: notExpr(parseValid),
-			},
-			kind:    errSampleExtractionKind,
-			details: parseDetails,
-		}})
-		hasErrorMarks = true
-	}
-	inner = andFilter(inner, &chplan.Binary{
+	// `| unwrap foo` pulls the value out of the live labels map for the
+	// current point in the pipeline. After a parser stage the labels
+	// map may carry the value under a dotted OTel-canonical form (e.g.
+	// `cerberus.duration_ms` rather than `cerberus_duration_ms`), so
+	// the dotted-fallback chain hits either shape.
+	//
+	// Resolution goes through [structuredOrStreamLookupOnMap] — the SAME
+	// helper the pipeline label-filter and grouping sites use — so an
+	// unwrap target that lives in structured metadata (LogAttributes)
+	// resolves exactly where `| foo != ""` and `sum by (foo)` resolve it.
+	// Reading the bare labels map instead would see "" for every
+	// structured-metadata-only key, and rule 1 below then drops every
+	// sample before conversion, so the whole matrix comes back empty
+	// (issue #1887).
+	//
+	// The source is read by the emptiness filter, by the conversion that
+	// produces the sample value and by the conversion-error mark, so it
+	// is defined once as a column of the row and every one of them reads
+	// that column. It is read before the mark is stamped, as reference
+	// Loki reads it: the extractor takes the label value first and
+	// stamps `__error__` only when converting it fails.
+	source := rows.define(unwrapSourceAlias, structuredOrStreamLookupOnMap(s, labelsExpr, e.Left.Unwrap.Identifier))
+	rows.filter(&chplan.Binary{
 		Op:    chplan.OpNe,
-		Left:  unwrapAccess,
+		Left:  source,
 		Right: &chplan.LitString{V: ""},
 	})
+	value, valid, details, err := unwrapConversion(e.Left.Unwrap, source, rows.definer(unwrapAliasPrefix))
+	if err != nil {
+		return nil, nil, false, err
+	}
+	// The layer sits above the emptiness filter, so every row it stamps
+	// carries a non-empty source and the mark's condition is the
+	// conversion's rejection alone.
+	labelsExpr = rows.define(unwrapLabelsAlias, wrapLabelsWithMarks(labelsExpr, []labelFilterMark{{
+		cond:    notExpr(valid),
+		kind:    errSampleExtractionKind,
+		details: details,
+	}}))
+	hasErrorMarks = true
 
 	if len(e.Left.Unwrap.PostFilters) > 0 {
-		filtered, postLabels, postMarks, err := applyUnwrapPostFilters(inner, e.Left.Unwrap.PostFilters, s, labelsExpr)
+		postLabels, postMarks, err := applyUnwrapPostFilters(rows, e.Left.Unwrap.PostFilters, s, labelsExpr)
 		if err != nil {
 			return nil, nil, false, err
 		}
-		inner = filtered
 		labelsExpr = postLabels
 		hasErrorMarks = hasErrorMarks || postMarks
 	}
-	return inner, labelsExpr, hasErrorMarks, nil
+	return labelsExpr, value, hasErrorMarks, nil
 }
+
+// Column aliases the unwrap row stage defines on its [rowLayers]: the
+// unwrap source value, the labels map once the conversion-error mark is
+// stamped on it, and the labels map once the post-filters' own marks are.
+// The conversion's own intermediate values take unwrapAliasPrefix plus
+// their role (see [defineFunc]).
+const (
+	unwrapAliasPrefix     = "_logql_unwrap_"
+	unwrapSourceAlias     = "_logql_unwrap_source"
+	unwrapLabelsAlias     = "_logql_unwrap_labels"
+	unwrapPostLabelsAlias = "_logql_unwrap_post_labels"
+)
 
 // errorBypassIdentityExpr wraps a series-identity expression with the
 // error-sample bypass, mirroring reference Loki's
@@ -514,8 +527,8 @@ func errorBypassIdentityExpr(s schema.Logs, fullLabels, identity, levelValue chp
 	}
 }
 
-// applyUnwrapPostFilters AND-folds the unwrap clause's post-filters
-// onto `inner`'s predicate. Post-filters are label filters parsed
+// applyUnwrapPostFilters filters the unwrap clause's post-filters onto
+// rows. Post-filters are label filters parsed
 // between the `unwrap` clause and the `[range]` close-bracket — e.g.
 // `unwrap duration | duration > 10s`. They share the LabelFilterer
 // type with regular `| label="v"` filters.
@@ -526,30 +539,18 @@ func errorBypassIdentityExpr(s schema.Logs, fullLabels, identity, levelValue chp
 // postFilter stage runs against the extractor's LabelsBuilder, so its
 // error stamps surface on the sample's labels exactly like pipeline-
 // stage filters). hasMarks reports whether any mark was folded in.
-func applyUnwrapPostFilters(inner chplan.Node, filters []syntax.LabelFilterer, s schema.Logs, labelsExpr chplan.Expr) (chplan.Node, chplan.Expr, bool, error) {
-	pred := chplan.Expr(nil)
-	if f, ok := inner.(*chplan.Filter); ok {
-		pred = f.Predicate
-		inner = f.Input
-	}
+func applyUnwrapPostFilters(rows *rowLayers, filters []syntax.LabelFilterer, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, bool, error) {
 	var marks []labelFilterMark
 	for _, lf := range filters {
 		extra, lfMarks, err := labelFiltererLower(lf, s, labelsExpr)
 		if err != nil {
-			return nil, nil, false, err
+			return nil, false, err
 		}
 		marks = append(marks, lfMarks...)
-		if pred == nil {
-			pred = extra
-		} else {
-			pred = &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: extra}
-		}
+		rows.filter(extra)
 	}
-	labelsExpr = wrapLabelsWithMarks(labelsExpr, marks)
-	if pred == nil {
-		return inner, labelsExpr, len(marks) > 0, nil
-	}
-	return &chplan.Filter{Input: inner, Predicate: pred}, labelsExpr, len(marks) > 0, nil
+	labelsExpr = rows.define(unwrapPostLabelsAlias, wrapLabelsWithMarks(labelsExpr, marks))
+	return labelsExpr, len(marks) > 0, nil
 }
 
 // andFilter AND-folds one predicate onto `inner`, reusing an existing
@@ -652,8 +653,9 @@ func matrixBucketColumn(plan chplan.Node) string {
 // rangeValueExpr returns the per-row Value the RangeWindow aggregates.
 //
 // Line-counting ops use constant 1; byte-counting ops use length(Body).
-// Unwrap-based ops use the unwrap clause's identifier resolved against
-// the live labelsExpr — bare unwrap reads the string and casts to
+// Unwrap-based ops use unwrapValue, the conversion of the unwrap target
+// [applyUnwrapRowSemantics] builds ([unwrapConversion]) — bare unwrap
+// reads the string and casts to
 // Float64, `duration` / `duration_seconds` parses Loki's Go-duration
 // shape via the regex-gated [newDurationParse] expression (Float64
 // seconds; 0 on parse error, matching reference convertDuration), and
@@ -669,7 +671,7 @@ func matrixBucketColumn(plan chplan.Node) string {
 // loses precision at ≥ 2^53). The cast keeps the units aligned with
 // the line-counter path (`LitInt{V:1}` → Int64) where arithmetic
 // remains exact across the [start, end] window.
-func rangeValueExpr(e *syntax.RangeAggregationExpr, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, error) {
+func rangeValueExpr(e *syntax.RangeAggregationExpr, s schema.Logs, unwrapValue chplan.Expr) (chplan.Expr, error) {
 	op := e.Operation
 	// Byte counters refuse unwrap (LogQL parser rejects it already, but
 	// guard at lowering to surface helpful errors if a future parser
@@ -685,7 +687,7 @@ func rangeValueExpr(e *syntax.RangeAggregationExpr, s schema.Logs, labelsExpr ch
 		// unwrapped value, and the windowed-array math sums it and
 		// divides by range_seconds (the `log_rate` chsql function).
 		// Same shape as `sum_over_time` etc.
-		return unwrapValueExpr(e.Left.Unwrap, s, labelsExpr)
+		return unwrapValue, nil
 	}
 
 	switch op {
@@ -713,68 +715,59 @@ func rangeValueExpr(e *syntax.RangeAggregationExpr, s schema.Logs, labelsExpr ch
 	return nil, fmt.Errorf("logql: range op %s is not yet supported", op)
 }
 
-// unwrapValueExpr builds the per-row Float64 value expression from an
-// UnwrapExpr against labelsExpr (the parser-augmented labels map).
+// unwrapConversion converts source, the unwrap target's value, the way
+// the UnwrapExpr's conversion does. It returns the per-row Float64
+// sample value, the predicate that the conversion accepts source, and
+// the Go-shaped error message for a source it rejects.
 //
 // LogQL syntax:
 //
-//	unwrap foo                       → toFloat64OrZero(labelsExpr['foo'])
+//	unwrap foo                       → toFloat64OrZero(source)
 //	unwrap duration(foo)             → regex-gated Go-duration parse (Float64 seconds, 0 on parse error)
 //	unwrap duration_seconds(foo)     → same as duration(foo)
 //	unwrap bytes(foo)                → regex-gated humanize.ParseBytes replica (Float64 bytes, 0 on parse error)
 //
-// The duration conversions go through [newDurationParse] — Go's exact
-// time.ParseDuration unit set incl. `µs`/`μs`, with unparseable values
-// yielding 0 instead of a query-aborting CH exception (reference
-// semantics: convertDuration returns (0, err) and the sample is kept
-// with `__error__="SampleExtractionErr"`). The bytes conversion goes
-// through [newBytesParse], which replicates `humanize.ParseBytes` under
-// the same contract. All return Float64 so the downstream
-// windowed-array math stays in Float64 throughout.
-func unwrapValueExpr(u *syntax.UnwrapExpr, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, error) {
-	if u.Identifier == "" {
-		return nil, fmt.Errorf("logql: `| unwrap` has empty identifier")
-	}
-	// `| unwrap foo` pulls the value out of the live labels map for the
-	// current point in the pipeline. After a parser stage the labels
-	// map may carry the value under a dotted OTel-canonical form (e.g.
-	// `cerberus.duration_ms` rather than `cerberus_duration_ms`), so
-	// the dotted-fallback chain hits either shape.
-	//
-	// Resolution goes through [structuredOrStreamLookupOnMap] — the SAME
-	// helper the pipeline label-filter and grouping sites use — so an
-	// unwrap target that lives in structured metadata (LogAttributes)
-	// resolves exactly where `| foo != ""` and `sum by (foo)` resolve it.
-	// Reading the bare labels map instead would see "" for every
-	// structured-metadata-only key, and rule 1 below then drops every
-	// sample before conversion, so the whole matrix comes back empty
-	// (issue #1887).
-	access := structuredOrStreamLookupOnMap(s, labelsExpr, u.Identifier)
+// All three conversions reference Loki performs at this stage can
+// reject a value, and all three reject it the same way — `convFn`
+// returns `(0, err)` and Process stamps `__error__="SampleExtractionErr"`
+// + `__error_details__` on the sample's labels
+// (pkg/logql/log/metrics_extraction.go's streamLabelSampleExtractor.Process).
+// They are convertFloat (`strconv.ParseFloat`), convertDuration
+// (`time.ParseDuration`) and convertBytes (`humanize.ParseBytes`);
+// cerberus models each with the parse helper of the same name, so an
+// unparseable value yields 0 instead of a query-aborting CH exception.
+// All return Float64 so the downstream windowed-array math stays in
+// Float64 throughout.
+//
+// define names the values a conversion reads more than once; see
+// [defineFunc].
+func unwrapConversion(u *syntax.UnwrapExpr, source chplan.Expr, define defineFunc) (value, valid, details chplan.Expr, err error) {
 	switch u.Operation {
 	case "":
-		return &chplan.FuncCall{
+		// Bare `| unwrap x`: convertFloat. Its error arm was missing, so
+		// an unparseable value became a silent 0 in the NORMAL series and
+		// the error series reference Loki splits off never appeared
+		// (cerberus issue #3183).
+		parse := newNumericParse(source)
+		value = &chplan.FuncCall{
 			Fn:   chplan.FnToFloat64OrZero,
-			Args: []chplan.Expr{access},
-		}, nil
+			Args: []chplan.Expr{source},
+		}
+		return value, parse.valid, parse.details, nil
 	case syntax.OpConvDuration, syntax.OpConvDurationSeconds:
 		// Regex-gated Go-duration parse (see internal/logql/duration.go)
 		// rather than a bare `parseTimeDelta(...)`: CH's parseTimeDelta
 		// throws (code 36) on the first unparseable value — including
 		// Go-valid `291.792µs` on CH 24.8 — aborting the whole query.
-		// Reference Loki's convertDuration
-		// (pkg/logql/log/metrics_extraction.go) returns 0 for the
-		// sample value and stamps `__error__="SampleExtractionErr"` on
-		// the sample's labels instead; the seconds expression carries
-		// the value half of that contract (0 on parse failure), and
-		// [lowerRangeAggregation] folds the error stamp into the
-		// labels map.
-		return newDurationParse(access).seconds, nil
+		// The seconds expression carries the value half of reference
+		// convertDuration's contract (0 on parse failure).
+		parse := newDurationParse(source, define)
+		return parse.seconds, parse.valid, parse.details, nil
 	case syntax.OpConvBytes:
 		// Gated [newBytesParse] shape, for the same reason the duration
-		// arm above is gated: reference Loki's convertBytes returns
-		// `(0, err)` for a value humanize.ParseBytes rejects and the
-		// sample is KEPT with value 0 plus
-		// `__error__="SampleExtractionErr"`. A bare
+		// arm is gated: reference Loki's convertBytes returns `(0, err)`
+		// for a value humanize.ParseBytes rejects and the sample is KEPT
+		// with value 0 plus `__error__="SampleExtractionErr"`. A bare
 		// `parseReadableSize(...)` instead THREW on four whole shapes
 		// humanize accepts — a bare byte count with no unit (`1024`,
 		// i.e. an ordinary logfmt `size=1024`), `5k`, `5 ki` and
@@ -787,13 +780,15 @@ func unwrapValueExpr(u *syntax.UnwrapExpr, s schema.Logs, labelsExpr chplan.Expr
 		// counter_delta arrayMap's `if(c < p, c, c - p)` — resolves one
 		// common type, which it could not do against
 		// `parseReadableSize`'s UInt64.
-		parse := newBytesParse(access)
-		return &chplan.FuncCall{
+		parse := newBytesParse(source)
+		valid = define("valid", parse.valid)
+		value = &chplan.FuncCall{
 			Fn:   chplan.FnIf,
-			Args: []chplan.Expr{parse.valid, parse.value, &chplan.LitFloat{V: 0}},
-		}, nil
+			Args: []chplan.Expr{valid, parse.value, &chplan.LitFloat{V: 0}},
+		}
+		return value, valid, parse.details, nil
 	}
-	return nil, fmt.Errorf("logql: unsupported unwrap conversion %q", u.Operation)
+	return nil, nil, nil, fmt.Errorf("logql: unsupported unwrap conversion %q", u.Operation)
 }
 
 // hasParserMergedLabels reports whether labelsExpr carries a parser-stage
@@ -818,22 +813,6 @@ func hasParserMergedLabels(labelsExpr chplan.Expr, s schema.Logs) bool {
 		return true
 	}
 	return col.Name != s.ResourceAttributesColumn
-}
-
-// rangeValueExprFromMerged is the materialised-column variant of
-// [rangeValueExpr]: the unwrap value extraction reads from the
-// pre-materialised `_logql_merged_labels` column instead of re-evaluating
-// the full parser-merge expression. Used in the two-stage Project path
-// when [hasParserMergedLabels] returns true.
-//
-// Mirrors [unwrapValueExpr] but binds the merged-labels reference to a
-// column ref. Byte / line counters and the no-unwrap branches go
-// unchanged — they don't reference labelsExpr.
-func rangeValueExprFromMerged(e *syntax.RangeAggregationExpr, s schema.Logs, mergedCol chplan.Expr) (chplan.Expr, error) {
-	if e.Left.Unwrap == nil {
-		return nil, fmt.Errorf("logql: rangeValueExprFromMerged called without `| unwrap`")
-	}
-	return unwrapValueExpr(e.Left.Unwrap, s, mergedCol)
 }
 
 // rangeAggregationGroupBy returns the chplan group-key expressions for
@@ -945,93 +924,40 @@ func rangeFuncName(op string) (string, error) {
 	return "", fmt.Errorf("logql: range op %s is not yet supported", op)
 }
 
-// materialiseParserMergedLabels materialises the pipeline's
-// parser-merged labels map into an intermediate Project aliased
-// `_logql_merged_labels`, returning that Project together with a
-// reference to the materialised column. It returns `(inner, nil)` when
-// no materialisation is called for, in which case callers keep reading
-// the raw columns exactly as before.
+// mergedLabelsColumn returns the pipeline's parser-merged labels column
+// when the range aggregation reads that map as a whole, or nil when
+// nothing does and every read stays on the raw columns.
 //
-// The materialisation exists because ClickHouse rejects a
+// The row stage defines every labels map a pipeline stage produces as a
+// column of its own ([rowLayers]), so labelsExpr is already a plain
+// column reference. That matters here because ClickHouse rejects a
 // `mapFilter((k, v) -> NOT (k IN [...]), mapConcat(RA, mapApply(...)))`
 // composition with `Recursive lambda ... (UNSUPPORTED_METHOD)`: the
 // inner `mapApply` lambda references the outer ResourceAttributes
 // column, and CH disallows a lambda-inside-lambda-source when the inner
-// lambda escapes its scope. Materialising first leaves every downstream
+// lambda escapes its scope. Reading a column leaves every downstream
 // wrap applying its own lambda to a plain column reference.
 //
-// Two shapes need it, which is why they share one projection.
-// `| unwrap` strips the unwrap target out of the merged identity and
-// reads its per-row value from the same map. An enclosing `by (...)`
-// that names a parser-extracted label needs the map to resolve that key
-// at all — neither raw column carries it — and without this
+// Two shapes read the map as a whole. `| unwrap` strips the unwrap
+// target out of the merged identity. An enclosing `by (...)` that names
+// a parser-extracted label needs the map to resolve that key at all —
+// neither raw column carries it — and without it
 // `sum by (category) (count_over_time({...} | json [5m]))` collapses
 // every row into a single `{category:""}` series (issue #1652, whose
 // `| unpack` report is one instance of the class).
-func materialiseParserMergedLabels(
-	inner chplan.Node,
-	labelsExpr chplan.Expr,
-	s schema.Logs,
-	lc lowerCtx,
-	hasUnwrap bool,
-) (chplan.Node, *chplan.ColumnRef) {
+func mergedLabelsColumn(labelsExpr chplan.Expr, s schema.Logs, lc lowerCtx, hasUnwrap bool) chplan.Expr {
 	outerByNeedsParsedLabels := len(structuredOuterByKeys(lc.OuterByLabels, s)) > 0
 	if !hasUnwrap && !outerByNeedsParsedLabels {
-		return inner, nil
+		return nil
 	}
 	if !hasParserMergedLabels(labelsExpr, s) {
-		return inner, nil
+		return nil
 	}
-	const mergedAlias = "_logql_merged_labels"
-	projections := []chplan.Projection{
-		{Expr: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}},
-		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
-		{Expr: &chplan.ColumnRef{Name: s.BodyColumn}},
-		{Expr: &chplan.ColumnRef{Name: s.SeverityColumn}},
-		{Expr: labelsExpr, Alias: mergedAlias},
-	}
-	// The detected_level source reads the numeric severity column behind
-	// SeverityText (detectedLevelSourceExpr), so the identity wrap
-	// downstream needs it carried through exactly as SeverityText is.
-	if s.SeverityNumberColumn != "" {
-		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: s.SeverityNumberColumn}})
-	}
-	// Carry the structured-metadata (LogAttributes) column through the
-	// materialise step so the downstream identity wrap
-	// ([withDetectedLevelAndColumns]) can still coalesce a non-top-level
-	// outer-by key (e.g. `by (namespace)`) from it — without this the
-	// outer identity references `LogAttributes`, which this Project would
-	// have dropped, and CH aborts with `Unknown expression or function
-	// identifier 'LogAttributes'` (task #59).
-	if s.AttributesColumn != "" {
-		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}})
-	}
-	// Same reasoning for the top-level scalar columns an outer
-	// `by (TraceId, ...)` names: the identity wrap reads them straight off
-	// the scan, and a Project that did not carry them through leaves CH
-	// resolving an identifier that no longer exists. Only the ones not
-	// already projected need appending, and which those are is read back
-	// off the list built above rather than restated as a set of column
-	// names — a restatement drifts the moment a projection is added here,
-	// and duplicating a column in a Project is a CH-level ambiguity.
-	projected := make(map[string]bool, len(projections))
-	for _, p := range projections {
-		if ref, ok := p.Expr.(*chplan.ColumnRef); ok && p.Alias == "" {
-			projected[ref.Name] = true
-		}
-	}
-	for _, col := range topLevelColumnsReferencedBy(lc.OuterByLabels, s) {
-		if projected[col] {
-			continue
-		}
-		projected[col] = true
-		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: col}})
-	}
-	return &chplan.Project{Roles: logRoles(s), Input: inner, Projections: projections}, &chplan.ColumnRef{Name: mergedAlias}
+	return labelsExpr
 }
 
-// unwrapSeriesIdentity derives the `| unwrap` shape's series identity,
-// its per-row value expression and its error-bypass labels map.
+// unwrapSeriesIdentity derives the `| unwrap` shape's series identity
+// and its error-bypass labels map.
 //
 // Loki's `LabelExtractorWithStages` treats an unwrap with no explicit
 // grouping as `without (unwrapIdent)`, so the identity is every
@@ -1043,30 +969,23 @@ func materialiseParserMergedLabels(
 // whose seeded payload carries a varying `request_id` / `status` /
 // `user_agent` per minute.
 //
-// `mergedCol` is the materialised parser-merged labels column, or nil
-// when the pipeline has no parser stage to merge. In the nil case the
-// unwrap target is a stream label that already lives in
-// ResourceAttributes — CH strips it from a plain column reference
-// natively — the caller's own value expression still stands, and there
-// is no error bypass to build.
+// `mergedCol` is the parser-merged labels column, or nil when the
+// pipeline has no parser stage to merge. In the nil case the unwrap
+// target is a stream label that already lives in ResourceAttributes —
+// CH strips it from a plain column reference natively — and there is no
+// error bypass to build.
 func unwrapSeriesIdentity(
 	e *syntax.RangeAggregationExpr,
-	s schema.Logs,
 	labelsExpr chplan.Expr,
-	mergedCol *chplan.ColumnRef,
-	defaultValue chplan.Expr,
+	mergedCol chplan.Expr,
 	unwrapHasErrorMarks bool,
-) (identity, value, errorBypass chplan.Expr, err error) {
+) (identity, errorBypass chplan.Expr) {
 	stripped := []string{e.Left.Unwrap.Identifier}
 	if mergedCol == nil {
-		return &chplan.MapWithoutKeys{Map: labelsExpr, Keys: stripped}, defaultValue, nil, nil
-	}
-	value, err = rangeValueExprFromMerged(e, s, mergedCol)
-	if err != nil {
-		return nil, nil, nil, err
+		return &chplan.MapWithoutKeys{Map: labelsExpr, Keys: stripped}, nil
 	}
 	if unwrapHasErrorMarks {
 		errorBypass = mergedCol
 	}
-	return &chplan.MapWithoutKeys{Map: mergedCol, Keys: stripped}, value, errorBypass, nil
+	return &chplan.MapWithoutKeys{Map: mergedCol, Keys: stripped}, errorBypass
 }

@@ -2,7 +2,6 @@ package logql
 
 import (
 	"context"
-	"reflect"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -10,148 +9,78 @@ import (
 )
 
 // This file pins the mutants the SQL-side parser-stage extraction made
-// reachable in [materialiseParserMergedLabels] and in the wire-path
-// Sample reshape. Both functions gained branches that the existing plan
-// -shape tests execute without asserting, which turns a NOT COVERED
-// exclusion into a surviving mutant.
+// reachable in [mergedLabelsColumn] and in the wire-path Sample reshape.
+// Both functions gained branches that the existing plan-shape tests
+// execute without asserting, which turns a NOT COVERED exclusion into a
+// surviving mutant.
 
-// scanNode is a stand-in for whatever the pipeline lowered to. The
-// materialise step only ever wraps its input, so its shape is irrelevant
-// and identity comparison is the sharpest available assertion.
-func scanNode() chplan.Node { return &chplan.Scan{Table: "otel_logs"} }
-
-// parserMergedExpr is a labels expression [hasParserMergedLabels]
-// classifies as parser-merged: anything that is not a bare ColumnRef on
-// the resource-attributes column.
-func parserMergedExpr(s schema.Logs) chplan.Expr {
-	return &chplan.FuncCall{
-		Fn:   chplan.FnMapMerge,
-		Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ResourceAttributesColumn}},
-	}
+// pipelineLabelsColumn is the labels column the row stage defines for a
+// pipeline's first parser stage, the shape [mergedLabelsColumn] sees
+// whenever the pipeline carries one.
+func pipelineLabelsColumn() *chplan.ColumnRef {
+	return &chplan.ColumnRef{Name: pipelineLabelsAlias(0)}
 }
 
-// projectedColumnNames returns the column each projection carries, in
-// order, using the alias where one is set. It fails the test if the node
-// is not a Project, so a caller asserting "no Project was inserted" uses
-// the identity check below instead.
-func projectedColumnNames(t *testing.T, n chplan.Node) []string {
-	t.Helper()
-
-	p, ok := n.(*chplan.Project)
-	if !ok {
-		t.Fatalf("materialiseParserMergedLabels returned %T, want *chplan.Project", n)
-	}
-	names := make([]string, 0, len(p.Projections))
-	for _, proj := range p.Projections {
-		if proj.Alias != "" {
-			names = append(names, proj.Alias)
-			continue
-		}
-		ref, ok := proj.Expr.(*chplan.ColumnRef)
-		if !ok {
-			t.Fatalf("unaliased projection is %T, want *chplan.ColumnRef", proj.Expr)
-		}
-		names = append(names, ref.Name)
-	}
-	return names
-}
-
-// TestMaterialiseParserMergedLabels_NoUnwrapNoStructuredOuterBy pins that
-// the materialise Project is inserted only when something downstream
-// actually needs the merged map as a column.
+// TestMergedLabelsColumn_NoUnwrapNoStructuredOuterBy pins that the
+// merged map is read as a whole only when something downstream needs it.
 //
 // Kills the CONDITIONALS_BOUNDARY on the `> 0` in
 //
 //	outerByNeedsParsedLabels := len(structuredOuterByKeys(...)) > 0
 //
 // A flip to `>= 0` makes the flag unconditionally true, so the
-// early-return two lines below never fires and every parser-stage query
-// grows an intermediate Project it does not need — invisible to any test
-// that only reads the outermost node. The labels expression here IS
-// parser-merged, so the second gate cannot mask the first.
-func TestMaterialiseParserMergedLabels_NoUnwrapNoStructuredOuterBy(t *testing.T) {
+// early-return never fires and every parser-stage query reads its
+// identity off the merged map instead of the raw columns. The labels
+// column here IS parser-merged, so the second guard cannot mask the
+// first.
+func TestMergedLabelsColumn_NoUnwrapNoStructuredOuterBy(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelLogs()
-	inner := scanNode()
-
-	got, merged := materialiseParserMergedLabels(inner, parserMergedExpr(s), s, lowerCtx{}, false)
-	if got != inner {
-		t.Errorf("input was wrapped in %T; without `| unwrap` and without a structured outer-by key "+
-			"nothing reads the merged map as a column, so the input must be forwarded unchanged", got)
-	}
-	if merged != nil {
-		t.Errorf("merged column ref = %#v, want nil — no Project was inserted to define it", merged)
+	if merged := mergedLabelsColumn(pipelineLabelsColumn(), s, lowerCtx{}, false); merged != nil {
+		t.Errorf("merged column = %#v, want nil — without `| unwrap` and without a structured outer-by key "+
+			"nothing reads the merged map as a whole", merged)
 	}
 }
 
-// TestMaterialiseParserMergedLabels_OuterByTopLevelColumnsAreNotDuplicated
-// pins that a top-level column an outer `by (...)` names is carried
-// through exactly once. The severity column is both a recognised
-// top-level label and already in the fixed projection list above, so it
-// is the one column where "append what the outer by needs" and "do not
-// repeat what is already projected" disagree.
+// TestMergedLabelsColumn_UnwrapReadsTheMergedColumn pins the positive
+// half: an unwrap over a parser-merged labels column reads that column.
 //
-// A duplicate column in a Project is a ClickHouse-level ambiguity, not a
-// cosmetic wart, so the assertion is on the exact list rather than on
-// membership.
-func TestMaterialiseParserMergedLabels_OuterByTopLevelColumnsAreNotDuplicated(t *testing.T) {
+// Kills the INVERT_LOGICAL on the first guard's `&&`: with hasUnwrap
+// true and no outer-by key the original reads `!true && !false` → false
+// and falls through, while the `||` mutant reads `!true || !false` →
+// true and returns nil.
+func TestMergedLabelsColumn_UnwrapReadsTheMergedColumn(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelLogs()
-	if s.SeverityColumn == "" || s.TraceIDColumn == "" {
-		t.Fatalf("fixture invalid: schema must name both a severity and a trace-id column, got %q / %q",
-			s.SeverityColumn, s.TraceIDColumn)
-	}
-
-	lc := lowerCtx{OuterByLabels: []string{s.SeverityColumn, s.TraceIDColumn, s.SeverityColumn}}
-	got, merged := materialiseParserMergedLabels(scanNode(), parserMergedExpr(s), s, lc, true)
-
-	want := []string{
-		s.ResourceAttributesColumn,
-		s.TimestampColumn,
-		s.BodyColumn,
-		s.SeverityColumn,
-		"_logql_merged_labels",
-		s.SeverityNumberColumn,
-		s.AttributesColumn,
-		s.TraceIDColumn,
-	}
-	if diff := projectedColumnNames(t, got); !reflect.DeepEqual(diff, want) {
-		t.Errorf("projected columns\n got: %v\nwant: %v", diff, want)
-	}
-	if merged == nil || merged.Name != "_logql_merged_labels" {
-		t.Errorf("merged column ref = %#v, want a ref to _logql_merged_labels", merged)
+	labels := pipelineLabelsColumn()
+	if merged := mergedLabelsColumn(labels, s, lowerCtx{}, true); merged != labels {
+		t.Errorf("merged column = %#v, want the pipeline labels column %s", merged, labels.Name)
 	}
 }
 
-// TestMaterialiseParserMergedLabels_AliasedLabelsColumnIsNotAddressable
-// pins that only an UNALIASED column reference counts as already
-// projected. When the merged labels expression is itself a plain column
-// it goes into the Project under the merged alias, which means its own
-// name no longer resolves downstream — an outer `by (...)` naming that
-// column still needs its own projection.
+// TestMergedLabelsColumn_RawResourceAttributesIsNotMerged pins the
+// second guard: with no parser stage the labels map is the raw
+// ResourceAttributes column, which carries no parsed label, so an outer
+// `by (...)` naming a non-top-level label still resolves off the raw
+// column rather than a merged map.
 //
-// Kills the INVERT_LOGICAL on the `&&` in the `projected` scan: under
-// `||` an aliased column ref is recorded under its pre-alias name, the
-// outer-by column is skipped as already present, and ClickHouse aborts
-// resolving an identifier the Project renamed away.
-func TestMaterialiseParserMergedLabels_AliasedLabelsColumnIsNotAddressable(t *testing.T) {
+// Kills the CONDITIONALS_NEGATION on `col.Name !=
+// s.ResourceAttributesColumn` in [hasParserMergedLabels]: the `==`
+// mutant reports the raw column as parser-merged and the guard returns
+// it instead of nil.
+func TestMergedLabelsColumn_RawResourceAttributesIsNotMerged(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelLogs()
-	labelsExpr := &chplan.ColumnRef{Name: s.TraceIDColumn}
-	if !hasParserMergedLabels(labelsExpr, s) {
-		t.Fatalf("fixture invalid: %q must classify as parser-merged for this path to run", s.TraceIDColumn)
+	raw := &chplan.ColumnRef{Name: s.ResourceAttributesColumn}
+	lc := lowerCtx{OuterByLabels: []string{"category"}}
+	if len(structuredOuterByKeys(lc.OuterByLabels, s)) == 0 {
+		t.Fatalf("fixture invalid: %v must carry a structured outer-by key so the first guard falls through", lc.OuterByLabels)
 	}
-
-	lc := lowerCtx{OuterByLabels: []string{s.TraceIDColumn}}
-	got, _ := materialiseParserMergedLabels(scanNode(), labelsExpr, s, lc, true)
-
-	names := projectedColumnNames(t, got)
-	if names[len(names)-1] != s.TraceIDColumn {
-		t.Errorf("projected columns %v do not end in a bare %q projection; the outer by-clause reads that "+
-			"column by name, and the aliased labels projection does not answer to it", names, s.TraceIDColumn)
+	if merged := mergedLabelsColumn(raw, s, lc, false); merged != nil {
+		t.Errorf("merged column = %#v, want nil — the raw ResourceAttributes column is not a parser-merged map", merged)
 	}
 }
 

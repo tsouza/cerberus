@@ -630,3 +630,36 @@ func detectedLevelIdentityExpr(s schema.Logs, expr syntax.Expr) chplan.Expr {
 		return detectedLevelExpr(s)
 	})
 }
+
+// Column aliases a range aggregation's row stage defines for the
+// synthesized level: the raw source [detectedLevelSourceExpr] resolves,
+// and the normalised value with the pipeline's `| drop` / `| keep`
+// projection applied.
+const (
+	levelSourceAlias   = "_logql_level_source"
+	detectedLevelAlias = "_logql_detected_level"
+)
+
+// detectedLevelColumn defines the synthesized `detected_level` value
+// [detectedLevelIdentityExpr] describes as columns of rows and returns a
+// function yielding a reference to it, or nil when the pipeline removes
+// the label on every row.
+//
+// The source cascade is defined first and the normalisation reads it as
+// a column: [normaliseLevelExpr] compares the lowercased source against
+// every level variant and falls through to the source itself, so an
+// inline source would be repeated once per comparison. The normalised
+// value is defined in turn because a range aggregation reads it from
+// several positions at once — the series identity, both arms of the
+// error bypass, one entry per `by (...)` label.
+func detectedLevelColumn(rows *rowLayers, s schema.Logs, pipeline syntax.Expr) func() chplan.Expr {
+	source := rows.define(levelSourceAlias, detectedLevelSourceExpr(s))
+	value := projectSyntheticLabelValue(pipeline, detectedLevelLabel, func() chplan.Expr {
+		return normaliseLevelExpr(source)
+	})
+	if value == nil {
+		return func() chplan.Expr { return nil }
+	}
+	level := rows.define(detectedLevelAlias, value)
+	return func() chplan.Expr { return level }
+}

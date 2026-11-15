@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
@@ -118,6 +119,16 @@ type lowerCtx struct {
 	// inclusive bound, so the classification cannot be re-derived per
 	// recursion level.
 	logLineWindow bool
+
+	// variantArm marks the lowering of one arm of a `variants(...) of
+	// (...)` query. Every arm reads the same log range and differs only
+	// in its range function, and [fuseVariantArms] fuses arms whose row
+	// stages are identical. The only table column a range function's
+	// value reads is the log line, so a variant arm carries the line
+	// through its row stage whether or not its own function reads it,
+	// which keeps `count_over_time` and `bytes_over_time` arms over one
+	// range on the same row stage.
+	variantArm bool
 }
 
 // withOuterByLabels returns a copy of c with OuterByLabels set to
@@ -437,14 +448,31 @@ func lowerPipeline(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx) (chplan.N
 //
 // The returned labelsExpr is the schema's ResourceAttributes column when
 // no parser stage ran; otherwise it carries a `mapConcat(...)` wrapper
-// that adds parsed keys (see [logfmtMergeLabels]).
+// that adds parsed keys (see [logfmtMergeLabels]). Every stage predicate
+// AND-folds onto the stream scan's filter, with the labels expression
+// inlined at each read.
 func lowerPipelineWithLabels(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx) (chplan.Node, chplan.Expr, error) {
-	inner := lowerMatchers(e.Left, s, lc)
-	pred := chplan.Expr(nil)
-	if f, ok := inner.(*chplan.Filter); ok {
-		pred = f.Predicate
-		inner = f.Input
+	rows := newRowLayers(lowerMatchers(e.Left, s, lc), false)
+	labelsExpr, err := lowerPipelineStages(e, s, lc, rows)
+	if err != nil {
+		return nil, nil, err
 	}
+	return rows.node, labelsExpr, nil
+}
+
+// pipelineLabelsAlias names the column a materialising [rowLayers] stack
+// defines for the labels map stage i of a pipeline produces.
+func pipelineLabelsAlias(i int) string {
+	return "_logql_labels_" + strconv.Itoa(i)
+}
+
+// lowerPipelineStages lowers e's stages onto rows, which already holds
+// the stream selector, and returns the labels map the last stage leaves.
+// Each stage's predicate is filtered onto rows; each labels map a stage
+// produces is defined on rows under [pipelineLabelsAlias], so a
+// materialising stack computes it once per row and every later stage
+// reads the column.
+func lowerPipelineStages(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx, rows *rowLayers) (chplan.Expr, error) {
 	labelsExpr := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
 	// dynamicLabels becomes true once a `| pattern` stage runs — it is
 	// the one parser that extracts labels in Go after the rows return
@@ -470,36 +498,28 @@ func lowerPipelineWithLabels(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx)
 	// dynamic stage's transform has actually computed the row's true
 	// `__error__` / `__error_details__` labels.
 	dynamicLabels := false
-	for _, stage := range e.MultiStages {
+	for i, stage := range e.MultiStages {
 		if lf, ok := stage.(*syntax.LabelFilterExpr); ok && dynamicLabels && FiltersErrorLabel(lf.LabelFilterer) {
 			continue
 		}
 		next, newLabels, err := lowerStage(stage, s, labelsExpr, lc)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
+		// Post-fetch stages (`| line_format`, `| decolorize`) return a
+		// nil predicate — they're applied in Go after the rows return,
+		// not in SQL; filter skips the nil. The predicate reads the labels
+		// map as it stood before this stage, so it lands below the layer
+		// that defines the stage's own map.
+		rows.filter(next)
 		if newLabels != nil {
-			labelsExpr = newLabels
+			labelsExpr = rows.define(pipelineLabelsAlias(i), newLabels)
 		}
 		if IsDynamicLabelStage(stage) {
 			dynamicLabels = true
 		}
-		// Post-fetch stages (`| line_format`, `| decolorize`) return a
-		// nil predicate — they're applied in Go after the rows return,
-		// not in SQL. Skip them so we don't fold a nil into the AND.
-		if next == nil {
-			continue
-		}
-		if pred == nil {
-			pred = next
-		} else {
-			pred = &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: next}
-		}
 	}
-	if pred == nil {
-		return inner, labelsExpr, nil
-	}
-	return &chplan.Filter{Input: inner, Predicate: pred}, labelsExpr, nil
+	return labelsExpr, nil
 }
 
 // IsDynamicLabelStage reports whether stage is a `| pattern` parser
@@ -2080,7 +2100,7 @@ func numericLabelFilterExpr(f *syntax.NumericLabelFilter, s schema.Logs, labelsE
 // Loki degrades per-row.
 func durationLabelFilterExpr(f *syntax.DurationLabelFilter, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, labelFilterMark) {
 	access := structuredOrStreamLookupOnMap(s, labelsExpr, f.Name)
-	parse := newDurationParse(access)
+	parse := newDurationParse(access, inlineDefine)
 	exists := labelPresenceOnMap(s, labelsExpr, f.Name)
 	pred := &chplan.FuncCall{
 		Fn: chplan.FnMultiIf,
