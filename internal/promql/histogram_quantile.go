@@ -1318,7 +1318,7 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	// the range-vector function's own reduction and its per-series sample
 	// floor. Without it the stage below would fold across time and series
 	// at once — see histogram_quantile_window.go.
-	perSeries := classicBucketWindowStage(input, shape, rangeStart, rangeEnd, s)
+	perSeries := classicBucketWindowStage(input, shape, rangeStart, rangeEnd, s, ctx.resourceBounds)
 
 	// Stage 2: the user's aggregation across those per-series rows.
 	// GroupBy comes from the surrounding `sum` clause (dropping `le` from
