@@ -217,10 +217,13 @@ export const NEVER_COALESCED_WORKFLOWS = Object.freeze([
 // `schedule` (`if: github.event_name == 'schedule'`) and never on the
 // push-to-main trigger the workflow otherwise coalesces for, so its own
 // lane posture correctly stays `never` even though its owning workflow is
-// coalesced-enrolled. A whole-workflow exclusion (the perf-benchmark
-// pattern below) does not fit here because the OTHER lane in the same
-// workflow does need coalescing.
-export const NEVER_COALESCED_LANES = Object.freeze(new Set(['perf-nightly.perf-nightly-health-notify']));
+// coalesced-enrolled. `perf-nightly-calibrate` is the same case: it runs only
+// on a `calibrate` dispatch (`if: inputs.calibrate`), never on a main push.
+// A whole-workflow exclusion (the perf-benchmark pattern below) does not fit
+// here because the OTHER lanes in the same workflow do need coalescing.
+export const NEVER_COALESCED_LANES = Object.freeze(
+  new Set(['perf-nightly.calibrate', 'perf-nightly.perf-nightly-health-notify']),
+);
 
 export const QUICKSTART_GROUP_EXPRESSION =
   "quickstart-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}";

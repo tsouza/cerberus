@@ -100,7 +100,10 @@ const (
 	// regression they exist for, the emitter's PREWHERE split on a server
 	// where move_to_prewhere resolved in, measured 35.8M-40.1M and
 	// 36.8M-45.3M on the same data and server — at least 1.38x. 1.20x sits
-	// two orders of magnitude above the noise and well under that step.
+	// two orders of magnitude above that noise and well under that step. On
+	// the perf-nightly runners on 26.9 the renamed sentinel's max-of-5 spans
+	// 25.9M-32.6M across fifteen gating runs (1.26x), wider than the
+	// margin 1.20x leaves above the highest (#4151).
 	labelValuesBaselineHeadroom = 1.20
 	// rateByRouteBaselineHeadroom (rate_by_route_matcher_stock_key): the
 	// same rate query measured over 6 repeats per server when the PREWHERE
@@ -123,10 +126,11 @@ const (
 	// bytes, max/min = 1.352x. Its memory prong is a backstop — the planning
 	// prong is what separates the plan it guards — so it keeps the
 	// conservative 1.5x (1.5x / 1.352x = 1.11x cushion). On the CI runners
-	// one max-of-5 draw is not enough to calibrate it: unchanged code
-	// measured 212.8M-324.1M on 26.6, 192.4M-265.5M on 24.8 and
-	// 197.5M-264.6M on 25.9 across runs, so each server's bound is the
-	// highest max-of-5 of three calibration runs.
+	// its max-of-5 across separate runs of unchanged code measured
+	// 212.8M-324.1M on 26.6, 192.4M-265.5M on 24.8 and 197.5M-264.6M on
+	// 25.9. Its committed bounds were each set as the highest max-of-5 of
+	// three separate calibration runs, the run-to-run spread a calibration
+	// now samples on nightlyCalibrationRunners runners.
 	nativeQuantilesBaselineHeadroom = 1.50
 )
 
