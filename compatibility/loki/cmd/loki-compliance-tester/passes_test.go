@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	bench "github.com/tsouza/cerberus/compatibility/loki/upstream/loki-bench"
 )
 
 // The driver-level fan-out: the detected-fields differential, the
@@ -172,15 +170,14 @@ func TestErrorBodySnippet(t *testing.T) {
 }
 
 // TestLoadAllQueriesAndSplit_PartitionsTheRealCorpus runs the real
-// vendored corpus through the split that feeds the upstream-skip
+// upstream corpus, resolved from the module cache, through the split that feeds the upstream-skip
 // baseline. Both partitions must be non-empty and disjoint: a split that
 // dumped everything into one side would make the baseline rail either
 // vacuous or a whole-corpus dump, and neither is visible from the
 // baseline file alone.
 func TestLoadAllQueriesAndSplit_PartitionsTheRealCorpus(t *testing.T) {
 	t.Parallel()
-	f := flags{corpusDir: filepath.Join("..", "..", "upstream", "loki-bench", "queries")}
-	runnable, skipped, err := loadAllQueriesAndSplit(f)
+	runnable, skipped, err := loadAllQueriesAndSplit(flags{})
 	if err != nil {
 		t.Fatalf("loadAllQueriesAndSplit: %v", err)
 	}
@@ -221,7 +218,7 @@ func TestLoadAllQueriesAndSplit_MissingCorpusErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("loadAllQueriesAndSplit over a missing directory returned no error")
 	}
-	if !strings.Contains(err.Error(), "registry.Load") {
+	if !strings.Contains(err.Error(), "upstream corpus") {
 		t.Fatalf("error %q should name the failing load", err.Error())
 	}
 }
@@ -231,13 +228,12 @@ func TestLoadAllQueriesAndSplit_MissingCorpusErrors(t *testing.T) {
 // silently contributing zero extra cases to the score.
 func TestLoadCerberusQueries_MissingDirErrors(t *testing.T) {
 	t.Parallel()
-	suites := []bench.Suite{bench.SuiteFast, bench.SuiteRegression, bench.SuiteExhaustive}
-	_, err := loadCerberusQueries(flags{cerberusQueriesDir: filepath.Join(t.TempDir(), "nope")}, suites)
+	_, err := loadCerberusQueries(flags{cerberusQueriesDir: filepath.Join(t.TempDir(), "nope")})
 	if err == nil {
 		t.Fatal("loadCerberusQueries over a missing directory returned no error")
 	}
-	if !strings.Contains(err.Error(), "cerberus query registry.Load") {
-		t.Fatalf("error %q should name the cerberus registry", err.Error())
+	if !strings.Contains(err.Error(), "cerberus query corpus") {
+		t.Fatalf("error %q should name the cerberus corpus", err.Error())
 	}
 }
 
@@ -247,7 +243,6 @@ func TestLoadCerberusQueries_MissingDirErrors(t *testing.T) {
 func TestLoadCases_MissingMetadataErrors(t *testing.T) {
 	t.Parallel()
 	f := flags{
-		corpusDir:          filepath.Join("..", "..", "upstream", "loki-bench", "queries"),
 		cerberusQueriesDir: filepath.Join("..", "..", "cerberus-queries"),
 		metadataDir:        filepath.Join(t.TempDir(), "nope"),
 	}
@@ -263,7 +258,6 @@ func TestLoadCases_MissingMetadataErrors(t *testing.T) {
 func TestLoadCases_InstantModeKeepsMetricQueriesOnly(t *testing.T) {
 	t.Parallel()
 	f := flags{
-		corpusDir:          filepath.Join("..", "..", "upstream", "loki-bench", "queries"),
 		cerberusQueriesDir: filepath.Join("..", "..", "cerberus-queries"),
 		metadataDir:        filepath.Join("..", ".."),
 		seed:               1,

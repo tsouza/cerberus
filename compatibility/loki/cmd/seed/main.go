@@ -61,7 +61,7 @@ const packedFormat = "packed"
 // structured-metadata key (see generateRequestID / issue #1498). Like
 // packedFormat, it is deliberately NOT one of the three formats
 // LogFormat/QueryRequirements.log_format recognises (json/logfmt/
-// unstructured): the vendored corpus's `${SELECTOR}` resolver picks a
+// unstructured): the corpus's `${SELECTOR}` resolver picks a
 // stream at random from whichever ones satisfy a case's `requires:`
 // bounds, and reference Loki folds structured-metadata values directly
 // into a log/metric query's output identity (stream labels / ungrouped
@@ -515,9 +515,8 @@ func generateJSONLine(svc, level string, ts time.Time, rng *rand.Rand, idx int) 
 	case "web-server":
 		method := httpMethods[rng.Intn(len(httpMethods))]
 		path := apiPaths[rng.Intn(len(apiPaths))]
-		// Every web-server line carries a `client_ip` IPv4, mirroring the
-		// loki-bench faker's web-server generator (the dataset metadata
-		// the diff driver loads promises this field). A delimited,
+		// Every web-server line carries a `client_ip` IPv4, the field the
+		// burndown pass's ip() cases filter on. A delimited,
 		// well-formed dotted-quad makes the ip() line filter (IP-in-line
 		// scan) and the `| json | client_ip = ip(...)` label filter both
 		// exercise real data on reference Loki and cerberus alike.

@@ -85,7 +85,7 @@ import (
 	"sync"
 	"time"
 
-	bench "github.com/tsouza/cerberus/compatibility/loki/upstream/loki-bench"
+	"github.com/tsouza/cerberus/compatibility/loki/corpus"
 )
 
 // metadataEndpointsSource is the report `source` every case in this
@@ -242,7 +242,7 @@ func (b metadataBody) isEmpty() bool {
 // driven by /detected_fields: whatever upstream advertises, cerberus
 // must answer for, so the roster cannot quietly omit a label one
 // backend forgot to advertise.
-func compareMetadataEndpointsAll(c *http.Client, f flags, metadata *bench.DatasetMetadata) []Result {
+func compareMetadataEndpointsAll(c *http.Client, f flags, metadata *corpus.Metadata) []Result {
 	start, end := metadata.TimeRange.Start, metadata.TimeRange.End
 
 	var results []Result

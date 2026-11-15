@@ -90,15 +90,14 @@ export const PINNED_CLI2_VERSION = '0.23.2';
 // nothing derives behaviour from it.
 export const PINNED_MARKDOWNLINT_VERSION = '0.41.1';
 
-// The file set, single-sourced for the same reason as the version. The three
-// `compatibility/*/upstream` trees are vendored reference backends whose
-// Markdown is not ours to reformat; `.markdownlintignore` names them too, and
+// The file set, single-sourced for the same reason as the version. The
+// `compatibility/prometheus/upstream` tree is a vendored reference backend
+// whose Markdown is not ours to reformat; `.markdownlintignore` names it too, and
 // both are kept because the glob set is what a `--staged` run has instead of
 // the ignore file's directory walk.
 export const GLOBS = [
   '**/*.md',
   '!compatibility/prometheus/upstream/**',
-  '!compatibility/loki/upstream/**',
   '!**/node_modules/**',
 ];
 

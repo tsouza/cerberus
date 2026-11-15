@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=../../upstream/loki-bench/queries/schema.json
+# yaml-language-server: $schema=../schema.json
 ---
 # Generic (non-detected_level) structured-metadata differential
 # coverage — see issue #1498.
@@ -28,7 +28,7 @@
 # earlier revision that stamped request_id on every service turned 41
 # previously-passing cases into diffs). metadata-probe mirrors
 # packed-source's isolation trick (an unmatched `log_format`, so the
-# vendored corpus's `${SELECTOR}` resolver never picks it) precisely so
+# corpus's `${SELECTOR}` resolver never picks it) precisely so
 # the cases below are the only queries in the whole differential corpus
 # that ever observe request_id.
 #
@@ -77,7 +77,7 @@ queries:
     kind: log
     time_range:
       length: 24h
-    directions: backward # forward log queries over structured metadata unsupported by v2 engine (mirrors the detected_level cases in upstream/loki-bench/queries/fast/structured-metadata.yaml)
+    directions: backward # forward log queries over structured metadata unsupported by v2 engine (mirrors the detected_level cases in the upstream corpus file fast/structured-metadata.yaml)
     tags:
       - structured-metadata
       - generic

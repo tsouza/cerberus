@@ -91,8 +91,8 @@ func argsContain(args []any, want string) bool {
 // shrinking the matrix to a handful of "observed-bucket" anchors and
 // dropping reference-Loki parity (the 11 `matrix length: expected=1440
 // actual=4`-class failures observed on the unwrap rows of
-// compatibility/loki/upstream/loki-bench/queries/exhaustive/
-// unwrap-aggregations.yaml).
+// the upstream LogQL compatibility corpus's
+// exhaustive/unwrap-aggregations.yaml).
 //
 // PR #533 wired the propagation for the bare-selector ops; this test
 // pins the same guarantee for every other range-op shape the lowering
@@ -229,7 +229,7 @@ func TestLowerRangeAggregationMatrixShapeUnwrap(t *testing.T) {
 // handful of series where reference Loki returned hundreds. The
 // loki-compat 24h/1m corpus surfaces this as `matrix length:
 // expected=1440 actual=4` for the 11 unwrap matrix cases that drove
-// PR #574 — see compatibility/loki/upstream/loki-bench/queries/
+// PR #574 — see the upstream LogQL compatibility corpus's
 // {regression/metric-queries.yaml,exhaustive/unwrap-aggregations.yaml}.
 //
 // The fix materialises the parser-merged labels into the
@@ -349,8 +349,8 @@ func TestLowerRangeAggregationUnwrapStripsTargetFromIdentity(t *testing.T) {
 // outer aggregation drops the per-anchor bucket from GROUP BY,
 // collapsing the matrix into a single row. The user-facing symptom
 // is `test endpoint returned empty` on
-// `compatibility/loki/.../exhaustive/unwrap-aggregations.yaml`'s
-// "Nested aggregations" case (the only remaining cerberus-side Loki
+// the upstream LogQL corpus's exhaustive/unwrap-aggregations.yaml
+// nested-aggregation case (the only remaining cerberus-side Loki
 // compat failure post-#577 / #574 / #578).
 func TestIsMatrixRangeWindowWalksNestedAggregation(t *testing.T) {
 	t.Parallel()

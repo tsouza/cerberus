@@ -1,37 +1,35 @@
-# Upstream `skip: true` baseline for the vendored grafana/loki bench corpus.
+# Upstream `skip: true` baseline for the upstream LogQL corpus.
 #
-# Each non-comment line is a `<suite>/<file>.yaml#<description>` key
-# identifying a corpus entry whose YAML carries `skip: true`. The
-# loki-compliance-tester's sanity rail loads the full corpus
-# (includeSkipped=true), splits it into runnable + upstream-skipped, and
-# diffs the upstream-skipped set against this file. Any drift (new
-# skipped entries that aren't here, or expected entries that disappeared)
-# fails the harness — so an upstream YAML flipping `skip: true` →
-# `skip: false` cannot silently reintroduce a query cerberus is not yet
-# compatible with.
+# Each non-comment line is the opaque ID of one upstream corpus definition
+# whose YAML carries `skip: true`: `upstream:` followed by the
+# leading hex digits of the SHA-256 of `<suite>/<file>#<description>`.
+# The loki-compliance-tester's sanity rail loads the full upstream corpus,
+# splits it into runnable + upstream-skipped, and diffs the upstream-skipped
+# set against this file. Any drift (new skipped entries that aren't here,
+# or expected entries that disappeared) fails the harness, and the failure
+# names each newly skipped definition by suite, file and description.
 #
-# Regenerate after a corpus re-snapshot via:
+# Regenerate via:
 #
-#     loki-compliance-tester \
-#         -corpus=compatibility/loki/upstream/loki-bench/queries \
+#     go run ./compatibility/loki/cmd/loki-compliance-tester \
 #         -skip-baseline=compatibility/loki/upstream-skip-baseline.txt \
 #         -regen-baseline
 #
 # Sorted lexically; comment lines (`#` prefix) and blank lines are
 # ignored by the loader so the file can carry rationale alongside the
 # entries.
-exhaustive/unwrap-aggregations.yaml#P99 duration with conversion
-exhaustive/unwrap-aggregations.yaml#P99 latency grouped by level
-exhaustive/unwrap-aggregations.yaml#Quantile over time - p50 (median)
-exhaustive/unwrap-aggregations.yaml#Quantile over time - p90
-exhaustive/unwrap-aggregations.yaml#Quantile over time - p95
-exhaustive/unwrap-aggregations.yaml#Quantile over time - p99
-exhaustive/unwrap-aggregations.yaml#Standard deviation grouped by level
-exhaustive/unwrap-aggregations.yaml#Standard deviation over time
-exhaustive/unwrap-aggregations.yaml#Standard variance grouped by level
-exhaustive/unwrap-aggregations.yaml#Standard variance over time
-fast/structured-metadata.yaml#JSON parsing with structured metadata filter first
-regression/drilldown-patterns.yaml#Drilldown unwrap query with detected_level grouping
-regression/metric-queries.yaml#HTTP status code distribution
-regression/structured-metadata.yaml#Drilldown pattern with case-insensitive error search
-regression/structured-metadata.yaml#JSON parsing with duration filter and structured metadata
+upstream:09ed7a167a29958d
+upstream:3cede13a5f7f3837
+upstream:4adb9a75ecee3329
+upstream:5324d444a739dd68
+upstream:56ddc9fbb58bdc90
+upstream:67bc4220bc89c406
+upstream:7624c57c15c227b7
+upstream:a279b67176871f65
+upstream:a7feeba3dbf69187
+upstream:b4abb86953c4563b
+upstream:b809e56bac48f03c
+upstream:cd8c654faaf56449
+upstream:d2722d33b0e630a8
+upstream:df914b47e4d410e9
+upstream:e49a0adbd6e1d761

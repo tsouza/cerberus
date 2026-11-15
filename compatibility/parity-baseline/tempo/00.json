@@ -3,6 +3,7 @@
   "head": "tempo",
   "bucket": "00",
   "cases": [
-    "search | scoped_instrumentation_name"
+    "search | scoped_instrumentation_name",
+    "search | scoped_span_status_message"
   ]
 }

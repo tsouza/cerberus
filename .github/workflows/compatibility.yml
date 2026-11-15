@@ -944,8 +944,9 @@ jobs:
       # Docker images. Pinned to a commit SHA (action only ships @main).
       - uses: ./.github/actions/free-disk-space
 
-      # The run script does `go run ./cmd/seed` + `go test -c` of the
-      # vendored bench driver, so we need a Go toolchain. setup-go
+      # The run script does `go run ./cmd/seed` and builds the diff driver,
+      # which reads the upstream query corpus from the pinned grafana/loki
+      # module that setup-go's warm step leaves in GOMODCACHE. setup-go
       # honours go.mod's `go` directive and pulls the matching toolchain.
       - uses: ./.github/actions/setup-go
 

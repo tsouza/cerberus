@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tsouza/cerberus/compatibility/loki/cerberus-queries/schema.json",
+  "title": "LogQL compatibility corpus query file",
+  "description": "One file of LogQL query definitions, loaded by compatibility/loki/corpus. Each definition is a templated query the Loki compatibility harness expands against the seeded dataset and runs against both reference Loki and cerberus.",
+  "type": "object",
+  "required": ["queries"],
+  "additionalProperties": false,
+  "properties": {
+    "queries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/definition" }
+    }
+  },
+  "$defs": {
+    "duration": {
+      "type": "string",
+      "description": "A Go duration, such as 5m, 1h or 1h30m.",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+    },
+    "names": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "definition": {
+      "type": "object",
+      "required": ["query", "time_range"],
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "What the definition exercises. It is part of every expanded case's identity."
+        },
+        "query": {
+          "type": "string",
+          "description": "The LogQL query. It may use the placeholders ${SELECTOR} (a seeded stream selector satisfying `requires`), ${LABEL_NAME} and ${LABEL_VALUE} (an equality matcher of that selector) and ${RANGE} (the stream's minimum range for the lane)."
+        },
+        "kind": {
+          "enum": ["log", "metric"],
+          "description": "log or metric. When absent it is inferred from the query shape."
+        },
+        "skip": {
+          "type": "boolean",
+          "description": "Load the definition but do not run it unless the harness runs with -include-skipped."
+        },
+        "time_range": {
+          "type": "object",
+          "required": ["length"],
+          "additionalProperties": false,
+          "properties": {
+            "length": { "$ref": "#/$defs/duration", "description": "Window length; the window start is drawn inside the dataset span." },
+            "step": { "$ref": "#/$defs/duration", "description": "Step of a metric query." }
+          }
+        },
+        "directions": {
+          "enum": ["forward", "backward", "both"],
+          "description": "Directions a log query runs in. Defaults to both for a log query; a metric query always runs forward."
+        },
+        "requires": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Properties the stream ${SELECTOR} resolves to must have. Each value names a key of the matching index in dataset_metadata.json.",
+          "properties": {
+            "log_format": { "enum": ["json", "logfmt", "unstructured"] },
+            "unwrappable_fields": { "$ref": "#/$defs/names" },
+            "structured_metadata": { "$ref": "#/$defs/names" },
+            "detected_fields": { "$ref": "#/$defs/names" },
+            "labels": { "$ref": "#/$defs/names" },
+            "keywords": { "$ref": "#/$defs/names" }
+          }
+        },
+        "tags": {
+          "$ref": "#/$defs/names",
+          "description": "Free-form tags. The tag empty-result marks a query whose answer is empty by construction."
+        },
+        "notes": { "type": "string" }
+      }
+    }
+  }
+}

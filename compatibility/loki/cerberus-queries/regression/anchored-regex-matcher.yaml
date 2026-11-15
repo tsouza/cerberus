@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=../../upstream/loki-bench/queries/schema.json
+# yaml-language-server: $schema=../schema.json
 ---
 # Anchored-regex-matcher differential coverage — see issue #1741.
 #
