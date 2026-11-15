@@ -1451,6 +1451,22 @@ func classifyThrowIfGuardError(err error) *apiError {
 			Err:    errors.New(chplan.ClassicBucketMergeBudgetMessage),
 			Status: http.StatusUnprocessableEntity,
 		}
+	// The instant path's per-series window stage that feeds that merge
+	// carries its own throwIf (internal/promql's
+	// classic_bucket_window_bound.go), raised before the stage collects a
+	// sample. Same 422 shape.
+	case throwIfMessageMatches(err, chplan.ClassicBucketWindowBudgetMessage):
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(chplan.ClassicBucketWindowBudgetMessage),
+			Status: http.StatusUnprocessableEntity,
+		}
+	case throwIfMessageMatches(err, chplan.ClassicBucketWindowSeriesBudgetMessage):
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(chplan.ClassicBucketWindowSeriesBudgetMessage),
+			Status: http.StatusUnprocessableEntity,
+		}
 	// Same family again: RangeBucketGridNative's own per-(series, `le` rung)
 	// native rate-ladder bound (#2486/#2504) planted its own throwIf, but
 	// was never wired into this switch — found investigating #2522, where
