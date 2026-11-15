@@ -3,6 +3,7 @@
   "head": "tempo",
   "bucket": "36",
   "cases": [
+    "metrics_range | metrics_rate_after_aggregate_filter",
     "search | name_gt_int_rejected"
   ]
 }

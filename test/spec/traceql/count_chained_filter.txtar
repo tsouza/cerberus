@@ -1,0 +1,79 @@
+# A spanset-aggregate filter after another one reads the spans of the
+# spansets the first passed, not the first's per-trace row, as reference
+# Tempo evaluates every stage over the same spanset. Only trace ...01 has
+# more than two spans. The spans share one name and one (empty) parent so
+# the per-trace envelope's any() picks are deterministic.
+#
+#   trace ...01  3 spans  passes both
+#   trace ...02  2 spans  passes count() > 1, dropped by count() > 2
+#   trace ...03  1 span   dropped by count() > 1
+#
+# Counting the first filter's per-trace rows would read 1 for every trace
+# and drop all three.
+-- query.traceql --
+{ } | count() > 1 | count() > 2
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = MergeTree ORDER BY (Timestamp, SpanId);
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, SpanName) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '', toDateTime64('2024-01-01 00:00:30', 9), 1000000000, 'a'),
+    ('a0000000000000000000000000000001', '0000000000000002', '', toDateTime64('2024-01-01 00:00:31', 9), 1000000000, 'a'),
+    ('a0000000000000000000000000000001', '0000000000000003', '', toDateTime64('2024-01-01 00:00:32', 9), 1000000000, 'a'),
+    ('a0000000000000000000000000000002', '0000000000000016', '', toDateTime64('2024-01-01 00:00:40', 9), 1000000000, 'b'),
+    ('a0000000000000000000000000000002', '0000000000000017', '', toDateTime64('2024-01-01 00:00:41', 9), 1000000000, 'b'),
+    ('a0000000000000000000000000000003', '0000000000000032', '', toDateTime64('2024-01-01 00:00:50', 9), 1000000000, 'c');
+-- expected_rows --
+[
+  ["a", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "3000000000", "__cerberus_traceID": "a0000000000000000000000000000001"}, "2024-01-01T00:00:30Z", 3]
+]
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{ } | count() > 1 | count() > 2` reduces the spanset to one per-trace row carrying __cerberus_traceID and no __cerberus_spanID, so the answer is an aggregate rather than the span set runTempoParity compares
+-- args --
+[0] int64 = 1
+[1] bool = true
+[2] int64 = 1
+[3] bool = true
+[4] int64 = 1
+[5] int64 = 2
+-- args_optimized --
+[0] string = "__cerberus_traceID"
+[1] string = "__cerberus_parentSpanID"
+[2] string = "__cerberus_traceDurationNs"
+[3] int64 = 1
+[4] int64 = 1
+[5] bool = true
+[6] int64 = 1
+[7] int64 = 2
+-- chplan --
+Filter predicate=(Value > 2)
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[FnCount(1) AS Value, FnAny(SpanName) AS MetricName, FnAny(ResourceAttributes) AS ResourceAttrs, FnAny(ParentSpanId) AS ParentSpanId, FnMin(Timestamp) AS TimeUnix, FnMin(FnToUnixNanos(Timestamp)) AS TraceStartNs, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS TraceEndNs]
+    Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(Value > 1) ; Aggregate groupBy=[TraceId AS TraceId] funcs=[FnCount(1) AS Value] ; Filter predicate=true ; Scan(otel_traces)})
+      Filter predicate=true
+        Scan(otel_traces)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;agg=1
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+min_table_rows_to_use_projection_index=0
+use_query_condition_cache=1
+-- sql --
+SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM (SELECT * FROM `otel_traces` WHERE ?) WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `TraceId`) WHERE (`Value` > ?)))) GROUP BY `TraceId`) WHERE (`Value` > ?)
+-- sql_optimized --
+SELECT `MetricName` AS `MetricName`, mapConcat(`ResourceAttrs`, map(?, `TraceId`, ?, `ParentSpanId`, ?, toString((`TraceEndNs` - `TraceStartNs`)))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Value`) AS `Value` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `TraceId`) WHERE (`Value` > ?)))) GROUP BY `TraceId`) WHERE (`Value` > ?))
