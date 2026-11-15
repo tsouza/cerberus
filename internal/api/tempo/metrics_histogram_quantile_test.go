@@ -244,3 +244,41 @@ func TestPostProcessQuantileBuckets_UnobservedBucketDoesNotMoveTheEstimate(t *te
 		}
 	}
 }
+
+// TestLog2QuantileWithBucket_Behaviour pins log2QuantileWithBucket case by
+// case: the ceil(p*total)-th sample is located, a sample on a bucket's
+// upper boundary reads that boundary, any other is interpolated in log2
+// space between the predecessor's boundary (one octave below when there is
+// no positive predecessor) and the bucket's own.
+func TestLog2QuantileWithBucket_Behaviour(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		p       float64
+		buckets []histogramBucket
+		want    float64
+		wantIdx int
+	}{
+		{"no buckets", 0.5, nil, 0, -1},
+		{"no samples", 0.5, []histogramBucket{{Max: 2}, {Max: 4}}, 0, -1},
+		{"one bucket interpolates from an octave below", 0.5, []histogramBucket{{Max: 8, Count: 4}}, math.Pow(2, 2.5), 0},
+		{"target on a boundary reads the boundary", 0.5, []histogramBucket{{Max: 2, Count: 1}, {Max: 4, Count: 1}, {Max: 8, Count: 2}}, 4, 1},
+		{"interpolates from the predecessor", 0.75, []histogramBucket{{Max: 2, Count: 1}, {Max: 4, Count: 1}, {Max: 8, Count: 2}}, math.Pow(2, 2.5), 2},
+		{"a non-positive predecessor counts as an octave below", 0.5, []histogramBucket{{Max: 0}, {Max: 8, Count: 4}}, math.Pow(2, 2.5), 1},
+		{"p of zero reads the first sample", 0, []histogramBucket{{Max: 2, Count: 1}, {Max: 4, Count: 1}}, 2, 0},
+		{"an empty bucket before the target is passed over", 1, []histogramBucket{{Max: 2, Count: 1}, {Max: 4}, {Max: 8, Count: 1}}, 8, 2},
+		{"an empty predecessor still bounds the interpolation", 0.75, []histogramBucket{{Max: 2, Count: 2}, {Max: 4}, {Max: 8, Count: 2}}, math.Pow(2, 2.5), 2},
+		{"a target past the last sample extrapolates in the last bucket", 2, []histogramBucket{{Max: 2, Count: 1}, {Max: 4, Count: 1}}, 8, 1},
+		{"fractional position", 0.4, []histogramBucket{{Max: 1, Count: 2}, {Max: 16, Count: 8}}, math.Pow(2, 4*(2.0/8)), 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			got, idx := log2QuantileWithBucket(c.p, c.buckets)
+			if got != c.want || idx != c.wantIdx {
+				t.Fatalf("log2QuantileWithBucket(%v, %v) = (%v, %d), want (%v, %d)", c.p, c.buckets, got, idx, c.want, c.wantIdx)
+			}
+		})
+	}
+}
