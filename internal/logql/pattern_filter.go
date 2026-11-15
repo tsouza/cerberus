@@ -2,7 +2,6 @@ package logql
 
 import (
 	"fmt"
-	"strings"
 
 	logpattern "github.com/tsouza/cerberus/internal/logql/logpattern"
 
@@ -63,43 +62,33 @@ type patternLineFilter struct {
 	Empty bool
 }
 
-// parsePatternLineFilter validates `match` with the upstream pattern
-// parser (so cerberus rejects exactly the shapes reference Loki
-// rejects: named captures, consecutive wildcards, malformed exprs)
-// and derives the literal-run structure.
-//
-// Structure derivation: after ParseLineFilter validation the only
-// capture form left in the pattern is the literal token `<_>` —
-// upstream's grammar merges adjacent literal runes into one run and
-// alternates them with captures — so logpattern.ParseLiterals supplies
-// the ordered literal runs and a prefix / suffix probe against the
-// original string classifies the first / last node.
+// parsePatternLineFilter validates `match` with the pattern parser (so
+// cerberus rejects exactly the shapes reference Loki rejects: named
+// captures, consecutive wildcards, malformed exprs) and takes the
+// literal-run structure from the compiled pattern. A pattern ends at its
+// first invalid UTF-8 sequence, so the structure is the compiled one, never
+// a probe of the query text.
 func parsePatternLineFilter(match string) (patternLineFilter, error) {
-	if _, err := logpattern.ParseLineFilter([]byte(match)); err != nil {
-		return patternLineFilter{}, fmt.Errorf("logql: invalid pattern line filter %q: %w", match, err)
-	}
-	if match == "" {
-		return patternLineFilter{Empty: true}, nil
-	}
-	rawLits, err := logpattern.ParseLiterals(match)
+	m, err := logpattern.ParseLineFilter([]byte(match))
 	if err != nil {
 		return patternLineFilter{}, fmt.Errorf("logql: invalid pattern line filter %q: %w", match, err)
 	}
-	lits := make([]string, len(rawLits))
-	for i, l := range rawLits {
+	if m.Empty() {
+		return patternLineFilter{Empty: true}, nil
+	}
+	runs := m.Literals()
+	lits := make([]string, len(runs))
+	for i, l := range runs {
 		lits[i] = string(l)
 	}
-	out := patternLineFilter{Literals: lits}
-	if len(lits) == 0 {
-		// Validation passed and there are no literals: the pattern is a
-		// single `<_>` (consecutive captures are rejected) — matches
-		// every non-empty line.
-		out.EndsWithCapture = true
-		return out, nil
-	}
-	out.FirstIsLiteral = strings.HasPrefix(match, lits[0])
-	out.EndsWithCapture = !strings.HasSuffix(match, lits[len(lits)-1])
-	return out, nil
+	// With no literal run the pattern is a single `<_>` (consecutive
+	// captures are rejected), which ends on a capture and matches every
+	// non-empty line.
+	return patternLineFilter{
+		Literals:        lits,
+		FirstIsLiteral:  m.StartsWithLiteral(),
+		EndsWithCapture: m.EndsWithCapture(),
+	}, nil
 }
 
 // patternLineFilterExpr lowers one `|>` (negated=false) / `!>`

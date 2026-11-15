@@ -144,18 +144,60 @@ func TestParseLiterals_EmptyPatternIsRejected(t *testing.T) {
 	}
 }
 
-func TestParseLiterals_InvalidUTF8BecomesReplacementRune(t *testing.T) {
-	// An invalid byte decodes to utf8.RuneError and re-encodes to the
-	// replacement character, matching upstream's rune round-trip.
-	got, err := ParseLiterals("a\xffb")
-	if err != nil {
-		t.Fatalf("ParseLiterals: unexpected error: %v", err)
+// TestPattern_EndsAtInvalidUTF8 pins that a pattern ends at its first
+// invalid UTF-8 sequence: the text after it, captures included, is not part
+// of the pattern, while a valid encoding of U+FFFD is ordinary text.
+func TestPattern_EndsAtInvalidUTF8(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		in      string
+		want    []string // literal runs; nil when the pattern is empty
+		capture bool     // New accepts it
+	}{
+		{"a\xffb", []string{"a"}, false},
+		{"a\xff<b>c", []string{"a"}, false},
+		{"<a>\xff", []string{}, true},
+		{"<a>b\xff<c>", []string{"b"}, true},
+		{"<a\xff>", []string{"<a"}, false},
+		{"a\xc3", []string{"a"}, false},
+		{"a\xe2\x82b", []string{"a"}, false},
+		{"a\xed\xa0\x80b", []string{"a"}, false},
+		{"a\uFFFDb", []string{"a\uFFFDb"}, false},
+		{"<a> \uFFFD", []string{" \uFFFD"}, true},
+		{"\xff<a>", nil, false},
+		{"\xff", nil, false},
 	}
-	if len(got) != 1 {
-		t.Fatalf("ParseLiterals returned %d literal runs, want 1", len(got))
-	}
-	if want := "a\uFFFDb"; string(got[0]) != want {
-		t.Errorf("literal = %q, want %q", got[0], want)
+	for _, c := range cases {
+		got, err := ParseLiterals(c.in)
+		if c.want == nil {
+			if !errors.Is(err, errEmptyPattern) {
+				t.Errorf("ParseLiterals(%q) error = %v, want errEmptyPattern", c.in, err)
+			}
+			if _, err := New(c.in); !errors.Is(err, errEmptyPattern) {
+				t.Errorf("New(%q) error = %v, want errEmptyPattern", c.in, err)
+			}
+			if _, err := ParseLineFilter([]byte(c.in)); !errors.Is(err, errEmptyPattern) {
+				t.Errorf("ParseLineFilter(%q) error = %v, want errEmptyPattern", c.in, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseLiterals(%q): unexpected error: %v", c.in, err)
+			continue
+		}
+		if len(got) != len(c.want) {
+			t.Errorf("ParseLiterals(%q) = %q, want %q", c.in, got, c.want)
+			continue
+		}
+		for i := range got {
+			if string(got[i]) != c.want[i] {
+				t.Errorf("ParseLiterals(%q) = %q, want %q", c.in, got, c.want)
+			}
+		}
+		if _, err := New(c.in); (err == nil) != c.capture {
+			t.Errorf("New(%q) error = %v, want accepted=%v", c.in, err, c.capture)
+		}
 	}
 }
 

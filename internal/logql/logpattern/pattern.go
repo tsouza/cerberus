@@ -50,9 +50,11 @@ func (p part) source() string {
 	return string(p.text)
 }
 
-// scan splits a pattern into literal runs and captures, in order. A byte
-// that is not valid UTF-8 becomes U+FFFD in its literal run. Only an empty
-// pattern is an error; every other rule is checked by the callers.
+// scan splits a pattern into literal runs and captures, in order. The
+// pattern ends at its first invalid UTF-8 sequence: nothing from there on
+// is part of it, while a valid encoding of U+FFFD is ordinary text. Only
+// an empty pattern is an error; every other rule is checked by the
+// callers.
 func scan(src []byte) ([]part, error) {
 	var parts []part
 	var run []byte
@@ -70,7 +72,10 @@ func scan(src []byte) ([]part, error) {
 			continue
 		}
 		r, size := utf8.DecodeRune(src)
-		run = utf8.AppendRune(run, r)
+		if r == utf8.RuneError && size <= 1 {
+			break
+		}
+		run = append(run, src[:size]...)
 		src = src[size:]
 	}
 	endRun()
@@ -236,6 +241,32 @@ func ParseLiterals(in string) ([][]byte, error) {
 
 // Names returns the named captures, in order.
 func (m *Matcher) Names() []string { return m.names }
+
+// Empty reports whether the pattern has no element at all.
+func (m *Matcher) Empty() bool { return m.empty() }
+
+// Literals returns the pattern's literal runs, in order.
+func (m *Matcher) Literals() [][]byte {
+	var runs [][]byte
+	if len(m.lead) > 0 {
+		runs = append(runs, m.lead)
+	}
+	for _, h := range m.holes {
+		if len(h.until) > 0 {
+			runs = append(runs, h.until)
+		}
+	}
+	return runs
+}
+
+// StartsWithLiteral reports whether the pattern's first element is literal
+// text.
+func (m *Matcher) StartsWithLiteral() bool { return len(m.lead) > 0 }
+
+// EndsWithCapture reports whether the pattern's last element is a capture.
+func (m *Matcher) EndsWithCapture() bool {
+	return len(m.holes) > 0 && len(m.holes[len(m.holes)-1].until) == 0
+}
 
 // Matches returns the value of each named capture in line, or nil when the
 // line is empty, the pattern has no capture, or the line does not start

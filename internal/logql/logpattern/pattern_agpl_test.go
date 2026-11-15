@@ -146,11 +146,16 @@ func TestPattern_MatchesAndTest_MatchLoki(t *testing.T) {
 	}
 }
 
-// randomPatternAlphabet is the rune set the generated patterns and lines
-// draw from: the capture delimiters, both name alphabets, the unnamed
-// capture, separators, and a multi-byte rune. It holds no invalid UTF-8:
-// the two implementations tokenise that differently, tracked in #4136.
-var randomPatternAlphabet = []rune("<<>>_ab1 -:\u00e9")
+// randomPatternAlphabet is the text the generated patterns and lines draw
+// from: the capture delimiters, both name alphabets, the unnamed capture,
+// separators, a multi-byte rune, a valid encoding of U+FFFD, and byte
+// sequences that are not valid UTF-8 — a lone invalid byte, a lead byte
+// with no continuation, a truncated three-byte sequence and an encoded
+// surrogate.
+var randomPatternAlphabet = []string{
+	"<", "<", ">", ">", "_", "a", "b", "1", " ", "-", ":", "\u00e9", "\uFFFD",
+	"\xff", "\xc3", "\xe2\x82", "\xed\xa0\x80",
+}
 
 // randomPatternSamples is how many generated patterns the random
 // differential compares, each against randomLinesPerPattern lines.
@@ -160,11 +165,11 @@ const (
 	randomMaxLength       = 12
 )
 
-// randomText is up to n random runes from randomPatternAlphabet.
+// randomText is up to n random entries of randomPatternAlphabet.
 func randomText(r *rand.Rand, n int) []byte {
 	var out []byte
 	for range r.IntN(n + 1) {
-		out = utf8.AppendRune(out, randomPatternAlphabet[r.IntN(len(randomPatternAlphabet))])
+		out = append(out, randomPatternAlphabet[r.IntN(len(randomPatternAlphabet))]...)
 	}
 	return out
 }
@@ -173,7 +178,7 @@ func randomBytes(r *rand.Rand) []byte { return randomText(r, randomMaxLength) }
 
 // randomPatternTokens are whole captures, near-captures and literal text,
 // so a generated pattern often carries several named captures.
-var randomPatternTokens = []string{"<a>", "<b>", "<_>", "<ab1>", "x", " ", "-", "\u00e9", "<", ">", "<1>"}
+var randomPatternTokens = []string{"<a>", "<b>", "<_>", "<ab1>", "x", " ", "-", "\u00e9", "<", ">", "<1>", "\xff", "\uFFFD"}
 
 // randomPatternTokenRun is the most tokens a token-built pattern joins.
 const randomPatternTokenRun = 6
@@ -284,13 +289,28 @@ func TestPattern_RandomDifferential_MatchesLoki(t *testing.T) {
 
 // compareErrors fails unless both sides accept, or both reject. A
 // validation rejection must also carry the same text; the empty pattern's
-// syntax error is the one rejection whose wording is not matched.
+// syntax error is the one rejection whose wording is not matched. A
+// pattern is empty when nothing precedes its first invalid UTF-8
+// sequence.
 func compareErrors(t *testing.T, fn string, p []byte, want, got error) {
 	t.Helper()
 	if (want == nil) != (got == nil) {
 		t.Fatalf("%s(%q) accept/reject: loki err=%v in-house err=%v", fn, p, want, got)
 	}
-	if want != nil && len(p) > 0 && want.Error() != got.Error() {
+	if want != nil && len(validUTF8Prefix(p)) > 0 && want.Error() != got.Error() {
 		t.Fatalf("%s(%q) error text: loki=%q in-house=%q", fn, p, want, got)
 	}
+}
+
+// validUTF8Prefix is p up to its first invalid UTF-8 sequence.
+func validUTF8Prefix(p []byte) []byte {
+	end := 0
+	for end < len(p) {
+		r, size := utf8.DecodeRune(p[end:])
+		if r == utf8.RuneError && size == 1 {
+			break
+		}
+		end += size
+	}
+	return p[:end]
 }
