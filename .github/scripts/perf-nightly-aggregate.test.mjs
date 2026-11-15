@@ -11,7 +11,13 @@ import { join } from 'node:path';
 import process from 'node:process';
 import test from 'node:test';
 
-import { PERF_NIGHTLY_JOB, PERF_NIGHTLY_WORKFLOW, readCalibrationRunners } from './lib/perf-nightly-matrix.mjs';
+import {
+  PERF_NIGHTLY_CALIBRATE_JOB,
+  PERF_NIGHTLY_JOB,
+  PERF_NIGHTLY_WORKFLOW,
+  readCalibrationRunners,
+  readClickHouseMatrix,
+} from './lib/perf-nightly-matrix.mjs';
 import {
   calibrationFailures,
   COMBINE_PACKAGE,
@@ -24,8 +30,8 @@ import {
   wallTimeTable,
 } from './perf-nightly-aggregate.mjs';
 
-test('verdict passes only when the sentinel legs and the replays both succeeded', () => {
-  assert.deepEqual(verdict({ sentinels: 'success', replays: 'success' }), []);
+test('verdict gates on the sentinel legs and the replays, and on nothing else', () => {
+  assert.deepEqual(verdict({ sentinels: 'success', replays: 'success', calibration: 'skipped' }), []);
   for (const bad of ['failure', 'cancelled', 'skipped', '', undefined]) {
     assert.equal(verdict({ sentinels: bad, replays: 'success' }).length, 1, `sentinels ${bad}`);
     assert.equal(verdict({ sentinels: 'success', replays: bad }).length, 1, `replays ${bad}`);
@@ -33,11 +39,12 @@ test('verdict passes only when the sentinel legs and the replays both succeeded'
   assert.equal(verdict({ sentinels: 'failure', replays: 'failure' }).length, 2);
 });
 
-test('a recalibration dispatch skips the replays, and only it may', () => {
-  assert.deepEqual(verdict({ sentinels: 'success', replays: 'skipped', calibrate: true }), []);
-  assert.equal(verdict({ sentinels: 'success', replays: 'skipped', calibrate: false }).length, 1);
-  assert.equal(verdict({ sentinels: 'failure', replays: 'skipped', calibrate: true }).length, 1);
-  assert.equal(verdict({ sentinels: 'success', replays: 'failure', calibrate: true }).length, 1);
+test('a recalibration dispatch gates on the calibration legs instead', () => {
+  assert.deepEqual(verdict({ sentinels: 'skipped', replays: 'skipped', calibration: 'success', calibrate: true }), []);
+  for (const bad of ['failure', 'cancelled', 'skipped', '', undefined]) {
+    assert.equal(verdict({ sentinels: 'skipped', replays: 'skipped', calibration: bad, calibrate: true }).length, 1, `calibration ${bad}`);
+  }
+  assert.equal(verdict({ sentinels: 'success', replays: 'success', calibration: 'failure', calibrate: false }).length, 0);
 });
 
 test('formatDuration renders minutes and seconds', () => {
@@ -112,8 +119,8 @@ test('missingLegs names every server-runner leg with no rounds file', () => {
 // combine exited with and left on disk.
 test('combineRounds sets written from the file the combine left, and fails on its exit and on missing legs', () => {
   const workflowText =
-    `jobs:\n  ${PERF_NIGHTLY_JOB}:\n    strategy:\n      matrix:\n        clickhouse: ['24.8', '26.9']\n` +
-    "        runner: ${{ fromJSON(inputs.calibrate && '[1, 2]' || '[1]') }}\n  perf-nightly:\n    steps: []\n";
+    `jobs:\n  ${PERF_NIGHTLY_CALIBRATE_JOB}:\n    strategy:\n      matrix:\n        clickhouse: ['24.8', '26.9']\n` +
+    '        runner: [1, 2]\n  perf-nightly:\n    steps: []\n';
   const dir = mkdtempSync(join(tmpdir(), 'nightly-combine-'));
   try {
     const roundsDir = join(dir, 'rounds');
@@ -157,7 +164,7 @@ test('combineRounds sets written from the file the combine left, and fails on it
 // The workflow's calibrate fan-out is held to the runner count the
 // derivation in calibration.go and docs/performance.background.md justifies:
 // with fewer legs every bound is refused.
-test('the calibrate matrix runs nightlyCalibrationRunners legs per server, each uploading its own rounds', () => {
+test('the calibration matrix runs nightlyCalibrationRunners legs per sentinel server, each uploading its own rounds', () => {
   const workflow = readFileSync(PERF_NIGHTLY_WORKFLOW, 'utf8');
   const source = readFileSync('test/perf/nightly/calibration.go', 'utf8');
   const m = /\nconst nightlyCalibrationRunners = (\d+)\n/.exec(source);
@@ -167,22 +174,22 @@ test('the calibrate matrix runs nightlyCalibrationRunners legs per server, each 
   assert.deepEqual(
     readCalibrationRunners(workflow),
     Array.from({ length: runners }, (_, i) => i + 1),
-    `${PERF_NIGHTLY_WORKFLOW}'s ${PERF_NIGHTLY_JOB} calibrate runner list is not 1..${runners}`,
+    `${PERF_NIGHTLY_WORKFLOW}'s ${PERF_NIGHTLY_CALIBRATE_JOB} runner list is not 1..${runners}`,
   );
+  assert.deepEqual(readClickHouseMatrix(workflow, PERF_NIGHTLY_CALIBRATE_JOB), readClickHouseMatrix(workflow, PERF_NIGHTLY_JOB));
   assert.match(workflow, /name: nightly-rounds-\$\{\{ matrix\.clickhouse \}\}-\$\{\{ matrix\.runner \}\}\n/);
   assert.match(workflow, /pattern: nightly-rounds-\*\n/);
 });
 
-test('readCalibrationRunners reads only the gate-once, calibrate-many runner line', () => {
-  const job = (line) => `jobs:\n  ${PERF_NIGHTLY_JOB}:\n    strategy:\n      matrix:\n${line}\n  perf-nightly:\n    steps: []\n`;
-  assert.deepEqual(readCalibrationRunners(job("        runner: ${{ fromJSON(inputs.calibrate && '[1, 2, 3]' || '[1]') }}")), [1, 2, 3]);
-  assert.equal(readCalibrationRunners(job("        runner: ${{ fromJSON(inputs.calibrate && '[1, 2]' || '[1, 2]') }}")), null);
-  assert.equal(readCalibrationRunners(job('        runner: [1, 2]')), null);
-  assert.equal(readCalibrationRunners('jobs:\n  other:\n    steps: []\n'), null);
+test('readCalibrationRunners reads the calibration job\'s runner list, and only its', () => {
+  const job = (name, line) => `jobs:\n  ${name}:\n    strategy:\n      matrix:\n${line}\n  perf-nightly:\n    steps: []\n`;
+  assert.deepEqual(readCalibrationRunners(job(PERF_NIGHTLY_CALIBRATE_JOB, '        runner: [1, 2, 3]')), [1, 2, 3]);
+  assert.equal(readCalibrationRunners(job(PERF_NIGHTLY_JOB, '        runner: [1, 2, 3]')), null);
+  assert.equal(readCalibrationRunners(job(PERF_NIGHTLY_CALIBRATE_JOB, "        clickhouse: ['24.8']")), null);
 });
 
 // The script itself: a recalibration whose combine cannot run fails the
-// verdict even when every leg succeeded and the replays were skipped.
+// verdict even when every calibration leg succeeded.
 test('a recalibration dispatch runs the combine into the verdict', () => {
   const run = (env) =>
     spawnSync(process.execPath, ['.github/scripts/perf-nightly-aggregate.mjs'], {
@@ -198,7 +205,7 @@ test('a recalibration dispatch runs the combine into the verdict', () => {
         ...env,
       },
     });
-  const calibrating = run({ CALIBRATE: 'true' });
+  const calibrating = run({ CALIBRATE: 'true', SENTINELS_RESULT: 'skipped', CALIBRATE_RESULT: 'success' });
   assert.equal(calibrating.status, 1, calibrating.stdout + calibrating.stderr);
   assert.match(calibrating.stdout + calibrating.stderr, /BASELINE_OUT names no file/);
   assert.equal(run({ CALIBRATE: 'false', REPLAYS_RESULT: 'success' }).status, 0);

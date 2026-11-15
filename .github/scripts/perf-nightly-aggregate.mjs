@@ -6,16 +6,16 @@
 // replays in their own job (`perf-nightly-replays`). This job passes only
 // when both `needs` results are `success`: a matrix job's result is
 // `success` only when every leg succeeded, so one red server fails it, and a
-// skipped or cancelled leg fails it rather than reading as green. The one
-// exception is a recalibration dispatch (CALIBRATE=true), which skips the
-// replays by design.
+// skipped or cancelled leg fails it rather than reading as green. A
+// recalibration dispatch (CALIBRATE=true) skips both by design and runs the
+// calibration legs (`perf-nightly-calibrate`) instead, which must succeed.
 //
 // It also writes each perf-nightly job's wall time of this run attempt to
 // the step summary, read from the run's own job list. The table is a report,
 // never the verdict: a failure to read it is logged and does not change the
 // exit code.
 //
-// On a recalibration dispatch every sentinel leg measures one runner's
+// On a recalibration dispatch every calibration leg measures one runner's
 // rounds and uploads them as nightly-rounds-<clickhouse>-<runner>; this job
 // downloads them all under ROUNDS_DIR and combines them into one bound file
 // at BASELINE_OUT (test/perf/nightly/calibrate, which derives each bound from
@@ -28,6 +28,7 @@
 //
 // Env:
 //   SENTINELS_RESULT  needs.perf-nightly-sentinels.result
+//   CALIBRATE_RESULT  needs.perf-nightly-calibrate.result
 //   REPLAYS_RESULT    needs.perf-nightly-replays.result
 //   CALIBRATE         "true" on a recalibration dispatch
 //   GH_TOKEN          a token with actions: read on REPO
@@ -39,8 +40,9 @@
 //   BASELINE_OUT      CALIBRATE only: where the combined bound file is written
 //   GITHUB_OUTPUT     receives `written` (true/false) on a recalibration
 //
-// Exit: 0 when both results are success (and, recalibrating, the combine
-// wrote the bound file with no refusal), 1 otherwise.
+// Exit: 0 when both results are success — recalibrating, when the
+// calibration legs succeeded and the combine wrote the bound file with no
+// refusal — 1 otherwise.
 
 import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
@@ -50,7 +52,7 @@ import { pathToFileURL } from 'node:url';
 import { DEFAULT_API_BASE, ghPaginate } from './lib/gh-api.mjs';
 import { appendStepSummary, capture, error, notice, setOutput, warning } from './lib/gh.mjs';
 import {
-  PERF_NIGHTLY_JOB,
+  PERF_NIGHTLY_CALIBRATE_JOB,
   PERF_NIGHTLY_WORKFLOW,
   readCalibrationRunners,
   readClickHouseMatrix,
@@ -128,7 +130,7 @@ function runGoCombine(files, out) {
 export function combineRounds(env, { workflowText, combine = runGoCombine, output = setOutput } = {}) {
   const out = env.BASELINE_OUT;
   if (!out) return ['calibration: BASELINE_OUT names no file to write'];
-  const servers = readClickHouseMatrix(workflowText, PERF_NIGHTLY_JOB);
+  const servers = readClickHouseMatrix(workflowText, PERF_NIGHTLY_CALIBRATE_JOB);
   const runners = readCalibrationRunners(workflowText);
   if (!servers || !runners) return [`calibration: ${PERF_NIGHTLY_WORKFLOW} names no calibrate matrix to expect legs from`];
   rmSync(out, { force: true });
@@ -139,13 +141,16 @@ export function combineRounds(env, { workflowText, combine = runGoCombine, outpu
   return calibrationFailures({ files, missing: missingLegs(files, servers, runners), status, written });
 }
 
-// verdict — the failures of the two `needs` results, empty when both passed.
-export function verdict({ sentinels, replays, calibrate }) {
-  const failures = [];
-  if (sentinels !== 'success') failures.push(`perf-nightly-sentinels: ${sentinels || 'unknown'}`);
-  const replaysOK = replays === 'success' || (calibrate && replays === 'skipped');
-  if (!replaysOK) failures.push(`perf-nightly-replays: ${replays || 'unknown'}`);
-  return failures;
+// verdict — the failures of the `needs` results this run's mode requires,
+// empty when they all passed: the sentinels and the replays to gate, the
+// calibration legs to recalibrate.
+export function verdict({ sentinels, replays, calibration, calibrate }) {
+  const required = calibrate
+    ? { 'perf-nightly-calibrate': calibration }
+    : { 'perf-nightly-sentinels': sentinels, 'perf-nightly-replays': replays };
+  return Object.entries(required)
+    .filter(([, result]) => result !== 'success')
+    .map(([job, result]) => `${job}: ${result || 'unknown'}`);
 }
 
 // formatDuration — whole seconds as "<m>m <s>s".
@@ -193,6 +198,7 @@ async function main() {
   const failures = verdict({
     sentinels: process.env.SENTINELS_RESULT,
     replays: process.env.REPLAYS_RESULT,
+    calibration: process.env.CALIBRATE_RESULT,
     calibrate,
   });
   if (calibrate) {

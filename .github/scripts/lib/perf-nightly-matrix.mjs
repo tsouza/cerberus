@@ -1,8 +1,9 @@
 // perf-nightly-matrix.mjs — the ClickHouse servers perf-nightly runs on.
 //
 // perf-nightly.yml runs its sentinels once per server of the
-// `perf-nightly-sentinels` job's matrix, and perf-nightly-selfcheck.yml runs
-// one self-check leg per server of the same list. Both declare it as the
+// `perf-nightly-sentinels` job's matrix, its calibration legs
+// (`perf-nightly-calibrate`) on the same list, and perf-nightly-selfcheck.yml
+// runs one self-check leg per server of the same list. Each declares it as the
 // one-line flow sequence `clickhouse: ['24.8', '25.9', '26.8']` under
 // `strategy.matrix`; this module reads it back for the checks that hold the
 // list to its sources (clickhouse-version-sync.mjs check h) and to the
@@ -10,19 +11,20 @@
 // a calibrate dispatch's combine expects rounds from (perf-nightly-aggregate.mjs).
 //
 // Exports:
-//   PERF_NIGHTLY_WORKFLOW / PERF_NIGHTLY_JOB
+//   PERF_NIGHTLY_WORKFLOW / PERF_NIGHTLY_JOB / PERF_NIGHTLY_CALIBRATE_JOB
 //   SELFCHECK_WORKFLOW / SELFCHECK_JOB
 //                         where each matrix lives.
 //   readClickHouseMatrix(workflowText, jobName)
 //                         the job's `clickhouse` matrix values, in order, or
 //                         null when the job or the line is missing.
 //   readCalibrationRunners(workflowText)
-//                         the runner values perf-nightly's sentinel matrix
-//                         takes on a calibrate dispatch, or null when the
-//                         `runner:` line is missing or of another shape.
+//                         the `runner` matrix values of perf-nightly's
+//                         calibration job, in order, or null when the job
+//                         or the line is missing.
 
 export const PERF_NIGHTLY_WORKFLOW = '.github/workflows/perf-nightly.yml';
 export const PERF_NIGHTLY_JOB = 'perf-nightly-sentinels';
+export const PERF_NIGHTLY_CALIBRATE_JOB = 'perf-nightly-calibrate';
 export const SELFCHECK_WORKFLOW = '.github/workflows/perf-nightly-selfcheck.yml';
 export const SELFCHECK_JOB = 'perf-nightly-selfcheck';
 
@@ -45,18 +47,14 @@ export function readClickHouseMatrix(workflowText, jobName) {
     .filter((v) => v.length > 0);
 }
 
-// The sentinel matrix's `runner:` line, one leg to gate and a JSON list of
-// legs to calibrate: `runner: ${{ fromJSON(inputs.calibrate && '[1, 2]' || '[1]') }}`.
-const CALIBRATION_RUNNERS_RE = /\n\s+runner:\s*\$\{\{\s*fromJSON\(inputs\.calibrate && '(\[[^'\n]*\])' \|\| '\[1\]'\)\s*\}\}/;
-
 export function readCalibrationRunners(workflowText) {
-  const block = jobBlock(workflowText, PERF_NIGHTLY_JOB);
+  const block = jobBlock(workflowText, PERF_NIGHTLY_CALIBRATE_JOB);
   if (block === null) return null;
-  const m = CALIBRATION_RUNNERS_RE.exec(block);
+  const m = /\n\s+runner:\s*\[([^\]\n]*)\]/.exec(block);
   if (!m) return null;
-  try {
-    return JSON.parse(m[1]);
-  } catch {
-    return null;
-  }
+  return m[1]
+    .split(',')
+    .map((v) => v.trim())
+    .filter((v) => v.length > 0)
+    .map(Number);
 }

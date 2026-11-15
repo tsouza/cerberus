@@ -191,7 +191,7 @@ func readNightlyBaseline() (nightlyBaseline, error) {
 
 // readNightlyBaselineFile parses the bound file at path.
 func readNightlyBaselineFile(path string) (nightlyBaseline, error) {
-	buf, err := os.ReadFile(path)
+	buf, err := os.ReadFile(path) //nolint:gosec // the committed bound file, or a calibration's -baseline flag
 	if err != nil {
 		return nightlyBaseline{}, fmt.Errorf("read baseline %s: %w", path, err)
 	}

@@ -275,8 +275,9 @@ every PR) to *broad* (corpus-wide, nightly).
    A gating run makes one pass over the nightly corpus and asserts one
    max-of-5 round per sentinel. A calibration is a `perf-nightly.yml` dispatch
    with `calibrate` (and, to recalibrate only some sentinels,
-   `calibrate_sentinels`). It runs `nightlyCalibrationRunners` (4) legs per
-   server, each on its own runner; each leg makes `nightlyCalibrationRounds`
+   `calibrate_sentinels`). In place of the gating legs it runs
+   `perf-nightly-calibrate`, `nightlyCalibrationRunners` (4) legs per server,
+   each on its own runner; each leg makes `nightlyCalibrationRounds`
    (5) such passes over one sample load (`just calibrate-nightly-perf-rounds
    <image> <rounds.json> [sentinel...]`) and uploads the round maxima of
    every sentinel it calibrates as `nightly-rounds-<clickhouse>-<runner>`.

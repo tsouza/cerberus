@@ -44,18 +44,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitFailed
 	}
 	if flags.NArg() == 0 {
-		fmt.Fprintln(stderr, "usage: calibrate [-baseline <committed.json>] [-out <path>] <rounds.json>...")
+		_, _ = fmt.Fprintln(stderr, "usage: calibrate [-baseline <committed.json>] [-out <path>] <rounds.json>...")
 		return exitFailed
 	}
 	refusals, err := nightly.CombineCalibrationFiles(*baseline, *out, flags.Args())
 	for _, refusal := range refusals {
-		fmt.Fprintf(stdout, "::error::%v — the sentinel keeps its committed bound\n", refusal)
+		_, _ = fmt.Fprintf(stdout, "::error::%v — the sentinel keeps its committed bound\n", refusal)
 	}
 	if err != nil {
-		fmt.Fprintf(stdout, "::error::no bound file written: %v\n", err)
+		_, _ = fmt.Fprintf(stdout, "::error::no bound file written: %v\n", err)
 		return exitFailed
 	}
-	fmt.Fprintf(stdout, "combined %d calibration rounds files into %s\n", flags.NArg(), *out)
+	_, _ = fmt.Fprintf(stdout, "combined %d calibration rounds files into %s\n", flags.NArg(), *out)
 	if len(refusals) > 0 {
 		return exitFailed
 	}

@@ -231,7 +231,7 @@ func CombineCalibrationFiles(baselinePath, outPath string, roundsPaths []string)
 }
 
 func readCalibrationRun(path string) (calibrationRun, error) {
-	buf, err := os.ReadFile(path)
+	buf, err := os.ReadFile(path) //nolint:gosec // a rounds file named on the combine's command line
 	if err != nil {
 		return calibrationRun{}, fmt.Errorf("read calibration rounds %s: %w", path, err)
 	}
@@ -252,7 +252,7 @@ func writeCalibrationRun(path string, run calibrationRun) error {
 	if err != nil {
 		return fmt.Errorf("marshal calibration rounds: %w", err)
 	}
-	if err := os.WriteFile(path, append(buf, '\n'), 0o600); err != nil {
+	if err := os.WriteFile(path, append(buf, '\n'), 0o600); err != nil { //nolint:gosec // the rounds path the calibration recipe names
 		return fmt.Errorf("write calibration rounds: %w", err)
 	}
 	return nil

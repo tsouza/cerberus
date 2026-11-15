@@ -39,11 +39,11 @@ on:
     inputs:
       calibrate:
         description: >-
-          Recalibrate instead of gating: several independent legs per server
-          each measure every sentinel over several max-of-5 rounds (`just
-          calibrate-nightly-perf-rounds`), and the perf-nightly job combines
-          every leg's rounds into one rewritten nightly-baseline.json, uploaded
-          as the artifact nightly-baseline.
+          Recalibrate instead of gating: perf-nightly-calibrate's several
+          independent legs per server each measure every sentinel over several
+          max-of-5 rounds (the calibrate-nightly-perf-rounds recipe), and the
+          perf-nightly job combines every leg's rounds into one rewritten
+          nightly-baseline.json, uploaded as the artifact nightly-baseline.
         type: boolean
         default: false
       calibrate_sentinels:
@@ -67,7 +67,9 @@ permissions:
 
 jobs:
   perf-nightly-sentinels:
-    name: perf-nightly-sentinels (${{ matrix.clickhouse }}${{ inputs.calibrate && format(', runner {0}', matrix.runner) || '' }})
+    name: perf-nightly-sentinels (${{ matrix.clickhouse }})
+    # A recalibration dispatch measures in perf-nightly-calibrate instead.
+    if: ${{ !inputs.calibrate }}
     runs-on: ubuntu-latest
     strategy:
       # One server's failure must not cancel the others into an ambiguous
@@ -75,19 +77,9 @@ jobs:
       fail-fast: false
       matrix:
         clickhouse: ['24.8', '25.9', '26.8', '26.9']
-        # One leg per server to gate. A calibration takes
-        # nightlyCalibrationRunners (test/perf/nightly/calibration.go)
-        # independent legs per server, since one run's peaks can all sit in
-        # the low tail of the run-to-run spread; perf-nightly-aggregate.test.mjs
-        # holds this list to that constant.
-        runner: ${{ fromJSON(inputs.calibrate && '[1, 2, 3, 4]' || '[1]') }}
     # Pulls one ClickHouse image, loads ~4.3M real rows across 3 tables plus
-    # the exporter-keyed copies, and issues the sentinel corpus five times —
-    # or, recalibrating, makes nightlyCalibrationRounds (5) passes over it.
-    # The budget is the calibration's: calibrate-nightly-perf-rounds's 75m go
-    # test timeout has to fit under it (go_test_timeout_budget_test.go), and
-    # a gating run stays bounded by perf-nightly-integration's own 15m.
-    timeout-minutes: 90
+    # the exporter-keyed copies, and issues the sentinel corpus five times.
+    timeout-minutes: 30
     env:
       # The image the leg boots: the alpine tag of its release line, the form
       # every real-ClickHouse lane pins (just/common.just).
@@ -100,11 +92,6 @@ jobs:
       # available) under /tmp — a per-run scratch path on the ephemeral
       # `ubuntu-latest` runner, never committed to the checkout.
       PERF_NIGHTLY_RESULTS_JSON: /tmp/perf-nightly-results.json
-      # Where a calibration leg writes its rounds (calibration.go), under
-      # /tmp for the same reason, and the runner the file names, so the
-      # combine can refuse one leg's rounds counted twice.
-      PERF_NIGHTLY_ROUNDS_JSON: /tmp/perf-nightly-rounds.json
-      PERF_NIGHTLY_CALIBRATION_RUNNER: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.clickhouse }}-${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -126,11 +113,66 @@ jobs:
           docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
 
       - name: "Run the #2370 nightly sentinels on ClickHouse ${{ matrix.clickhouse }}"
-        if: ${{ !inputs.calibrate }}
         run: just perf-nightly-integration "$PERF_NIGHTLY_CH_IMAGE"
 
+      # Renders the per-sentinel verdict as a clear table in the job's
+      # Summary tab BEFORE the raw log — see perf-nightly-step-summary.mjs's
+      # own doc comment for why this exists (a wall of raw WARN log lines
+      # with no synthesis at the top makes an intentionally-rejected
+      # sentinel indistinguishable from a real regression at a glance).
+      # `if: always()` so a verdict table (and, on a real failure, the
+      # specific reason) still renders even when the test step above
+      # failed — that is exactly the case a clear summary matters most for.
+      - name: Render the nightly verdict summary
+        if: always()
+        run: node .github/scripts/perf-nightly-step-summary.mjs
+
+  # A recalibration dispatch's measurement: nightlyCalibrationRunners
+  # (test/perf/nightly/calibration.go) independent legs per server of the
+  # sentinel matrix, since one run's rounds can all sit in the low tail of
+  # the run-to-run spread. clickhouse-version-sync.mjs (check h) holds the
+  # server list to perf-nightly-sentinels', and perf-nightly-aggregate.test.mjs
+  # holds the runner list to the constant. The perf-nightly job combines
+  # every leg's rounds.
+  perf-nightly-calibrate:
+    name: perf-nightly-calibrate (${{ matrix.clickhouse }}, runner ${{ matrix.runner }})
+    if: ${{ inputs.calibrate }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Every leg's rounds are reported; the combine names a missing one.
+      fail-fast: false
+      matrix:
+        clickhouse: ['24.8', '25.9', '26.8', '26.9']
+        runner: [1, 2, 3, 4]
+    # The sample load plus nightlyCalibrationRounds (5) passes over the
+    # corpus: calibrate-nightly-perf-rounds's 75m go test timeout has to fit
+    # under it (go_test_timeout_budget_test.go).
+    timeout-minutes: 90
+    env:
+      # The image the leg boots, as in perf-nightly-sentinels.
+      PERF_NIGHTLY_CH_IMAGE: clickhouse/clickhouse-server:${{ matrix.clickhouse }}-alpine
+      # Where the leg writes its rounds (calibration.go), a per-run scratch
+      # path under /tmp, and the runner the file names, so the combine can
+      # refuse one leg's rounds counted twice.
+      PERF_NIGHTLY_ROUNDS_JSON: /tmp/perf-nightly-rounds.json
+      PERF_NIGHTLY_CALIBRATION_RUNNER: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.clickhouse }}-${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The trimmed sample parquet files; see perf-nightly-sentinels.
+          lfs: true
+
+      - uses: ./.github/actions/setup-go
+
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2  # v2.90.2
+        with:
+          tool: just@1.46.0
+      - uses: ./.github/actions/registry-login
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
+
       - name: Measure calibration rounds on ClickHouse ${{ matrix.clickhouse }}, runner ${{ matrix.runner }}
-        if: ${{ inputs.calibrate }}
         env:
           CALIBRATE_SENTINELS: ${{ inputs.calibrate_sentinels }}
         # Each space-separated name is its own recipe argument.
@@ -145,24 +187,12 @@ jobs:
       # its server for the runner it is missing, and the perf-nightly job
       # names the missing leg.
       - name: Upload the calibration rounds
-        if: ${{ inputs.calibrate && !cancelled() }}
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
           name: nightly-rounds-${{ matrix.clickhouse }}-${{ matrix.runner }}
           path: ${{ env.PERF_NIGHTLY_ROUNDS_JSON }}
           if-no-files-found: warn
-
-      # Renders the per-sentinel verdict as a clear table in the job's
-      # Summary tab BEFORE the raw log — see perf-nightly-step-summary.mjs's
-      # own doc comment for why this exists (a wall of raw WARN log lines
-      # with no synthesis at the top makes an intentionally-rejected
-      # sentinel indistinguishable from a real regression at a glance).
-      # `if: always()` so a verdict table (and, on a real failure, the
-      # specific reason) still renders even when the test step above
-      # failed — that is exactly the case a clear summary matters most for.
-      - name: Render the nightly verdict summary
-        if: always()
-        run: node .github/scripts/perf-nightly-step-summary.mjs
 
   # The real-data replays that pin their own ClickHouse servers rather than a
   # matrix leg's, so they run once, beside the sentinel legs.
@@ -210,12 +240,13 @@ jobs:
         run: just histogram-report-lfs-integration
 
   # The perf-nightly context release.yml's preflight waits on: green only
-  # when every sentinel leg and the replays succeeded. It also reports each
-  # leg's wall time. On a calibrate dispatch it combines every leg's rounds
-  # into the recalibrated bound file. See perf-nightly-aggregate.mjs.
+  # when every sentinel leg and the replays succeeded — on a calibrate
+  # dispatch, when every calibration leg succeeded and the combine of their
+  # rounds wrote the recalibrated bound file. It also reports each leg's wall
+  # time. See perf-nightly-aggregate.mjs.
   perf-nightly:
     name: perf-nightly
-    needs: [perf-nightly-sentinels, perf-nightly-replays]
+    needs: [perf-nightly-sentinels, perf-nightly-calibrate, perf-nightly-replays]
     # Bare `always()`: this context reports on every run, so a failed,
     # cancelled or skipped leg fails it rather than leaving it unposted.
     if: always()
@@ -249,6 +280,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           SENTINELS_RESULT: ${{ needs.perf-nightly-sentinels.result }}
+          CALIBRATE_RESULT: ${{ needs.perf-nightly-calibrate.result }}
           REPLAYS_RESULT: ${{ needs.perf-nightly-replays.result }}
           CALIBRATE: ${{ inputs.calibrate && 'true' || 'false' }}
           ROUNDS_DIR: ${{ runner.temp }}/nightly-rounds
