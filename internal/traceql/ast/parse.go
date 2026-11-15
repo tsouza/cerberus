@@ -1,7 +1,6 @@
 package ast
 
 import (
-	"errors"
 	"fmt"
 )
 
@@ -187,18 +186,23 @@ func parseTokens(toks []token) (expr *RootExpr, err error) {
 // spanset filter and extracting the lone attribute. It rejects anything that
 // is not a bare attribute reference.
 func ParseIdentifier(s string) (Attribute, error) {
-	attr, err := loneAttribute(s)
-	if err != nil {
+	attr, reason, err := loneAttribute(s)
+	switch {
+	case err != nil:
 		return Attribute{}, fmt.Errorf("failed to parse identifier %s: %w", s, err)
+	case reason != "":
+		return Attribute{}, fmt.Errorf("failed to parse identifier %s: %s", s, reason)
 	}
 	return attr, nil
 }
 
-// loneAttribute reads s as the sole expression of a spanset filter.
-func loneAttribute(s string) (Attribute, error) {
+// loneAttribute reads s as the sole expression of a spanset filter. It
+// returns the parse error when s does not parse, and otherwise the reason s
+// is not a bare attribute reference, empty when it is one.
+func loneAttribute(s string) (attr Attribute, reason string, err error) {
 	root, err := parseTree("{" + s + "}")
 	if err != nil {
-		return Attribute{}, err
+		return Attribute{}, "", err
 	}
 	// A post-condition check on an internal contract, not a branch:
 	// parseTree either fails or returns a non-nil RootExpr whose Pipeline
@@ -208,15 +212,15 @@ func loneAttribute(s string) (Attribute, error) {
 	// makes an `&&` here indistinguishable. See parse_lenient_test.go's NOT
 	// KILLABLE footer.
 	if root == nil || len(root.Pipeline.Elements) == 0 {
-		return Attribute{}, errors.New("no pipeline elements found")
+		return Attribute{}, "no pipeline elements found", nil
 	}
 	first := root.Pipeline.Elements[0]
 	filter, isFilter := first.(*SpansetFilter)
 	if !isFilter {
-		return Attribute{}, fmt.Errorf("expected SpansetFilter but got %T", first)
+		return Attribute{}, fmt.Sprintf("expected SpansetFilter but got %T", first), nil
 	}
 	if attr, isAttr := filter.Expression.(Attribute); isAttr {
-		return attr, nil
+		return attr, "", nil
 	}
-	return Attribute{}, fmt.Errorf("expected Attribute but got %T", filter.Expression)
+	return Attribute{}, fmt.Sprintf("expected Attribute but got %T", filter.Expression), nil
 }

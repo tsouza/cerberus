@@ -74,6 +74,11 @@ func TestParseIdentifierVerdicts(t *testing.T) {
 		got, err := ParseIdentifier(c.in)
 		if err == nil || err.Error() != c.want || got != (Attribute{}) {
 			t.Errorf("ParseIdentifier(%q) = (%#v, %v), want an empty attribute and %q", c.in, got, err, c.want)
+			continue
+		}
+		// A reason is stated in the message only; it wraps no error.
+		if inner := errors.Unwrap(err); inner != nil {
+			t.Errorf("ParseIdentifier(%q) wraps %v, want no wrapped error", c.in, inner)
 		}
 	}
 
@@ -192,17 +197,18 @@ func TestAttrLiteralOperandsBehaviour(t *testing.T) {
 		ops      []Operator
 		wantOK   bool
 		wantAttr Attribute
+		wantVal  Static
 	}{
-		{"attribute on the left", bin(OpEqual, attr, one), []Operator{OpEqual}, true, attr},
-		{"attribute on the right", bin(OpEqual, one, attr), []Operator{OpEqual}, true, attr},
-		{"any listed operator", bin(OpRegex, attr, NewStaticString("a.*")), []Operator{OpEqual, OpRegex}, true, attr},
-		{"an array literal", bin(OpIn, attr, NewStaticIntArray([]int{1, 2})), []Operator{OpIn}, true, attr},
-		{"an operator not listed", bin(OpNotEqual, attr, one), []Operator{OpEqual}, false, Attribute{}},
-		{"no operators listed", bin(OpEqual, attr, one), nil, false, Attribute{}},
-		{"attributes on both sides", bin(OpEqual, attr, other), []Operator{OpEqual}, false, Attribute{}},
-		{"literals on both sides", bin(OpEqual, one, one), []Operator{OpEqual}, false, Attribute{}},
-		{"a nested operand", bin(OpEqual, attr, bin(OpAdd, one, one)), []Operator{OpEqual}, false, Attribute{}},
-		{"not a binary operation", attr, []Operator{OpEqual}, false, Attribute{}},
+		{"attribute on the left", bin(OpEqual, attr, one), []Operator{OpEqual}, true, attr, one},
+		{"attribute on the right", bin(OpEqual, one, attr), []Operator{OpEqual}, true, attr, one},
+		{"any listed operator", bin(OpRegex, attr, NewStaticString("a.*")), []Operator{OpEqual, OpRegex}, true, attr, NewStaticString("a.*")},
+		{"an array literal", bin(OpIn, attr, NewStaticIntArray([]int{1, 2})), []Operator{OpIn}, true, attr, NewStaticIntArray([]int{1, 2})},
+		{"an operator not listed", bin(OpNotEqual, attr, one), []Operator{OpEqual}, false, Attribute{}, StaticNil},
+		{"no operators listed", bin(OpEqual, attr, one), nil, false, Attribute{}, StaticNil},
+		{"attributes on both sides", bin(OpEqual, attr, other), []Operator{OpEqual}, false, Attribute{}, StaticNil},
+		{"literals on both sides", bin(OpEqual, one, one), []Operator{OpEqual}, false, Attribute{}, StaticNil},
+		{"a nested operand", bin(OpEqual, attr, bin(OpAdd, one, one)), []Operator{OpEqual}, false, Attribute{}, StaticNil},
+		{"not a binary operation", attr, []Operator{OpEqual}, false, Attribute{}, StaticNil},
 	}
 	for _, c := range cases {
 		gotAttr, gotVal, ok := attrLiteralOperands(c.fe, c.ops...)
@@ -210,17 +216,8 @@ func TestAttrLiteralOperandsBehaviour(t *testing.T) {
 			t.Errorf("%s: attrLiteralOperands = (%#v, %v, %v), want attribute %#v and %v", c.name, gotAttr, gotVal, ok, c.wantAttr, c.wantOK)
 			continue
 		}
-		if !ok && gotVal.Type != TypeNil {
-			t.Errorf("%s: a failed extraction returned the literal %v, want the nil static", c.name, gotVal)
-		}
-		if ok {
-			want := c.fe.(*BinaryOperation).RHS
-			if _, rightIsAttr := want.(Attribute); rightIsAttr {
-				want = c.fe.(*BinaryOperation).LHS
-			}
-			if wantVal := want.(Static); gotVal.Type != wantVal.Type || gotVal.String() != wantVal.String() {
-				t.Errorf("%s: literal = %v, want %v", c.name, gotVal, wantVal)
-			}
+		if gotVal.Type != c.wantVal.Type || gotVal.String() != c.wantVal.String() {
+			t.Errorf("%s: literal = %v, want %v", c.name, gotVal, c.wantVal)
 		}
 	}
 }
