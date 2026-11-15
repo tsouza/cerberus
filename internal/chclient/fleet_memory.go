@@ -92,8 +92,8 @@ func NewFleetMemory() *FleetMemory {
 // Observe folds pass into the memory and returns the fleet the memory now
 // describes: the build of every server it holds, sorted oldest first, the
 // most conservative verdict they gave on each canary, pass's completeness,
-// and Held set when one of those builds or verdicts is one no server pass
-// reached gave.
+// and Held set when one of those builds is one no server pass reached runs,
+// or one of those verdicts is one no server pass reached gave.
 func (m *FleetMemory) Observe(pass FleetPass) FleetVersions {
 	if len(pass.Nodes) == 0 {
 		return FleetVersions{Complete: pass.Complete}
@@ -156,8 +156,10 @@ func (m *FleetMemory) Observe(pass FleetPass) FleetVersions {
 				fv.Verdicts = make(map[string]chopt.Capability, len(n.verdicts))
 			}
 			fv.Verdicts[canary] = fv.Verdicts[canary].Conservative(v)
-			fv.Held = fv.Held || !reachedVerdicts[canaryVerdict{canary, v}]
 		}
+	}
+	for canary, v := range fv.Verdicts {
+		fv.Held = fv.Held || !reachedVerdicts[canaryVerdict{canary, v}]
 	}
 	slices.SortFunc(fv.Versions, chopt.Version.Compare)
 	return fv

@@ -8,21 +8,12 @@ import (
 
 // FleetNode is one ClickHouse server a fleet probe pass reached: its
 // serverUUID(), which names one server across restarts and builds, its build,
-// and the verdict of every capability canary the pass ran on it, keyed by
-// FleetCanary.Name. A canary the pass did not run on the server has no entry.
+// and the verdict of every capability canary the pass attributed to it, keyed
+// by FleetCanary.Name. A canary the pass did not run on the server has no entry.
 type FleetNode struct {
 	ID       string
 	Version  chopt.Version
 	Verdicts map[string]chopt.Capability
-}
-
-// FleetCanary is a capability canary the fleet probe runs on every server it
-// reads through a configured address. Name keys its verdict in
-// FleetNode.Verdicts and FleetVersions.Verdicts, and Probe runs it once over a
-// client and returns the server's verdict.
-type FleetCanary struct {
-	Name  string
-	Probe func(ctx context.Context, c *Client) chopt.Capability
 }
 
 // FleetPass is what one pass of the fleet probe read: every server it
@@ -46,10 +37,11 @@ type FleetVersions struct {
 	// contributes nothing.
 	Verdicts map[string]chopt.Capability
 	Complete bool
-	// Held reports that Versions holds a build, or Verdicts rests on a
-	// verdict, that no server the pass reached gave: a server an earlier pass
-	// reached, which the memory has not forgotten, gave it. Every decision
-	// read off the fleet may then rest on that server.
+	// Held reports that Versions holds a build no server the pass reached
+	// runs, or that Verdicts holds a verdict no server the pass reached gave
+	// on that canary: a server an earlier pass reached, which the memory has
+	// not forgotten, gave it. Every decision read off the fleet may then rest
+	// on that server.
 	Held bool
 }
 
@@ -76,9 +68,9 @@ func (fv FleetVersions) Lowest() (chopt.Version, bool) {
 // pass reads it only when its connection lands on it, and FleetMemory holds
 // it between such passes.
 //
-// Every canary runs on each address's client, and its verdict is attributed
-// to a server by probeCanaries. The cluster arm reads builds only, so a
-// replica read only through it carries no verdict.
+// Every canary runs on each address's client, in the order given, and its
+// verdict is attributed to a server by probeCanaries. The cluster arm reads
+// builds only, so a replica read only through it carries no verdict.
 //
 // A failed dial, a failed read, or a failed cluster read leaves the pass
 // incomplete rather than silently reporting a smaller fleet.
@@ -132,28 +124,38 @@ func ProbeFleet(ctx context.Context, cfg Config, cluster string, canaries ...Fle
 }
 
 // probeCanaries runs every canary over c and returns the servers they ran on,
-// each carrying the verdicts of the canaries that ran on it. first is the
-// server c's connection reached last. Every canary after the first runs right
-// after a fresh identity read on c, and its verdict belongs to the server that
-// read named: the driver closes a connection on any error, so the statement
-// after a canary the server refused dials anew, and behind a load balancer the
-// new connection can reach a different server. read is false when an identity
-// read failed, leaving the remaining canaries unrun.
+// each carrying the verdicts attributed to it. first is the server c's
+// connection reached last.
+//
+// A canary whose own statement names the server that answered (an accepted
+// settings canary) is attributed to that server. Any other verdict — a
+// refusal, or an answer that names no server — is attributed to the server
+// the connection's last identity read named. The driver closes a connection
+// on any error, so after a canary that did not answer available, the next
+// statement dials anew, and behind a load balancer it can reach a different
+// server: the identity is read again before the next canary. read is false
+// when that read failed, leaving the remaining canaries unrun.
 func probeCanaries(ctx context.Context, c *Client, first FleetNode, canaries []FleetCanary) (nodes []FleetNode, read bool) {
 	nodes = []FleetNode{first}
-	for i, canary := range canaries {
-		if i > 0 {
+	connected := true
+	for _, canary := range canaries {
+		if !connected {
 			node, err := c.ProbeNode(ctx)
 			if err != nil {
 				return nodes, false
 			}
 			nodes = append(nodes, node)
 		}
+		answer := canary.probe(ctx, c)
+		if answer.identified {
+			nodes = append(nodes, answer.node)
+		}
 		on := &nodes[len(nodes)-1]
 		if on.Verdicts == nil {
 			on.Verdicts = make(map[string]chopt.Capability, 1)
 		}
-		on.Verdicts[canary.Name] = canary.Probe(ctx, c)
+		on.Verdicts[canary.Name] = answer.verdict
+		connected = answer.verdict == chopt.CapabilityAvailable
 	}
 	return nodes, true
 }

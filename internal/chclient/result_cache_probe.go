@@ -6,17 +6,13 @@ import (
 	"github.com/tsouza/cerberus/internal/chopt"
 )
 
-// resultCacheCapabilityProbeSQL is the canary body — see
-// tsGridCapabilityProbeSQL's own doc for why it is a trivial constant SELECT
-// rendered as a String column rather than a real query-cache round trip: the
-// canary only needs to learn whether the server's SETTINGS POLICY accepts the
-// use_query_cache / query_cache_ttl settings cerberus stamps on an eligible
-// query, which ClickHouse decides (constraint / readonly enforcement) when it
-// applies the per-query settings map, so a trivial body isolates the
-// FORBIDDEN signal with zero dependence on any real query shape. Reusing the
-// SAME constant keeps the two canaries byte-identical on the one property
-// that actually matters here (a String-typed projection Client.QueryStrings
-// can decode); it is not a case of two probes needing the same setting.
+// The result_cache canary's body is capabilityCanarySQL — see its own doc for
+// why it is a trivial constant SELECT rather than a real query-cache round
+// trip: the canary only needs to learn whether the server's SETTINGS POLICY
+// accepts the use_query_cache / query_cache_ttl settings cerberus stamps on an
+// eligible query, which ClickHouse decides (constraint / readonly enforcement)
+// when it applies the per-query settings map, so a trivial body isolates the
+// FORBIDDEN signal with zero dependence on any real query shape.
 //
 // What this canary therefore CANNOT see, and was once wrongly documented as
 // covering: the query cache's BODY-dependent refusals, which ClickHouse
@@ -28,7 +24,6 @@ import (
 // SettingQueryCacheNondeterministicFunctionHandling so a refusal costs a
 // cache miss rather than the query (see result_cache.go and cerberus issue
 // #2895). The probe keeps exactly the one job it can actually do.
-const resultCacheCapabilityProbeSQL = tsGridCapabilityProbeSQL
 
 // resultCacheProbeTTLSeconds is the query_cache_ttl the boot canary stamps
 // alongside use_query_cache=1. Its value is otherwise irrelevant — the
@@ -63,7 +58,6 @@ const resultCacheProbeTTLSeconds = 1
 // real dashboard queries. Negligible next to real query volume and not worth
 // a second, probe-suppressing code path.
 func (c *Client) ProbeResultCacheCapability(ctx context.Context) chopt.Capability {
-	ctx = WithResultCacheSetting(withCapabilityCanary(ctx), resultCacheProbeTTLSeconds)
-	_, err := c.QueryStrings(ctx, resultCacheCapabilityProbeSQL)
-	return classifyCapabilityFromProbeErr(err)
+	_, verdict, _ := c.probeCanaryNode(WithResultCacheSetting(ctx, resultCacheProbeTTLSeconds))
+	return verdict
 }

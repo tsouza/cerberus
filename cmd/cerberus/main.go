@@ -1391,7 +1391,8 @@ type chOptResolution struct {
 	// chOptFloorRetryInterval (nextReprobeDelay).
 	FleetIncomplete bool
 	// FleetHeld records that the fleet behind the resolution holds a build
-	// or a canary verdict no server that pass reached gave
+	// no server that pass reached runs, or a canary verdict in force no
+	// server that pass reached gave
 	// (chclient.FleetVersions.Held), so the next pass runs at
 	// chOptFloorRetryInterval (nextReprobeDelay).
 	FleetHeld bool
@@ -1677,7 +1678,7 @@ func resolveQueryWorkload(
 	if configured == "" {
 		return "", chopt.CapabilityUnknown, nil
 	}
-	capability = fleet.Capability(queryWorkloadCanary)
+	capability = fleet.Capability(chclient.CanaryQueryWorkload)
 	resolved, err = decideQueryWorkload(configured, capability, mode, fatalOnReject)
 	if err != nil {
 		return "", capability, err

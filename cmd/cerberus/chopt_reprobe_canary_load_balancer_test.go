@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -12,73 +11,78 @@ import (
 	"github.com/tsouza/cerberus/internal/config"
 )
 
-// balancedWorkload is the operator-configured CERBERUS_CH_QUERY_WORKLOAD whose
-// CREATE WORKLOAD exists on replica A only.
+// balancedWorkload is the operator-configured CERBERUS_CH_QUERY_WORKLOAD.
 const balancedWorkload = "cerberus_queries"
 
-// balancedRefusalPasses is how many passes the probe alternates between the
-// two replicas while B refuses: enough alternations that a verdict following
-// the last pass would have flipped back many times over.
-const balancedRefusalPasses = 40
+// balancedPhasePasses is how many passes each phase of the canary test
+// alternates between the two replicas: enough alternations that a verdict
+// following the last pass would have flipped back several times over. Even,
+// so every phase starts on replica A.
+const balancedPhasePasses = 8
 
-// canaryVerdicts is the verdict a replica gives on every canary
-// fleetCanaries runs for an auto selection with a workload configured.
-func canaryVerdicts(v chopt.Capability) map[string]chopt.Capability {
-	return map[string]chopt.Capability{tsGridCanary: v, resultCacheCanary: chopt.CapabilityAvailable, queryWorkloadCanary: v}
+// balancedCanaryConfig selects auto plus the opt-in query_log_union and
+// configures the workload, so the probe runs all four canaries.
+var balancedCanaryConfig = config.Config{
+	CHOptimizations:     chopt.SelectionAuto + "," + chopt.FeatureQueryLogUnion,
+	CHOptimizationsMode: chopt.Permissive,
+	CHQueryWorkload:     balancedWorkload,
+}
+
+// replicaVerdicts is every canary permitting except refused, which forbids
+// ("" refuses none).
+func replicaVerdicts(refused string) map[string]chopt.Capability {
+	verdicts := map[string]chopt.Capability{}
+	for _, c := range fleetCanaries(balancedCanaryConfig.CHOptimizations, balancedCanaryConfig.CHQueryWorkload) {
+		verdicts[c.Name] = chopt.CapabilityAvailable
+	}
+	if refused != "" {
+		verdicts[refused] = chopt.CapabilityForbidden
+	}
+	return verdicts
 }
 
 // TestReprobeCHOptimizations_LoadBalancedCanaryHoldsTheRefusingReplica is two
 // replicas on one build behind one load-balanced address, with no cluster
 // named. Every pass reaches the one replica its connection landed on and
-// reports itself complete. Replica A permits the experimental ts_grid setting
-// and has the configured workload defined; replica B forbids the setting and
-// lacks the workload, so its canaries answer forbidden, and the passes
-// alternate between them.
+// reports itself complete, and the passes alternate between them. Replica A
+// permits every canary. Replica B forbids one canary per phase — the ts_grid
+// setting, the result cache settings, the query-log union table, then the
+// workload (its CREATE WORKLOAD missing) — and none in the last phase.
 //
-// Once a pass has reached B, every later pass must leave the workload unset
-// and the native ts_grid features out of the set for as long as B refuses —
-// never the verdict of whichever replica the last pass landed on. Every such
-// pass that lands on A rests on B's remembered verdict, which runs the next
-// pass at the fast cadence. When B starts permitting both, the first pass that
-// reaches it restores the workload and the features.
+// From the first pass of a phase that reaches B until the phase ends, the
+// capability B refuses must stay off on every pass, including the passes that
+// land on A, and every other capability must be on: each canary's verdict
+// decides its own capability and no other. Every pass that lands on A rests
+// on B's remembered refusal and runs the next pass at the fast cadence; a
+// pass that lands on B reached the refusal and is not held.
 func TestReprobeCHOptimizations_LoadBalancedCanaryHoldsTheRefusingReplica(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.Config{CHOptimizations: chopt.SelectionAuto, CHOptimizationsMode: chopt.Permissive, CHQueryWorkload: balancedWorkload}
-	resolve := func(tsGrid chopt.Capability) chopt.EnabledSet {
-		t.Helper()
-		set, _, err := chopt.Resolve(chopt.Config{
-			Optimizations:         cfg.CHOptimizations,
-			Mode:                  cfg.CHOptimizationsMode,
-			Capability:            tsGrid,
-			ResultCacheCapability: chopt.CapabilityAvailable,
-		}, rollbackFromBuild)
-		if err != nil {
-			t.Fatalf("resolve auto against %s with ts_grid %s: %v", rollbackFromBuild, tsGrid, err)
-		}
-		return set
+	cfg := balancedCanaryConfig
+	permitted, _, err := chopt.Resolve(fleetResolveConfig(cfg, chclient.FleetVersions{Verdicts: replicaVerdicts("")}), rollbackFromBuild)
+	if err != nil {
+		t.Fatalf("resolve against %s with every canary permitting: %v", rollbackFromBuild, err)
 	}
-	permitted, refused := resolve(chopt.CapabilityAvailable), resolve(chopt.CapabilityForbidden)
-	var gated []string
-	for _, id := range permitted.IDs() {
-		if !refused.Has(id) {
-			gated = append(gated, id)
+	// on reports whether the capability canary gates is in force in res.
+	on := map[string]func(res chOptResolution) bool{
+		chclient.CanaryTSGrid:        func(res chOptResolution) bool { return res.Set.Has(chopt.FeatureTSGridRange) },
+		chclient.CanaryResultCache:   func(res chOptResolution) bool { return res.Set.Has(chopt.FeatureResultCache) },
+		chclient.CanaryQueryLogUnion: func(res chOptResolution) bool { return res.Set.Has(chopt.FeatureQueryLogUnion) },
+		chclient.CanaryQueryWorkload: func(res chOptResolution) bool { return res.QueryWorkload == balancedWorkload },
+	}
+	initial := chOptResolution{Set: permitted, ResolvedVersion: rollbackFromBuild, QueryWorkload: balancedWorkload}
+	for canary, isOn := range on {
+		if !isOn(initial) {
+			t.Fatalf("premise: with every canary permitting on %s, %s's capability is off: %v", rollbackFromBuild, canary, permitted.IDs())
 		}
 	}
-	if !slices.Contains(gated, chopt.FeatureTSGridRange) {
-		t.Fatalf("premise: auto on %s enables %s only when the ts_grid canary permits it; gated = %v",
-			rollbackFromBuild, chopt.FeatureTSGridRange, gated)
-	}
-	if names := canaryNames(fleetCanaries(cfg.CHOptimizations, cfg.CHQueryWorkload)); !slices.Equal(names, slices.Sorted(maps.Keys(canaryVerdicts(chopt.CapabilityAvailable)))) {
-		t.Fatalf("premise: the probe runs canaries %v; the replicas answer %v", names, canaryVerdicts(chopt.CapabilityAvailable))
-	}
-	live := newCHOptLive(chOptResolution{Set: permitted, ResolvedVersion: rollbackFromBuild, QueryWorkload: balancedWorkload})
+	phases := []string{chclient.CanaryTSGrid, chclient.CanaryResultCache, chclient.CanaryQueryLogUnion, chclient.CanaryQueryWorkload, ""}
+	live := newCHOptLive(initial)
 
-	// Pass n (from 1) lands on A when n is odd and on B when it is even. B
-	// refuses through pass balancedRefusalPasses and permits after. Each pass
-	// records the resolution in force when it starts, which is the one the
-	// previous pass left.
-	const permittedCheck = balancedRefusalPasses + 3
+	// Pass n (from 1) is in phase (n-1)/balancedPhasePasses and lands on B
+	// when n is even. Each pass records the resolution in force when it
+	// starts, which is the one the previous pass left.
+	lastPass := len(phases) * balancedPhasePasses
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	inForceAt := map[int]chOptResolution{}
@@ -86,15 +90,13 @@ func TestReprobeCHOptimizations_LoadBalancedCanaryHoldsTheRefusingReplica(t *tes
 	probe := func(context.Context) chclient.FleetPass {
 		pass++
 		inForceAt[pass] = live.get()
-		if pass == permittedCheck {
+		if pass == lastPass+1 {
 			cancel()
 		}
-		node := chclient.FleetNode{ID: balancedReplicaA, Version: rollbackFromBuild, Verdicts: canaryVerdicts(chopt.CapabilityAvailable)}
+		node := chclient.FleetNode{ID: balancedReplicaA, Version: rollbackFromBuild, Verdicts: replicaVerdicts("")}
 		if pass%2 == 0 {
-			node = chclient.FleetNode{ID: balancedReplicaB, Version: rollbackFromBuild, Verdicts: canaryVerdicts(chopt.CapabilityForbidden)}
-			if pass > balancedRefusalPasses {
-				node.Verdicts = canaryVerdicts(chopt.CapabilityAvailable)
-			}
+			phase := min((pass-1)/balancedPhasePasses, len(phases)-1)
+			node = chclient.FleetNode{ID: balancedReplicaB, Version: rollbackFromBuild, Verdicts: replicaVerdicts(phases[phase])}
 		}
 		return chclient.FleetPass{Nodes: []chclient.FleetNode{node}, Complete: true}
 	}
@@ -106,35 +108,31 @@ func TestReprobeCHOptimizations_LoadBalancedCanaryHoldsTheRefusingReplica(t *tes
 			reprobeTiming{steady: time.Millisecond, earlySpacing: time.Hour}, newReprobeTrigger(), balancedWorkload, rememberingFleetProber(probe))
 	}()
 	<-done
-	if pass < permittedCheck {
-		t.Fatalf("the re-probe ran %d passes before the deadline; want %d", pass, permittedCheck)
+	if pass <= lastPass {
+		t.Fatalf("the re-probe ran %d passes before the deadline; want %d", pass, lastPass+1)
 	}
 
-	if got := inForceAt[2]; got.QueryWorkload != balancedWorkload || !got.Set.Has(chopt.FeatureTSGridRange) {
-		t.Errorf("after pass 1 reached only A: workload %q, %s in set = %v; want %q and in the set",
-			got.QueryWorkload, chopt.FeatureTSGridRange, got.Set.Has(chopt.FeatureTSGridRange), balancedWorkload)
-	}
-	for n := 3; n <= balancedRefusalPasses+2; n++ {
-		res := inForceAt[n]
-		lastOnA := (n-1)%2 == 1
-		if res.QueryWorkload != "" {
-			t.Errorf("after pass %d (landed on A: %v): workload %q in force while replica B lacks it; want none",
-				n-1, lastOnA, res.QueryWorkload)
+	for m := 1; m <= lastPass; m++ {
+		within := (m - 1) % balancedPhasePasses
+		if within == 0 {
+			// The phase's first pass lands on A and may still rest on the
+			// previous phase's refusal.
+			continue
 		}
-		for _, id := range gated {
-			if res.Set.Has(id) {
-				t.Errorf("after pass %d (landed on A: %v): %s is in force while replica B forbids the ts_grid setting",
-					n-1, lastOnA, id)
+		refused := phases[(m-1)/balancedPhasePasses]
+		res := inForceAt[m+1]
+		landedOnB := m%2 == 0
+		for canary, isOn := range on {
+			if want := canary != refused; isOn(res) != want {
+				t.Errorf("after pass %d (B refuses %q, landed on B: %v): %s capability on = %v; want %v",
+					m, refused, landedOnB, canary, isOn(res), want)
 			}
 		}
-		if lastOnA && (!res.FleetHeld || nextReprobeDelay(res, chOptReprobeInterval) != chOptFloorRetryInterval) {
-			t.Errorf("after pass %d landed on A: held=%v, next re-probe in %s; want held and the fast %s while B's refusal is remembered",
-				n-1, res.FleetHeld, nextReprobeDelay(res, chOptReprobeInterval), chOptFloorRetryInterval)
+		wantHeld := refused != "" && !landedOnB
+		if res.FleetHeld != wantHeld || (nextReprobeDelay(res, chOptReprobeInterval) == chOptFloorRetryInterval) != wantHeld {
+			t.Errorf("after pass %d (B refuses %q, landed on B: %v): held=%v, next re-probe in %s; want held=%v",
+				m, refused, landedOnB, res.FleetHeld, nextReprobeDelay(res, chOptReprobeInterval), wantHeld)
 		}
-	}
-	if res := inForceAt[permittedCheck]; res.QueryWorkload != balancedWorkload || !res.Set.Has(chopt.FeatureTSGridRange) || res.FleetHeld {
-		t.Errorf("after B permitted and pass %d reached it: workload %q, %s in set = %v, held=%v; want %q, in the set, not held",
-			permittedCheck-1, res.QueryWorkload, chopt.FeatureTSGridRange, res.Set.Has(chopt.FeatureTSGridRange), res.FleetHeld, balancedWorkload)
 	}
 }
 
@@ -148,23 +146,17 @@ func TestFleetCanaries_RunsWhatTheConfigurationAsksFor(t *testing.T) {
 		selection, workload string
 		want                []string
 	}{
-		{chopt.SelectionAuto, "", []string{resultCacheCanary, tsGridCanary}},
-		{chopt.SelectionAuto + "," + chopt.FeatureQueryLogUnion, "", []string{queryLogUnionCanary, resultCacheCanary, tsGridCanary}},
-		{chopt.SelectionAuto, balancedWorkload, []string{queryWorkloadCanary, resultCacheCanary, tsGridCanary}},
+		{chopt.SelectionAuto, "", []string{chclient.CanaryResultCache, chclient.CanaryTSGrid}},
+		{chopt.SelectionAuto + "," + chopt.FeatureQueryLogUnion, "", []string{chclient.CanaryQueryLogUnion, chclient.CanaryResultCache, chclient.CanaryTSGrid}},
+		{chopt.SelectionAuto, balancedWorkload, []string{chclient.CanaryQueryWorkload, chclient.CanaryResultCache, chclient.CanaryTSGrid}},
 	}
 	for _, tc := range cases {
-		if got := canaryNames(fleetCanaries(tc.selection, tc.workload)); !slices.Equal(got, tc.want) {
-			t.Errorf("fleetCanaries(%q, %q) = %v; want %v", tc.selection, tc.workload, got, tc.want)
+		names := make([]string, 0, len(tc.want))
+		for _, c := range fleetCanaries(tc.selection, tc.workload) {
+			names = append(names, c.Name)
+		}
+		if slices.Sort(names); !slices.Equal(names, tc.want) {
+			t.Errorf("fleetCanaries(%q, %q) = %v; want %v", tc.selection, tc.workload, names, tc.want)
 		}
 	}
-}
-
-// canaryNames is the sorted names of canaries.
-func canaryNames(canaries []chclient.FleetCanary) []string {
-	names := make([]string, 0, len(canaries))
-	for _, c := range canaries {
-		names = append(names, c.Name)
-	}
-	slices.Sort(names)
-	return names
 }

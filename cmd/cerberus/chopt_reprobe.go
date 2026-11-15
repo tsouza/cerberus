@@ -187,8 +187,8 @@ const chOptReprobeInterval = 5 * time.Minute
 // (fleetResolutionVersion, gatesInForce) until a pass reaches every node, so
 // the loop runs at this cadence until one does.
 //
-// So is a fleet holding a build or a canary verdict no server the pass
-// reached gave (FleetHeld): a replica behind a load balancer that a pass
+// So is a fleet holding a build no server the pass reached runs, or a canary
+// verdict in force no server the pass reached gave (FleetHeld): a replica behind a load balancer that a pass
 // reached earlier and the fleet memory still holds, whose build may be holding
 // the version down or a defect gate on, or whose verdict may be keeping a
 // capability off. Each pass that lands on it refreshes its entry and is the
@@ -202,8 +202,8 @@ const chOptFloorRetryInterval = 10 * time.Second
 // nextReprobeDelay is how long to wait before the next resolution attempt,
 // given the one currently in force: chOptFloorRetryInterval while it is a
 // floor fallback, came from a pass that could not reach every node, or rests on
-// a build or canary verdict no server the pass reached gave; the steady
-// cadence otherwise.
+// a build or a canary verdict in force no server the pass reached gave; the
+// steady cadence otherwise.
 func nextReprobeDelay(res chOptResolution, steady time.Duration) time.Duration {
 	if res.VersionFallback || res.FleetIncomplete || res.FleetHeld {
 		floor := chOptFloorRetryInterval

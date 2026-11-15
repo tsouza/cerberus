@@ -6,14 +6,6 @@ import (
 	"github.com/tsouza/cerberus/internal/chopt"
 )
 
-// workloadCapabilityProbeSQL is the canary body. Reuses the SAME trivial
-// `SELECT '1'` constant ts_grid_probe.go's tsGridCapabilityProbeSQL and
-// result_cache_probe.go's resultCacheCapabilityProbeSQL already declare —
-// see tsGridCapabilityProbeSQL's own doc for why a trivial String-typed
-// projection isolates exactly the FORBIDDEN signal (the per-query settings
-// map is applied, and can be rejected, BEFORE the query body is analysed).
-const workloadCapabilityProbeSQL = tsGridCapabilityProbeSQL
-
 // workloadCapabilityProbeName is the WORKLOAD name the boot canary stamps
 // when the operator has NOT configured CERBERUS_CH_QUERY_WORKLOAD (cmd/
 // cerberus only calls this probe when a name IS configured, so in practice
@@ -37,7 +29,8 @@ const workloadCapabilityProbeName = "cerberus_probe"
 //
 // Mirrors ProbeTSGridCapability / ProbeResultCacheCapability exactly: the
 // same tri-state classification (classifyCapabilityFromProbeErr) over the
-// same trivial canary body, and the same "never returns an error" contract.
+// same trivial canary body (capabilityCanarySQL), and the same "never returns
+// an error" contract.
 // cmd/cerberus runs it as a fleet canary (ProbeFleet), ONLY when
 // CERBERUS_CH_QUERY_WORKLOAD is non-empty (an unconfigured deployment skips
 // the probe entirely — the knob's mere absence is already the full gate),
@@ -45,9 +38,8 @@ const workloadCapabilityProbeName = "cerberus_probe"
 // FATAL (enforcing) vs WARN-and-skip (permissive) on a Forbidden/Unreachable
 // verdict.
 func (c *Client) ProbeQueryWorkloadCapability(ctx context.Context, workloadName string) chopt.Capability {
-	ctx = WithWorkloadSetting(withCapabilityCanary(ctx), workloadProbeName(workloadName))
-	_, err := c.QueryStrings(ctx, workloadCapabilityProbeSQL)
-	return classifyCapabilityFromProbeErr(err)
+	_, verdict, _ := c.probeCanaryNode(WithWorkloadSetting(ctx, workloadProbeName(workloadName)))
+	return verdict
 }
 
 // workloadProbeName returns configured unchanged when non-empty, else the

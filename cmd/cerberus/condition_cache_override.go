@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
@@ -72,8 +73,8 @@ type fleetPassProber func(ctx context.Context) chclient.FleetPass
 // what feature resolution, the capability canary verdicts, the defect gates
 // and the analyzer decision read. A replica a pass through a load-balanced
 // address did not land on therefore still counts in each of them until it
-// reports another build or verdict, or is forgotten. Boot and the re-probe loop share the returned prober, so they
-// share the memory.
+// reports another build or verdict, or is forgotten. Boot and the re-probe
+// loop share the returned prober, so they share the memory.
 func rememberingFleetProber(probe fleetPassProber) fleetProber {
 	memory := chclient.NewFleetMemory()
 	return func(ctx context.Context) chclient.FleetVersions {
@@ -88,7 +89,8 @@ func rememberingFleetProber(probe fleetPassProber) fleetProber {
 // every server it reads through an address. A node behind a load balancer
 // that neither list names is read only when a probe lands on it, and the
 // memory holds it, with its canary verdicts, between those passes
-// (rememberingFleetProber). cfg.CHQueryWorkload is the operator-configured
+// (rememberingFleetProber). Each pass starts the canaries one further along
+// (chclient.RotateCanaries). cfg.CHQueryWorkload is the operator-configured
 // workload, read before boot resolves it.
 //
 // The connections bind to ClickHouse's always-present `default` database, not
@@ -98,8 +100,16 @@ func rememberingFleetProber(probe fleetPassProber) fleetProber {
 // which would mask a reachable server as a failed probe pinned to the floor.
 func liveFleetProber(cfg config.Config) fleetProber {
 	canaries := fleetCanaries(cfg.CHOptimizations, cfg.CHQueryWorkload)
+	var (
+		mu     sync.Mutex
+		passes int
+	)
 	return rememberingFleetProber(func(ctx context.Context) chclient.FleetPass {
-		return chclient.ProbeFleet(ctx, bootstrapClickHouseConfig(cfg.ClickHouse, versionProbePool), cfg.SchemaProvisioning.Cluster, canaries...)
+		mu.Lock()
+		order := chclient.RotateCanaries(canaries, passes)
+		passes++
+		mu.Unlock()
+		return chclient.ProbeFleet(ctx, bootstrapClickHouseConfig(cfg.ClickHouse, versionProbePool), cfg.SchemaProvisioning.Cluster, order...)
 	})
 }
 

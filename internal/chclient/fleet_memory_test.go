@@ -222,9 +222,10 @@ func landedWith(id string, verdict chopt.Capability) FleetPass {
 // TestFleetMemory_LoadBalancedCanaryHoldsTheRefusingReplica: passes that
 // alternate between a replica whose canary permits and one whose canary
 // refuses, on one build, describe a fleet whose verdict is the refusal on
-// every pass after the refusing replica was first reached. Held marks every
-// such pass: each one rests on the verdict of the replica it did not reach.
-// When the refusing replica's own pass permits, the fleet permits.
+// every pass after the refusing replica was first reached. Held marks
+// exactly the passes that land on the permitting replica: the refusal they
+// rest on comes from the replica they did not reach. When the refusing
+// replica's own pass permits, the fleet permits.
 func TestFleetMemory_LoadBalancedCanaryHoldsTheRefusingReplica(t *testing.T) {
 	t.Parallel()
 	m := NewFleetMemory()
@@ -241,8 +242,8 @@ func TestFleetMemory_LoadBalancedCanaryHoldsTheRefusingReplica(t *testing.T) {
 		if got := fv.Capability(memoryCanary); got != chopt.CapabilityForbidden {
 			t.Fatalf("pass %d (landed on B: %v): verdict %s; want %s while B is remembered", i+2, onB, got, chopt.CapabilityForbidden)
 		}
-		if !fv.Held {
-			t.Fatalf("pass %d (landed on B: %v): not held; want held, resting on the replica it missed", i+2, onB)
+		if fv.Held == onB {
+			t.Fatalf("pass %d (landed on B: %v): held=%v; want held exactly when the pass missed B", i+2, onB, fv.Held)
 		}
 	}
 	if fv := m.Observe(landedWith(replicaB, chopt.CapabilityAvailable)); fv.Capability(memoryCanary) != chopt.CapabilityAvailable || fv.Held {

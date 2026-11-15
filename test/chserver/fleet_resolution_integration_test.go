@@ -149,8 +149,9 @@ func TestFleetProbe_ClusterArmReadsEveryReplicasIdentity(t *testing.T) {
 }
 
 // Credentials and settings profile of the canary user below: on one server
-// its profile pins the experimental time-series setting, so the ts_grid
-// canary's stamp is a constraint violation there.
+// its profile pins the experimental time-series setting and use_query_cache,
+// so the ts_grid and result_cache canaries' stamps are constraint violations
+// there.
 const (
 	canaryUser     = "fleet_canary"
 	canaryPassword = "fleet_canary"
@@ -167,30 +168,18 @@ func canaryServerUUID(ctx context.Context, t *testing.T, s *server) string {
 	return rows[0]
 }
 
-// fleetCanaryNames are the canaries the tests below run.
-const (
-	tsGridCanary      = "ts_grid"
-	resultCacheCanary = "result_cache"
-)
-
-// fleetCanaries runs the real ts_grid and result_cache canaries.
-var fleetCanaries = []chclient.FleetCanary{
-	{Name: tsGridCanary, Probe: func(ctx context.Context, c *chclient.Client) chopt.Capability {
-		return c.ProbeTSGridCapability(ctx)
-	}},
-	{Name: resultCacheCanary, Probe: func(ctx context.Context, c *chclient.Client) chopt.Capability {
-		return c.ProbeResultCacheCapability(ctx)
-	}},
-}
+// fleetCanaries are the real ts_grid and result_cache canaries.
+var fleetCanaries = []chclient.FleetCanary{chclient.TSGridCanary(), chclient.ResultCacheCanary()}
 
 // startCanaryPair boots two servers on one build, each with the canary user:
-// on pinned the user's profile pins the experimental time-series setting, so
-// the ts_grid canary's stamp is refused there; on open nothing is pinned.
+// on pinned the user's profile pins the experimental time-series setting and
+// use_query_cache, so the ts_grid and result_cache canaries are refused
+// there; on open nothing is pinned.
 func startCanaryPair(ctx context.Context, t *testing.T) (pinned, open *server) {
 	t.Helper()
 	pinned = startServer(ctx, t, fleetNewImage)
 	open = startServer(ctx, t, fleetNewImage)
-	pinned.exec(ctx, t, "CREATE SETTINGS PROFILE "+canaryProfile+" SETTINGS "+chclient.SettingExperimentalTSGridAggregate+" = 0 CONST")
+	pinned.exec(ctx, t, "CREATE SETTINGS PROFILE "+canaryProfile+" SETTINGS "+chclient.SettingExperimentalTSGridAggregate+" = 0 CONST, "+chclient.SettingUseQueryCache+" = 0 CONST")
 	pinned.exec(ctx, t, "CREATE USER "+canaryUser+" IDENTIFIED BY '"+canaryPassword+"' SETTINGS PROFILE "+canaryProfile)
 	open.exec(ctx, t, "CREATE USER "+canaryUser+" IDENTIFIED BY '"+canaryPassword+"'")
 	return pinned, open
@@ -232,7 +221,7 @@ func passVerdicts(t *testing.T, pass chclient.FleetPass) map[string]map[string]c
 // result_cache canaries. The pinned server refuses the ts_grid stamp — an
 // error, which closes the connection — so its result_cache verdict is read
 // over a new connection, and must still be attributed to it. The fleet the
-// memory describes then refuses ts_grid and permits result_cache.
+// memory describes then refuses both.
 func TestFleetProbe_CanaryVerdictsBelongToTheServerThatGaveThem(t *testing.T) {
 	ctx := context.Background()
 	pinned, open := startCanaryPair(ctx, t)
@@ -243,15 +232,15 @@ func TestFleetProbe_CanaryVerdictsBelongToTheServerThatGaveThem(t *testing.T) {
 	}
 
 	want := map[string]map[string]chopt.Capability{
-		canaryServerUUID(ctx, t, pinned): {tsGridCanary: chopt.CapabilityForbidden, resultCacheCanary: chopt.CapabilityAvailable},
-		canaryServerUUID(ctx, t, open):   {tsGridCanary: chopt.CapabilityAvailable, resultCacheCanary: chopt.CapabilityAvailable},
+		canaryServerUUID(ctx, t, pinned): {chclient.CanaryTSGrid: chopt.CapabilityForbidden, chclient.CanaryResultCache: chopt.CapabilityForbidden},
+		canaryServerUUID(ctx, t, open):   {chclient.CanaryTSGrid: chopt.CapabilityAvailable, chclient.CanaryResultCache: chopt.CapabilityAvailable},
 	}
 	if got := passVerdicts(t, pass); !maps.EqualFunc(got, want, maps.Equal) {
 		t.Fatalf("pass verdicts by server = %v; want %v", got, want)
 	}
 	fv := chclient.NewFleetMemory().Observe(pass)
-	if fv.Capability(tsGridCanary) != chopt.CapabilityForbidden || fv.Capability(resultCacheCanary) != chopt.CapabilityAvailable {
-		t.Fatalf("fleet verdicts = %v; want ts_grid forbidden by the pinned server, result_cache available", fv.Verdicts)
+	if fv.Capability(chclient.CanaryTSGrid) != chopt.CapabilityForbidden || fv.Capability(chclient.CanaryResultCache) != chopt.CapabilityForbidden {
+		t.Fatalf("fleet verdicts = %v; want both forbidden by the pinned server", fv.Verdicts)
 	}
 }
 
@@ -324,8 +313,8 @@ const canaryBalancedPasses = 6
 // runs on the open server, and each verdict must be attributed to the server
 // that gave it. Then passes alternate between the servers, every connection
 // of a pass reaching one of them; from the first pass on the pinned server,
-// the fleet's ts_grid verdict must stay forbidden on every pass, including
-// the ones that land on the open server.
+// the fleet's ts_grid and result_cache verdicts must stay forbidden on every
+// pass, including the ones that land on the open server.
 func TestFleetProbe_LoadBalancedCanaryHoldsTheRefusingReplica(t *testing.T) {
 	ctx := context.Background()
 	pinned, open := startCanaryPair(ctx, t)
@@ -341,8 +330,8 @@ func TestFleetProbe_LoadBalancedCanaryHoldsTheRefusingReplica(t *testing.T) {
 	})
 	pass := chclient.ProbeFleet(ctx, cfg, "", fleetCanaries...)
 	want := map[string]map[string]chopt.Capability{
-		pinnedID: {tsGridCanary: chopt.CapabilityForbidden},
-		openID:   {resultCacheCanary: chopt.CapabilityAvailable},
+		pinnedID: {chclient.CanaryTSGrid: chopt.CapabilityForbidden},
+		openID:   {chclient.CanaryResultCache: chopt.CapabilityAvailable},
 	}
 	if got := passVerdicts(t, pass); !pass.Complete || !maps.EqualFunc(got, want, maps.Equal) {
 		t.Fatalf("pass switching servers after the refusal: complete=%v, verdicts by server = %v; want complete, %v",
@@ -362,9 +351,46 @@ func TestFleetProbe_LoadBalancedCanaryHoldsTheRefusingReplica(t *testing.T) {
 		if n > 0 {
 			want = chopt.CapabilityForbidden
 		}
-		if got := fv.Capability(tsGridCanary); got != want || fv.Capability(resultCacheCanary) != chopt.CapabilityAvailable {
-			t.Errorf("pass %d (landed on the pinned server: %v): ts_grid %s, result_cache %s; want %s, %s",
-				n+1, onPinned, got, fv.Capability(resultCacheCanary), want, chopt.CapabilityAvailable)
+		for _, canary := range []string{chclient.CanaryTSGrid, chclient.CanaryResultCache} {
+			if got := fv.Capability(canary); got != want {
+				t.Errorf("pass %d (landed on the pinned server: %v): %s %s; want %s", n+1, onPinned, canary, got, want)
+			}
+		}
+	}
+}
+
+// canaryRoundRobinPasses is how many passes the round-robin test runs: every
+// canary leads the order at least twice.
+const canaryRoundRobinPasses = 4
+
+// TestFleetProbe_RoundRobinBalancerRunsEveryCanaryOnTheRefusingServer puts
+// the two servers behind a balancer that alternates every connection between
+// them, starting on the pinned server. Each pass's first connection reaches
+// the pinned server, whose refusal of the first canary closes it, so the
+// canaries after it run on the open server. The fleet probe starts each pass
+// one canary further along (RotateCanaries), so from the second pass on the
+// pinned server has refused both canaries and the fleet refuses both.
+func TestFleetProbe_RoundRobinBalancerRunsEveryCanaryOnTheRefusingServer(t *testing.T) {
+	ctx := context.Background()
+	pinned, open := startCanaryPair(ctx, t)
+	balancer := startSwitchingBalancer(t)
+	balancer.routeEach(func(conn int) string {
+		if conn%2 == 0 {
+			return pinned.addr
+		}
+		return open.addr
+	})
+	cfg := canaryConfig(balancer.addr)
+	memory := chclient.NewFleetMemory()
+	for pass := range canaryRoundRobinPasses {
+		fv := memory.Observe(chclient.ProbeFleet(ctx, cfg, "", chclient.RotateCanaries(fleetCanaries, pass)...))
+		if pass == 0 {
+			continue
+		}
+		for _, canary := range []string{chclient.CanaryTSGrid, chclient.CanaryResultCache} {
+			if got := fv.Capability(canary); got != chopt.CapabilityForbidden {
+				t.Errorf("pass %d: %s %s; want %s, refused by the pinned server", pass+1, canary, got, chopt.CapabilityForbidden)
+			}
 		}
 	}
 }

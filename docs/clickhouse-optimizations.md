@@ -872,8 +872,9 @@ build, and the resolution stays there while the replica serves on it: probes
 that land on the other replicas do not raise it. The defect gates, the
 condition-cache override, the analyzer decision and the capability canary
 verdicts follow the remembered servers the same way. While cerberus remembers
-a build or a canary verdict no server the last probe reached gave, the
-[re-probe](#re-probe) runs every 10 seconds. A replica
+a build no server the last probe reached runs, or a canary verdict in force
+that no server the last probe reached gave, the [re-probe](#re-probe) runs
+every 10 seconds. A replica
 that leaves the fleet keeps counting for 40 complete probes per remembered
 server, under seven minutes per server at that cadence, and one that rolls
 forward lifts the version on the first probe that lands on it.
@@ -897,9 +898,18 @@ the `result_cache` settings, the
 [query-log union](#capability-probe-query-log-union) table when the selection
 lists `query_log_union`, and `CERBERUS_CH_QUERY_WORKLOAD` when it is set — run
 inside the version probe, on every server it reads through a configured
-address. Each canary runs right after a `serverUUID()` read on the same
-connection, and its verdict belongs to that server:
+address, and each verdict is attributed to the server that gave it:
 
+- The ts_grid, `result_cache` and workload canaries stamp their settings on
+  the identity read itself (`SELECT toString(serverUUID()), version()`), so
+  an accepted canary names the server that accepted it.
+- A refused canary, and the query-log union canary, are attributed to the
+  server the identity read just before it on the same client named. A refusal
+  closes the connection, so the identity is read again before the next
+  canary.
+- Each probe starts the canaries one further along their order, so every
+  canary runs first, on the first server the probe's connection reaches,
+  within as many probes as there are canaries.
 - A server a probe ran a canary on takes the verdict it gave; a canary the
   probe did not run on it keeps the verdict remembered for it.
 - The verdict in force for each canary is the most conservative one across
@@ -916,10 +926,19 @@ setting on one replica only — the first probe that lands on the refusing
 replica turns the feature off, and it stays off while that replica serves:
 probes that land on the other replicas do not turn it back on. The `forbidden`
 verdict clears on the first probe that lands on that replica and gets
-**available**, or once the replica is forgotten. The boot log reports each
+**available**, or once the replica is forgotten. While the verdict in force
+on a canary comes from a server the last probe did not reach, the
+[re-probe](#re-probe) runs every 10 seconds. The boot log reports each
 canary's verdict in force (`server_ts_grid_capability`,
 `server_result_cache_capability`, `server_query_log_union_capability`,
 `server_query_workload_capability`).
+
+Attributing a refusal, or a query-log union verdict, needs the canary and the
+identity read before it to reach the same server. Over the native protocol
+they share one connection. Over `CERBERUS_CH_PROTOCOL=http` they are separate
+requests, and a balancer that routes each request on its own can attribute
+the verdict to another server, so a disagreeing replica's refusal can come
+and go there ([#4148](https://github.com/tsouza/cerberus/issues/4148)).
 
 ## Capability probe (experimental ts_grid setting)
 

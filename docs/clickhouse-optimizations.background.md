@@ -1357,19 +1357,37 @@ the last probe did not reach, the re-probe ran every 10 seconds, so a flip
 repeated at that rate during a mixed-build period.
 
 A verdict needs the identity of the server that gave it before the memory can
-hold it. Running each canary inside the version probe, on a connection whose
-`serverUUID()` was just read, gives it one, and the fleet memory that already
+hold it. Running each canary inside the version probe, on a client whose
+server was just identified, gives it one, and the fleet memory that already
 keys builds by identity keeps verdicts the same way. A second store keyed some
 other way would have had its own retention and forgetting rules to keep in
 step with the first.
 
-**Why an identity read before every canary.** The driver closes a connection
+**Why a settings canary reads the identity in its own statement.** A canary
+the server accepts returns a row, and a row that holds `serverUUID()` names
+the server that accepted the settings however the statement was routed:
+through a connection the balancer re-dialled, through the driver's transport
+retry, or through an HTTP balancer that routes requests one by one. A refusal
+is an exception and returns no row, and the query-log union canary's
+statement is the reader's own record selection, so neither can name its
+server that way. Both fall back to the identity read on the same client.
+
+**Why an identity read after every refusal.** The driver closes a connection
 on any error, so the statement after a canary the server refused dials a new
 connection, and behind a load balancer that connection can reach a different
-server. Reading the identity again before each canary keeps each verdict tied
-to the server that gave it, at the cost of one trivial statement per canary
-per address. A canary body cannot carry the identity itself: a refusal comes
-back as an exception, with no row.
+server. Reading the identity again before the next canary ties the next
+refusal to the server the new connection reached, at the cost of one trivial
+statement per canary that was not accepted, per address. An accepted canary keeps the connection,
+and its own row is the latest identity.
+
+**Why each probe starts the canaries at a different one.** After a refusal,
+the remaining canaries run on whichever server the next connection reaches.
+Behind a balancer that hands out connections in a fixed rotation, with as many
+connections per probe as replicas, the refusing replica would receive the
+first connection of every probe and run only the first canary. A refusal of
+any later canary would then never be read, and nothing would mark the fleet
+held. Rotating the start runs every canary first within as many probes as
+there are canaries.
 
 **Why the order is forbidden, then unreachable, then available.** A query can
 land on any remembered server, so the fleet permits a setting only when every
@@ -1386,12 +1404,19 @@ the refusal could not be tied to a server. Treating the missing verdict as a
 refusal would turn every capability feature off for any deployment that names
 a cluster.
 
-**Why a remembered verdict holds the fast cadence.** A server's verdict can
-keep a feature off as long as the memory holds it, exactly like its build can
-hold the version down. A verdict no server the last probe reached gave marks
-the fleet held, so the re-probe runs every 10 seconds and the memory sees the
-replica's verdict change, or forgets a replica that left, within the time its
-retention is priced at.
+**Why a remembered verdict in force holds the fast cadence.** A server's
+verdict can keep a feature off as long as the memory holds it, exactly like
+its build can hold the version down. When the verdict in force on a canary is
+one no server the last probe reached gave, the fleet is held, so the re-probe
+runs every 10 seconds and the memory sees the replica's verdict change, or
+forgets a replica that left, within the time its retention is priced at. Only
+the verdict in force counts, unlike builds, where every remembered build
+counts: a build decides the version, the defect gates and the analyzer
+decision, each in its own direction, while a canary's verdicts decide only
+through their most conservative value. A probe that lands on the refusing
+replica reads the refusal in force and leaves the fleet unheld, so a replica
+that disagrees for good holds the fast cadence only on the probes that miss
+it.
 
 ## Audited, not adopted
 
