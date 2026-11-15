@@ -15,6 +15,10 @@
 //   readClickHouseMatrix(workflowText, jobName)
 //                         the job's `clickhouse` matrix values, in order, or
 //                         null when the job or the line is missing.
+//   readCalibrationRunners(workflowText)
+//                         the runner values perf-nightly's sentinel matrix
+//                         takes on a calibrate dispatch, or null when the
+//                         `runner:` line is missing or of another shape.
 
 export const PERF_NIGHTLY_WORKFLOW = '.github/workflows/perf-nightly.yml';
 export const PERF_NIGHTLY_JOB = 'perf-nightly-sentinels';
@@ -38,4 +42,20 @@ export function readClickHouseMatrix(workflowText, jobName) {
     .split(',')
     .map((v) => v.trim().replace(/^['"]|['"]$/g, ''))
     .filter((v) => v.length > 0);
+}
+
+// The sentinel matrix's `runner:` line, one leg to gate and a JSON list of
+// legs to calibrate: `runner: ${{ fromJSON(inputs.calibrate && '[1, 2]' || '[1]') }}`.
+const CALIBRATION_RUNNERS_RE = /\n\s+runner:\s*\$\{\{\s*fromJSON\(inputs\.calibrate && '(\[[^'\n]*\])' \|\| '\[1\]'\)\s*\}\}/;
+
+export function readCalibrationRunners(workflowText) {
+  const block = jobBlock(workflowText, PERF_NIGHTLY_JOB);
+  if (block === null) return null;
+  const m = CALIBRATION_RUNNERS_RE.exec(block);
+  if (!m) return null;
+  try {
+    return JSON.parse(m[1]);
+  } catch {
+    return null;
+  }
 }

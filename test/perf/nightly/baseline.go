@@ -82,100 +82,6 @@ func committedCeilingBytes(maxBytes uint64, headroom float64) uint64 {
 	return min(uint64(float64(maxBytes)*headroom), nightlyCapCeilingBytes)
 }
 
-// nightlyCalibrationRounds is how many max-of-N rounds a calibration measures
-// each sentinel over. A gating run measures one round and asserts its
-// max-of-N, so what a committed ceiling has to clear is the run-to-run
-// distribution of that max-of-N, not one draw of it. Each round is one whole
-// pass over the sentinel corpus, as a gating run makes, on one server and one
-// sample load: the rounds sample the variance that arises per query — how a
-// multi-threaded read's per-stream buffers happen to overlap
-// (docs/performance.background.md) — and not variance that arises only with a
-// fresh runner or a fresh load. Where rounds and gating runs are
-// exchangeable, a fresh gating run's max-of-N lands above the highest of R
-// rounds with probability 1/(R+1): five rounds bring that to one in six before
-// any headroom applies, and give calibratedBound a measured range to hold the
-// headroom against.
-const nightlyCalibrationRounds = 5
-
-// calibratedBound derives one sentinel's committed bound from the max-of-N
-// peaks of its calibration rounds (roundMaxes, one per round) and its
-// per-sentinel headroom.
-//
-// The committed max-of-N is the HIGHEST round, so a low-tail round cannot set
-// the ceiling. The range the rounds measured (highest minus lowest) must then
-// fit inside the margin the ceiling leaves above that highest round. This is
-// a rule, not a bound on the next draw: it refuses a ceiling that an ordinary
-// run could reach by sitting as far above the highest round as the lowest
-// round sits below it, the reach the rounds themselves demonstrated. A refused
-// calibration means the sentinel's headroom is narrower than its measured
-// noise; widening it is a decision about which regression the sentinel can
-// still catch, and dispatching calibrations until one passes would select the
-// rounds that understate the noise.
-//
-// Also refused: fewer than nightlyCalibrationRounds rounds (a single round has
-// no range to measure), a round that measured nothing, and a highest round
-// already over the absolute ceiling (PRONG (a) fails on the measurement that
-// would set the bound).
-func calibratedBound(name string, expectedStatus int, roundMaxes []uint64, headroom float64) (nightlyBound, error) {
-	if len(roundMaxes) < nightlyCalibrationRounds {
-		return nightlyBound{}, fmt.Errorf("%s: %d calibration rounds measured in full, want at least %d — "+
-			"fewer rounds measure less of the run-to-run distribution the ceiling has to clear",
-			name, len(roundMaxes), nightlyCalibrationRounds)
-	}
-	lowest, highest := slices.Min(roundMaxes), slices.Max(roundMaxes)
-	if lowest == 0 {
-		return nightlyBound{}, fmt.Errorf("%s: a calibration round measured a peak of 0 bytes (rounds %v)", name, roundMaxes)
-	}
-	if exceedsCapCeiling(highest) {
-		return nightlyBound{}, fmt.Errorf("%s: the highest calibration round, %d bytes, exceeds the absolute ceiling %d (rounds %v)",
-			name, highest, nightlyCapCeilingBytes, roundMaxes)
-	}
-	ceiling := committedCeilingBytes(highest, headroom)
-	spread := highest - lowest
-	var margin uint64
-	if ceiling > highest {
-		margin = ceiling - highest
-	}
-	if margin < spread {
-		return nightlyBound{}, fmt.Errorf("%s: the calibration rounds' max-of-N span %d bytes (%d to %d, rounds %v), "+
-			"more than the %d-byte margin the ceiling %d leaves above the highest round — an ordinary run can "+
-			"cross that ceiling, so the sentinel's %.2fx headroom does not cover its run-to-run noise",
-			name, spread, lowest, highest, roundMaxes, margin, ceiling, headroom)
-	}
-	return nightlyBound{Name: name, ExpectedStatus: expectedStatus, MaxOfNBytes: highest, CeilingBytes: ceiling}, nil
-}
-
-// mergeCalibration is the bound set a calibration writes for one server: for
-// each sentinel of set, in set order, a new bound from its calibration rounds
-// (roundMaxes) when selected names it, and its committed bound (committed)
-// otherwise. A selected sentinel whose rounds calibratedBound refuses — or
-// that no pass measured in full — keeps its committed bound, and the refusal
-// is returned so the calibration fails naming it while every other
-// sentinel's new bound is still written. A sentinel left with no bound at all,
-// refused or unselected without a committed one, is an error: no file can be
-// written that omits it.
-func mergeCalibration(committed nightlyVersionBaseline, set []Sentinel, selected func(name string) bool,
-	roundMaxes map[string][]uint64,
-) (bounds []nightlyBound, refusals []error, err error) {
-	bounds = make([]nightlyBound, 0, len(set))
-	for _, sentinel := range set {
-		if selected(sentinel.Name) {
-			bound, refusal := calibratedBound(sentinel.Name, sentinel.ExpectedStatus, roundMaxes[sentinel.Name], sentinel.BaselineHeadroom)
-			if refusal == nil {
-				bounds = append(bounds, bound)
-				continue
-			}
-			refusals = append(refusals, refusal)
-		}
-		bound, ok := baselineFor(committed, sentinel.Name)
-		if !ok {
-			return nil, refusals, fmt.Errorf("%s has neither a new bound nor a committed one to keep, so no bound set can be written", sentinel.Name)
-		}
-		bounds = append(bounds, bound)
-	}
-	return bounds, refusals, nil
-}
-
 // exceedsCapCeiling reports whether a measured peak trips PRONG (a), the
 // absolute cap-relative ceiling.
 //
@@ -280,28 +186,32 @@ func releaseLine(v chopt.Version) string {
 // the parse error separately from any test plumbing so both the integration
 // harness and the unit lane can consume the same loader.
 func readNightlyBaseline() (nightlyBaseline, error) {
-	buf, err := os.ReadFile(nightlyBaselinePath)
+	return readNightlyBaselineFile(nightlyBaselinePath)
+}
+
+// readNightlyBaselineFile parses the bound file at path.
+func readNightlyBaselineFile(path string) (nightlyBaseline, error) {
+	buf, err := os.ReadFile(path)
 	if err != nil {
-		return nightlyBaseline{}, fmt.Errorf("read baseline %s: %w", nightlyBaselinePath, err)
+		return nightlyBaseline{}, fmt.Errorf("read baseline %s: %w", path, err)
 	}
 	var b nightlyBaseline
 	if err := json.Unmarshal(buf, &b); err != nil {
-		return nightlyBaseline{}, fmt.Errorf("parse baseline %s: %w", nightlyBaselinePath, err)
+		return nightlyBaseline{}, fmt.Errorf("parse baseline %s: %w", path, err)
 	}
 	return b, nil
 }
 
-// writeNightlyBaselineFile serialises b as pretty JSON with a trailing
+// writeNightlyBaselineFile serialises b to path as pretty JSON with a trailing
 // newline, so the committed file diffs cleanly and is never hand-edited
-// (invariant 9). Its only caller is the UPDATE_NIGHTLY_PERF_BASELINE=1
-// calibration path.
-func writeNightlyBaselineFile(b nightlyBaseline) error {
+// (invariant 9). Its only caller is CombineCalibrationFiles.
+func writeNightlyBaselineFile(path string, b nightlyBaseline) error {
 	buf, err := json.MarshalIndent(b, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal baseline: %w", err)
 	}
 	buf = append(buf, '\n')
-	if err := os.WriteFile(nightlyBaselinePath, buf, 0o600); err != nil {
+	if err := os.WriteFile(path, buf, 0o600); err != nil {
 		return fmt.Errorf("write baseline: %w", err)
 	}
 	return nil

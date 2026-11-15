@@ -3707,11 +3707,16 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   `perf-nightly-sentinels` matrix (one leg per ClickHouse server) and the
   `perf-nightly-replays` job both succeeded, and writes each perf-nightly
   job's wall time of the run attempt to the step summary (a report; a
-  failure to read it does not change the verdict).
+  failure to read it does not change the verdict). On a recalibration
+  dispatch it also combines every leg's downloaded `nightly-rounds-*`
+  artifact into one bound file (`go run ./test/perf/nightly/calibrate`) and
+  sets the step output `written` when that file exists to upload.
   - Env: `SENTINELS_RESULT`, `REPLAYS_RESULT`, `CALIBRATE` (`true` on a
     recalibration dispatch, which skips the replays), `GH_TOKEN`, `REPO`,
-    `RUN_ID`, `RUN_ATTEMPT`.
-  - Exit: `0` when both results are `success`, `1` otherwise.
+    `RUN_ID`, `RUN_ATTEMPT`; recalibrating, `ROUNDS_DIR` (the downloaded
+    rounds) and `BASELINE_OUT` (the combined bound file).
+  - Exit: `0` when both results are `success` and, recalibrating, the
+    combine wrote the bound file with no refused sentinel; `1` otherwise.
   - Tests: `perf-nightly-aggregate.test.mjs` (run in `ci.yml`).
 
 - **`perf-nightly-step-summary.mjs`** — `perf-nightly.yml`, each

@@ -273,20 +273,27 @@ every PR) to *broad* (corpus-wide, nightly).
    peer's, must take at most `maxPlanningPeerRatio` (4x) the peer's minimum.
 
    A gating run makes one pass over the nightly corpus and asserts one
-   max-of-5 round per sentinel. A calibration (`just
-   update-nightly-perf-baseline <image> [sentinel...]`, or `perf-nightly.yml`
-   dispatched with `calibrate`) makes `nightlyCalibrationRounds` (5) such
-   passes over one sample load and commits each sentinel's highest round as
-   `max_of_n_bytes`, with the ceiling derived from it. Naming sentinels
-   commits only theirs; every pass still runs the whole corpus. A sentinel
-   whose rounds span more bytes than the margin its ceiling leaves above that
-   highest round, or that fewer than five passes measured in full, is refused:
-   it keeps its committed bound, the calibration fails naming it, and every
-   other sentinel's new bound is still written and uploaded. A refused
-   sentinel with no committed bound to keep fails the calibration without
-   writing anything. A spread refusal means the sentinel's headroom
-   (`Sentinel.BaselineHeadroom`) does not cover its run-to-run noise; it is
-   resolved in the headroom, not by calibrating again.
+   max-of-5 round per sentinel. A calibration is a `perf-nightly.yml` dispatch
+   with `calibrate` (and, to recalibrate only some sentinels,
+   `calibrate_sentinels`). It runs `nightlyCalibrationRunners` (4) legs per
+   server, each on its own runner; each leg makes `nightlyCalibrationRounds`
+   (5) such passes over one sample load (`just calibrate-nightly-perf-rounds
+   <image> <rounds.json> [sentinel...]`) and uploads every sentinel's round
+   maxima as `nightly-rounds-<clickhouse>-<runner>`. The `perf-nightly` job
+   combines every leg's rounds (`just update-nightly-perf-baseline
+   <rounds.json>...` does the same over local files) and uploads the result
+   as `nightly-baseline`: each listed sentinel commits the highest round of
+   any runner of its server as `max_of_n_bytes`, with the ceiling derived from
+   it. Every pass still runs the whole corpus. A sentinel whose rounds, across
+   all of its runners, span more bytes than the margin its ceiling leaves
+   above that highest round, or that fewer than four runners measured in five
+   full passes each, is refused: it keeps its committed bound, the
+   calibration fails naming it, and every other sentinel's new bound is still
+   written and uploaded. A refused sentinel with no committed bound to keep
+   fails the calibration without writing anything. A spread refusal means
+   the sentinel's headroom (`Sentinel.BaselineHeadroom`) does not cover its
+   run-to-run noise; it is resolved in the headroom, not by calibrating
+   again.
 
 The static fan-out lint is the per-PR gate (in the required `check` job); the
 scaling harness and cardinality ratchet are release-gate checks that no-op on

@@ -15,6 +15,16 @@
 // never the verdict: a failure to read it is logged and does not change the
 // exit code.
 //
+// On a recalibration dispatch every sentinel leg measures one runner's
+// rounds and uploads them as nightly-rounds-<clickhouse>-<runner>; this job
+// downloads them all under ROUNDS_DIR and combines them into one bound file
+// at BASELINE_OUT (test/perf/nightly/calibrate, which derives each bound from
+// every runner's rounds of its server through calibratedBound). The step
+// output `written` says whether that file exists to upload, which it does
+// also when the combine refused a sentinel (it kept its committed bound); a
+// refusal, a combine that wrote nothing, and a dispatch that uploaded no
+// rounds each fail the verdict.
+//
 // Env:
 //   SENTINELS_RESULT  needs.perf-nightly-sentinels.result
 //   REPLAYS_RESULT    needs.perf-nightly-replays.result
@@ -24,20 +34,78 @@
 //   RUN_ID            github.run_id
 //   RUN_ATTEMPT       github.run_attempt
 //   GITHUB_API_URL    optional; DEFAULT_API_BASE otherwise
+//   ROUNDS_DIR        CALIBRATE only: where every leg's rounds artifact was downloaded
+//   BASELINE_OUT      CALIBRATE only: where the combined bound file is written
+//   GITHUB_OUTPUT     receives `written` (true/false) on a recalibration
 //
-// Exit: 0 when both results are success, 1 otherwise.
+// Exit: 0 when both results are success (and, recalibrating, the combine
+// wrote the bound file with no refusal), 1 otherwise.
 
+import { existsSync, readdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
 import { DEFAULT_API_BASE, ghPaginate } from './lib/gh-api.mjs';
-import { appendStepSummary, error, notice, warning } from './lib/gh.mjs';
+import { appendStepSummary, capture, error, notice, setOutput, warning } from './lib/gh.mjs';
 
 // JOB_PREFIX selects the jobs this workflow runs out of the run's job list.
 const JOB_PREFIX = 'perf-nightly';
 
 const SECOND_MS = 1000;
 const MINUTE_S = 60;
+
+// COMMITTED_BASELINE is the bound file the combine starts from, and
+// COMBINE_PACKAGE the command that combines every runner's rounds into it.
+export const COMMITTED_BASELINE = 'test/perf/nightly-baseline.json';
+export const COMBINE_PACKAGE = './test/perf/nightly/calibrate';
+
+// roundsFiles — every rounds file under dir, sorted: download-artifact puts
+// each artifact in its own directory, named after it. A missing dir has none.
+export function roundsFiles(dir) {
+  if (!dir || !existsSync(dir)) return [];
+  return readdirSync(dir, { recursive: true })
+    .filter((rel) => String(rel).endsWith('.json'))
+    .map((rel) => join(dir, String(rel)))
+    .sort();
+}
+
+// combineArgs — the `go` argv that combines files into out.
+export function combineArgs(files, out) {
+  return ['run', COMBINE_PACKAGE, '-baseline', COMMITTED_BASELINE, '-out', out, ...files];
+}
+
+// calibrationFailures — what fails a recalibration's verdict: no rounds to
+// combine, or a combine that exited non-zero (a refused sentinel, or no file
+// written at all — `written` tells the two apart).
+export function calibrationFailures({ files, status, written }) {
+  if (files.length === 0) return ['calibration: no leg uploaded calibration rounds'];
+  if (status === 0) return [];
+  return [
+    written
+      ? 'calibration: the combine refused at least one sentinel, which kept its committed bound (see its ::error:: lines)'
+      : 'calibration: the combine wrote no bound file',
+  ];
+}
+
+// combineRounds — combine every rounds file under env.ROUNDS_DIR into
+// env.BASELINE_OUT, set the `written` output, and return the failures.
+function combineRounds(env) {
+  const out = env.BASELINE_OUT;
+  if (!out) return ['calibration: BASELINE_OUT names no file to write'];
+  rmSync(out, { force: true });
+  const files = roundsFiles(env.ROUNDS_DIR);
+  let status = 0;
+  if (files.length > 0) {
+    const res = capture('go', combineArgs(files, out));
+    process.stdout.write(res.stdout);
+    process.stderr.write(res.stderr);
+    status = res.status;
+  }
+  const written = existsSync(out);
+  setOutput('written', String(written));
+  return calibrationFailures({ files, status, written });
+}
 
 // verdict — the failures of the two `needs` results, empty when both passed.
 export function verdict({ sentinels, replays, calibrate }) {
@@ -89,11 +157,13 @@ async function reportWallTimes(env) {
 }
 
 async function main() {
+  const calibrate = process.env.CALIBRATE === 'true';
   const failures = verdict({
     sentinels: process.env.SENTINELS_RESULT,
     replays: process.env.REPLAYS_RESULT,
-    calibrate: process.env.CALIBRATE === 'true',
+    calibrate,
   });
+  if (calibrate) failures.push(...combineRounds(process.env));
   try {
     await reportWallTimes(process.env);
   } catch (e) {
@@ -103,7 +173,11 @@ async function main() {
     for (const f of failures) error(`perf-nightly: ${f}`);
     process.exit(1);
   }
-  notice('perf-nightly: every sentinel leg and the replays succeeded');
+  notice(
+    calibrate
+      ? 'perf-nightly: every calibration leg succeeded and the combine wrote the recalibrated bound file'
+      : 'perf-nightly: every sentinel leg and the replays succeeded',
+  );
 }
 
 const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;

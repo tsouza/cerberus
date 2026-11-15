@@ -39,11 +39,11 @@ on:
     inputs:
       calibrate:
         description: >-
-          Recalibrate instead of gating: each leg runs `just
-          update-nightly-perf-baseline` on its server, which measures every
-          sentinel over several max-of-5 rounds and commits the highest, and
-          uploads the rewritten nightly-baseline.json as the artifact
-          nightly-baseline-<clickhouse>.
+          Recalibrate instead of gating: several independent legs per server
+          each measure every sentinel over several max-of-5 rounds (`just
+          calibrate-nightly-perf-rounds`), and the perf-nightly job combines
+          every leg's rounds into one rewritten nightly-baseline.json, uploaded
+          as the artifact nightly-baseline.
         type: boolean
         default: false
       calibrate_sentinels:
@@ -67,7 +67,7 @@ permissions:
 
 jobs:
   perf-nightly-sentinels:
-    name: perf-nightly-sentinels (${{ matrix.clickhouse }})
+    name: perf-nightly-sentinels (${{ matrix.clickhouse }}${{ inputs.calibrate && format(', runner {0}', matrix.runner) || '' }})
     runs-on: ubuntu-latest
     strategy:
       # One server's failure must not cancel the others into an ambiguous
@@ -75,10 +75,16 @@ jobs:
       fail-fast: false
       matrix:
         clickhouse: ['24.8', '25.9', '26.8', '26.9']
+        # One leg per server to gate. A calibration takes
+        # nightlyCalibrationRunners (test/perf/nightly/calibration.go)
+        # independent legs per server, since one run's peaks can all sit in
+        # the low tail of the run-to-run spread; perf-nightly-aggregate.test.mjs
+        # holds this list to that constant.
+        runner: ${{ fromJSON(inputs.calibrate && '[1, 2, 3, 4]' || '[1]') }}
     # Pulls one ClickHouse image, loads ~4.3M real rows across 3 tables plus
     # the exporter-keyed copies, and issues the sentinel corpus five times —
     # or, recalibrating, makes nightlyCalibrationRounds (5) passes over it.
-    # The budget is the calibration's: update-nightly-perf-baseline's 75m go
+    # The budget is the calibration's: calibrate-nightly-perf-rounds's 75m go
     # test timeout has to fit under it (go_test_timeout_budget_test.go), and
     # a gating run stays bounded by perf-nightly-integration's own 15m.
     timeout-minutes: 90
@@ -94,6 +100,9 @@ jobs:
       # available) under /tmp — a per-run scratch path on the ephemeral
       # `ubuntu-latest` runner, never committed to the checkout.
       PERF_NIGHTLY_RESULTS_JSON: /tmp/perf-nightly-results.json
+      # Where a calibration leg writes its rounds (calibration.go), under
+      # /tmp for the same reason.
+      PERF_NIGHTLY_ROUNDS_JSON: /tmp/perf-nightly-rounds.json
     steps:
       - uses: actions/checkout@v7
         with:
@@ -118,26 +127,27 @@ jobs:
         if: ${{ !inputs.calibrate }}
         run: just perf-nightly-integration "$PERF_NIGHTLY_CH_IMAGE"
 
-      - name: Recalibrate the bound set of ClickHouse ${{ matrix.clickhouse }}
+      - name: Measure calibration rounds on ClickHouse ${{ matrix.clickhouse }}, runner ${{ matrix.runner }}
         if: ${{ inputs.calibrate }}
         env:
           CALIBRATE_SENTINELS: ${{ inputs.calibrate_sentinels }}
         # Each space-separated name is its own recipe argument.
         run: |
           read -ra sentinels <<< "$CALIBRATE_SENTINELS"
-          just update-nightly-perf-baseline "$PERF_NIGHTLY_CH_IMAGE" "${sentinels[@]}"
+          just calibrate-nightly-perf-rounds "$PERF_NIGHTLY_CH_IMAGE" "$PERF_NIGHTLY_ROUNDS_JSON" "${sentinels[@]}"
 
-      # Also after a failed recalibration: a sentinel whose rounds the
-      # calibration refused keeps its committed bound in the file, and every
-      # other sentinel's new bound is still in it. A run that failed before
-      # writing uploads the committed file unchanged.
-      - name: Upload the recalibrated baseline
+      # Also after a failed measurement: a run whose sentinel failed still
+      # writes the rounds it measured, and the combine refuses any sentinel
+      # short of a round, so it keeps its committed bound. A run that failed
+      # before writing leaves no file, and the combine refuses every sentinel
+      # of its server for the runner it is missing.
+      - name: Upload the calibration rounds
         if: ${{ inputs.calibrate && !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
-          name: nightly-baseline-${{ matrix.clickhouse }}
-          path: test/perf/nightly-baseline.json
-          if-no-files-found: error
+          name: nightly-rounds-${{ matrix.clickhouse }}-${{ matrix.runner }}
+          path: ${{ env.PERF_NIGHTLY_ROUNDS_JSON }}
+          if-no-files-found: warn
 
       # Renders the per-sentinel verdict as a clear table in the job's
       # Summary tab BEFORE the raw log — see perf-nightly-step-summary.mjs's
@@ -198,7 +208,8 @@ jobs:
 
   # The perf-nightly context release.yml's preflight waits on: green only
   # when every sentinel leg and the replays succeeded. It also reports each
-  # leg's wall time. See perf-nightly-aggregate.mjs.
+  # leg's wall time. On a calibrate dispatch it combines every leg's rounds
+  # into the recalibrated bound file. See perf-nightly-aggregate.mjs.
   perf-nightly:
     name: perf-nightly
     needs: [perf-nightly-sentinels, perf-nightly-replays]
@@ -206,7 +217,9 @@ jobs:
     # cancelled or skipped leg fails it rather than leaving it unposted.
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # The verdict takes seconds; a calibration's combine also builds and runs
+    # test/perf/nightly/calibrate.
+    timeout-minutes: 20
     # Job-level permissions REPLACE the workflow-level block — contents: read
     # for checkout, actions: read to list this run's jobs for the wall times.
     permissions:
@@ -214,7 +227,19 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-go
+        if: ${{ inputs.calibrate }}
+
+      - name: Download every calibration leg's rounds
+        if: ${{ inputs.calibrate }}
+        uses: actions/download-artifact@v8
+        with:
+          pattern: nightly-rounds-*
+          path: ${{ runner.temp }}/nightly-rounds
+
       - name: gate on every leg and report their wall times
+        id: aggregate
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -223,7 +248,19 @@ jobs:
           SENTINELS_RESULT: ${{ needs.perf-nightly-sentinels.result }}
           REPLAYS_RESULT: ${{ needs.perf-nightly-replays.result }}
           CALIBRATE: ${{ inputs.calibrate && 'true' || 'false' }}
+          ROUNDS_DIR: ${{ runner.temp }}/nightly-rounds
+          BASELINE_OUT: ${{ runner.temp }}/nightly-baseline.json
         run: node .github/scripts/perf-nightly-aggregate.mjs
+
+      # Also when the combine refused a sentinel: it kept its committed bound
+      # in the file, and every other sentinel's new bound is in it.
+      - name: Upload the recalibrated baseline
+        if: ${{ !cancelled() && steps.aggregate.outputs.written == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-baseline
+          path: ${{ runner.temp }}/nightly-baseline.json
+          if-no-files-found: error
 
   # Files/refreshes a single tracking issue when the SCHEDULE run does not
   # reach a clean pass, closes it on the next clean night. Same mechanism

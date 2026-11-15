@@ -49,11 +49,12 @@
 //     committed baseline — catches a regression even on a freshly-created,
 //     baseline-less sentinel.
 //   - PRONG (b): a committed per-sentinel ceiling in nightly-baseline.json,
-//     the highest max-of-N of nightlyCalibrationRounds calibration passes
-//     times a headroom multiplier (Sentinel.BaselineHeadroom, per-sentinel),
-//     refused when the passes' spread does not fit under it (calibratedBound)
-//     — tighter than PRONG (a), so it is what actually catches a real
-//     regression long before the absolute ceiling would.
+//     the highest max-of-N of every calibration round on every calibration
+//     runner times a headroom multiplier (Sentinel.BaselineHeadroom,
+//     per-sentinel), refused when the rounds' spread does not fit under it
+//     (calibratedBound, calibration.go) — tighter than PRONG (a), so it is
+//     what actually catches a real regression long before the absolute
+//     ceiling would.
 //
 // A THIRD check this lane adds beyond test/perf/smoke's shape, because two
 // of its five sentinels are EXPECTED to be rejected rather than to
@@ -69,8 +70,11 @@
 //
 // Gated behind the `integration` build tag (Docker required); wired into
 // .github/workflows/perf-nightly.yml via `just perf-nightly-integration`.
-// Regenerate the baseline via `just update-nightly-perf-baseline`
-// (UPDATE_NIGHTLY_PERF_BASELINE=1) — never hand-edited (invariant 9).
+// With UPDATE_NIGHTLY_PERF_BASELINE=1 the run calibrates instead of gating:
+// it makes nightlyCalibrationRounds passes and writes their rounds to
+// PERF_NIGHTLY_ROUNDS_JSON (`just calibrate-nightly-perf-rounds`). The
+// baseline is regenerated from several runners' rounds files by
+// `just update-nightly-perf-baseline` — never hand-edited (invariant 9).
 //
 // # Reporting
 //
@@ -89,9 +93,7 @@ package nightly
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -262,12 +264,14 @@ func TestPerfNightlyRealCH(t *testing.T) {
 	logSource := optcorpus.NewCHQueryLogSource(conn, 30*time.Second, time.Hour)
 	known := knownSettings(ctx, t, conn)
 
-	baseline := loadNightlyBaseline(t)
-	versionBaseline, _ := baseline.forVersion(version)
+	var versionBaseline nightlyVersionBaseline
+	if !update {
+		versionBaseline, _ = loadNightlyBaseline(t).forVersion(version)
+	}
 	calibrate := calibrationSelection(t, update)
 	// roundMaxes collects, per sentinel, the max-of-N of every calibration
-	// pass that measured it in full; calibratedBound derives its bound from
-	// them once every pass has run.
+	// pass that measured it in full; the rounds file carries them to the
+	// combine, which derives every bound from all runners' rounds together.
 	roundMaxes := make(map[string][]uint64, len(Sentinels))
 
 	// results accumulates one SentinelResult per sentinel regardless of
@@ -442,13 +446,13 @@ func TestPerfNightlyRealCH(t *testing.T) {
 				// PRONG (b): committed per-sentinel ceiling.
 				bound, ok := baselineFor(versionBaseline, sentinel.Name)
 				if !ok {
-					t.Fatalf("%s: no committed bound for ClickHouse %s in nightly-baseline.json — run `just update-nightly-perf-baseline`",
+					t.Fatalf("%s: no committed bound for ClickHouse %s in nightly-baseline.json — recalibrate with a perf-nightly.yml calibrate dispatch (docs/performance.md)",
 						sentinel.Name, version)
 				}
 				result.HasBaseline = true
 				if bound.ExpectedStatus != sentinel.ExpectedStatus {
 					t.Fatalf("%s: committed baseline expects status %d but the sentinel now expects %d — "+
-						"run `just update-nightly-perf-baseline` if this change is genuinely intended",
+						"recalibrate (a perf-nightly.yml calibrate dispatch) if this change is genuinely intended",
 						sentinel.Name, bound.ExpectedStatus, sentinel.ExpectedStatus)
 				}
 				result.BaselineCeilingBytes = bound.CeilingBytes
@@ -460,8 +464,8 @@ func TestPerfNightlyRealCH(t *testing.T) {
 					// carries less than its nominal multiple.
 					headroom := float64(bound.CeilingBytes) / float64(bound.MaxOfNBytes)
 					t.Errorf("%s: peak memory %d bytes exceeds the committed ceiling %d bytes (measured max-of-N was "+
-						"%d at calibration time, %.2fx headroom) — %s may have regressed; only run "+
-						"`just update-nightly-perf-baseline` if the increase is genuinely intended",
+						"%d at calibration time, %.2fx headroom) — %s may have regressed; recalibrate "+
+						"(a perf-nightly.yml calibrate dispatch) only if the increase is genuinely intended",
 						sentinel.Name, maxBytes, bound.CeilingBytes, bound.MaxOfNBytes, headroom, sentinel.Family)
 				}
 
@@ -480,20 +484,24 @@ func TestPerfNightlyRealCH(t *testing.T) {
 	}
 
 	if update {
+		run := calibrationRun{ClickHouse: version}
 		for _, sentinel := range SentinelsFor(version) {
-			if rounds, measured := roundMaxes[sentinel.Name]; measured && calibrate(sentinel.Name) {
-				t.Logf("%s: max-of-%d peak memory_usage of each calibration pass: %v",
-					sentinel.Name, nightlySentinelRepeats, rounds)
+			if !calibrate(sentinel.Name) {
+				continue
 			}
+			rounds := roundMaxes[sentinel.Name]
+			t.Logf("%s: max-of-%d peak memory_usage of each calibration pass: %v",
+				sentinel.Name, nightlySentinelRepeats, rounds)
+			run.Sentinels = append(run.Sentinels, sentinelRounds{Name: sentinel.Name, RoundMaxBytes: rounds})
 		}
-		bounds, refusals, err := mergeCalibration(versionBaseline, SentinelsFor(version), calibrate, roundMaxes)
-		for _, refusal := range refusals {
-			t.Errorf("%v — the sentinel keeps its committed bound", refusal)
+		path := os.Getenv(nightlyRoundsJSONEnv)
+		if path == "" {
+			t.Fatalf("%s names no file for this runner's calibration rounds", nightlyRoundsJSONEnv)
 		}
-		if err != nil {
+		if err := writeCalibrationRun(path, run); err != nil {
 			t.Fatalf("%v", err)
 		}
-		writeNightlyBaseline(t, baseline, version, bounds)
+		t.Logf("wrote ClickHouse %s's calibration rounds to %s", version, path)
 	}
 }
 
@@ -923,33 +931,15 @@ func calibrationSelection(t *testing.T, update bool) func(name string) bool {
 // --- baseline load/write (invariant 9: never hand-edited) -----------------
 //
 // The file format, the loader and the writer live in the untagged baseline.go;
-// these two wrappers add only this lane's test plumbing (t.Fatalf, and the
-// calibration path's tolerance for a not-yet-created file).
+// this wrapper adds only this lane's test plumbing (t.Fatalf). The bound file
+// is written by the combine (CombineCalibrationFiles, calibration.go), never
+// by this harness.
 
 func loadNightlyBaseline(t *testing.T) nightlyBaseline {
 	t.Helper()
 	b, err := readNightlyBaseline()
 	if err != nil {
-		if os.Getenv("UPDATE_NIGHTLY_PERF_BASELINE") == "1" && errors.Is(err, fs.ErrNotExist) {
-			return nightlyBaseline{}
-		}
-		t.Fatalf("%v — run `just update-nightly-perf-baseline` to create it", err)
+		t.Fatalf("%v — a perf-nightly.yml calibrate dispatch creates it (docs/performance.md)", err)
 	}
 	return b
-}
-
-// writeNightlyBaseline files bounds as version's bound set in baseline and
-// hands the result to writeNightlyBaselineFile — this is the ONLY code path
-// that writes nightly-baseline.json, gated on UPDATE_NIGHTLY_PERF_BASELINE=1.
-// Every other version's bound set is written back unchanged.
-func writeNightlyBaseline(t *testing.T, baseline nightlyBaseline, version string, bounds []nightlyBound) {
-	t.Helper()
-	next, err := baseline.withVersion(version, bounds)
-	if err != nil {
-		t.Fatalf("write baseline: %v", err)
-	}
-	if err := writeNightlyBaselineFile(next); err != nil {
-		t.Fatalf("write baseline: %v", err)
-	}
-	t.Logf("wrote ClickHouse %s's bounds to %s", version, nightlyBaselinePath)
 }

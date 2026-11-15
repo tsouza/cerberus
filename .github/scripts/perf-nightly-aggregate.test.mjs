@@ -1,10 +1,25 @@
 // perf-nightly-aggregate.test.mjs — node:test guard for the perf-nightly
-// aggregate verdict and its wall-time report.
+// aggregate verdict, its wall-time report, and the wiring of a
+// recalibration's combine. The combine's arithmetic (calibratedBound) is
+// asserted by test/perf/nightly/calibration_test.go in the unit lane.
 
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
-import { formatDuration, verdict, wallTimeTable } from './perf-nightly-aggregate.mjs';
+import { PERF_NIGHTLY_JOB, PERF_NIGHTLY_WORKFLOW, readCalibrationRunners } from './lib/perf-nightly-matrix.mjs';
+import {
+  calibrationFailures,
+  COMBINE_PACKAGE,
+  COMMITTED_BASELINE,
+  combineArgs,
+  formatDuration,
+  roundsFiles,
+  verdict,
+  wallTimeTable,
+} from './perf-nightly-aggregate.mjs';
 
 test('verdict passes only when the sentinel legs and the replays both succeeded', () => {
   assert.deepEqual(verdict({ sentinels: 'success', replays: 'success' }), []);
@@ -41,4 +56,64 @@ test('wallTimeTable lists each finished perf-nightly job by name', () => {
     '| perf-nightly-sentinels (24.8) | failure | 10m 5s |',
     '| perf-nightly-sentinels (26.6) | success | 12m 30s |',
   ]);
+});
+
+test('roundsFiles finds every leg\'s rounds file under the download directory, sorted', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'nightly-rounds-'));
+  try {
+    for (const leg of ['nightly-rounds-26.9-2', 'nightly-rounds-24.8-1', 'nightly-rounds-26.9-1']) {
+      mkdirSync(join(dir, leg));
+      writeFileSync(join(dir, leg, 'perf-nightly-rounds.json'), '{}');
+    }
+    writeFileSync(join(dir, 'nightly-rounds-26.9-1', 'notes.txt'), '');
+    assert.deepEqual(roundsFiles(dir), [
+      join(dir, 'nightly-rounds-24.8-1', 'perf-nightly-rounds.json'),
+      join(dir, 'nightly-rounds-26.9-1', 'perf-nightly-rounds.json'),
+      join(dir, 'nightly-rounds-26.9-2', 'perf-nightly-rounds.json'),
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  assert.deepEqual(roundsFiles(join(tmpdir(), 'no-such-nightly-rounds-dir')), []);
+  assert.deepEqual(roundsFiles(undefined), []);
+});
+
+test('combineArgs runs the combine over the committed file and every rounds file', () => {
+  assert.deepEqual(combineArgs(['a.json', 'b.json'], '/tmp/out.json'), [
+    'run', COMBINE_PACKAGE, '-baseline', COMMITTED_BASELINE, '-out', '/tmp/out.json', 'a.json', 'b.json',
+  ]);
+});
+
+test('a recalibration fails on no rounds, on a refusal, and on a combine that wrote nothing', () => {
+  assert.deepEqual(calibrationFailures({ files: ['a.json'], status: 0, written: true }), []);
+  assert.equal(calibrationFailures({ files: [], status: 0, written: false }).length, 1);
+  assert.match(calibrationFailures({ files: ['a.json'], status: 1, written: true })[0], /refused/);
+  assert.match(calibrationFailures({ files: ['a.json'], status: 1, written: false })[0], /wrote no bound file/);
+});
+
+// The workflow's calibrate fan-out is the runner count the derivation
+// requires: fewer legs and every bound is refused, more and the extra legs
+// buy nothing the constant was justified by.
+test('the calibrate matrix runs nightlyCalibrationRunners legs per server, each uploading its own rounds', () => {
+  const workflow = readFileSync(PERF_NIGHTLY_WORKFLOW, 'utf8');
+  const source = readFileSync('test/perf/nightly/calibration.go', 'utf8');
+  const m = /\nconst nightlyCalibrationRunners = (\d+)\n/.exec(source);
+  assert.ok(m, 'calibration.go declares no `const nightlyCalibrationRunners = <n>`');
+  const runners = Number(m[1]);
+  assert.ok(runners >= 2, `nightlyCalibrationRunners is ${runners}; a calibration across runners needs at least 2`);
+  assert.deepEqual(
+    readCalibrationRunners(workflow),
+    Array.from({ length: runners }, (_, i) => i + 1),
+    `${PERF_NIGHTLY_WORKFLOW}'s ${PERF_NIGHTLY_JOB} calibrate runner list is not 1..${runners}`,
+  );
+  assert.match(workflow, /name: nightly-rounds-\$\{\{ matrix\.clickhouse \}\}-\$\{\{ matrix\.runner \}\}\n/);
+  assert.match(workflow, /pattern: nightly-rounds-\*\n/);
+});
+
+test('readCalibrationRunners reads only the gate-once, calibrate-many runner line', () => {
+  const job = (line) => `jobs:\n  ${PERF_NIGHTLY_JOB}:\n    strategy:\n      matrix:\n${line}\n  perf-nightly:\n    steps: []\n`;
+  assert.deepEqual(readCalibrationRunners(job("        runner: ${{ fromJSON(inputs.calibrate && '[1, 2, 3]' || '[1]') }}")), [1, 2, 3]);
+  assert.equal(readCalibrationRunners(job("        runner: ${{ fromJSON(inputs.calibrate && '[1, 2]' || '[1, 2]') }}")), null);
+  assert.equal(readCalibrationRunners(job('        runner: [1, 2]')), null);
+  assert.equal(readCalibrationRunners('jobs:\n  other:\n    steps: []\n'), null);
 });

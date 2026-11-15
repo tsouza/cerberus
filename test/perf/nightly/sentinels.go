@@ -128,9 +128,9 @@ const (
 	// conservative 1.5x (1.5x / 1.352x = 1.11x cushion). On the CI runners
 	// its max-of-5 across separate runs of unchanged code measured
 	// 212.8M-324.1M on 26.6, 192.4M-265.5M on 24.8 and 197.5M-264.6M on
-	// 25.9. Its committed bounds are the highest max-of-5 of three separate
-	// calibration runs; calibratedBound's rounds all run inside one run and
-	// do not sample that run-to-run spread (#4104).
+	// 25.9. Its committed bounds were each set as the highest max-of-5 of
+	// three separate calibration runs, the run-to-run spread a calibration
+	// now samples on nightlyCalibrationRunners runners.
 	nativeQuantilesBaselineHeadroom = 1.50
 )
 

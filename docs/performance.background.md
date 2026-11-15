@@ -32,7 +32,7 @@ server. That is why layer 5 seeds each sentinel at the scale #2364's own
 root-cause mechanisms need in order to engage, and reads peak per-query memory
 back from a real server's `system.query_log`.
 
-## Why a nightly calibration takes several rounds
+## Why a nightly calibration takes several rounds on several runners
 
 A nightly ceiling used to be the max-of-5 of a single calibration run times the
 sentinel's headroom. On ClickHouse 26.9, `label_values_matcher_stock_key_renamed`
@@ -64,16 +64,36 @@ On CI the spread is wider than locally (1.26x across gating runs against about
 1.17x across local containers), and both calibration runs that set this
 sentinel's bounds sat at the bottom of the gating distribution — one of them
 calibrated every sentinel, so it ran the same corpus order a gating run does.
-Part of the CI spread may come with the runner or the run rather than the
-query, and calibration rounds taken inside one run do not sample that part.
-Each round is a whole pass over the corpus, so a sentinel's rounds run in the
-corpus order its gating runs do; passes after the first run on a server the
-earlier passes have warmed, which a gating run never measures.
+Part of the CI spread comes with the runner or the run rather than the query:
+five passes on one local 26.9 server over the whole corpus measured this
+sentinel at 28.1M-29.5M, a 1.05x range, where separate CI runs spread 1.26x.
+Rounds taken inside one run do not sample that part, so a calibration takes
+its rounds on several independent runners. Each round is a whole pass over
+the corpus, so a sentinel's rounds run in the corpus order its gating runs do;
+passes after the first run on a server the earlier passes have warmed, which a
+gating run never measures.
+
+The runner count, `nightlyCalibrationRunners`, is four. A runner is in the low
+tail when a ceiling anchored on its highest round is one an ordinary run of
+the same code crosses: for this sentinel, a max-of-5 below the highest
+measured run (32,643,773) divided by its 1.20 headroom, about 27.2M. Five of
+the seventeen 26.9 runs measured — the two calibrations and three of the
+fifteen gating runs — landed there, a rate of about 0.29. The committed max-of-N
+is the highest round of any runner, so it is set by the low tail only when
+every runner lands there: on independent runners that is 0.29 for one, 0.087
+for two, 0.025 for three and 0.0073 for four, the first count under one
+calibration in a hundred. The rate is an upper estimate for a runner's
+highest round, which is the highest of five passes rather than one, and a
+rough one from seventeen draws. A fifth runner would take that to 0.002 for
+a quarter more legs on every server of the matrix, each about an hour of
+runner time.
 
 A max-of-5 is one draw from that distribution, and a ceiling anchored on one
 draw is anchored on wherever that draw landed. The highest of several rounds
-cannot be set by a low-tail round, and the spread between the rounds is a
-measurement of the noise the headroom has to cover. Measuring with one thread
+cannot be set by a low-tail round, the highest across several runners cannot
+be set by a low-tail runner, and the spread between all of the rounds is a
+measurement of the noise the headroom has to cover — including the run-to-run
+part no single runner sees. Measuring with one thread
 would narrow the spread without removing it, measure a pipeline no deployment
 runs, and move every committed bound at once.
 
@@ -81,8 +101,8 @@ The spread check refuses rather than widens. Widening a ceiling to absorb the
 measured noise would keep the calibration green while the sentinel loses the
 regression its headroom was chosen to catch; refusing puts that choice back on
 the headroom constant, where the regression size it guards is recorded. The
-check is a rule, not a statistical bound: five rounds do not bound how far the
-next run lands above the highest of them. Near the boundary its outcome is
+check is a rule, not a statistical bound: twenty rounds do not bound how far
+the next run lands above the highest of them. Near the boundary its outcome is
 itself random, which is why a refusal is resolved in the headroom: dispatching
 calibrations until one passes would select the rounds that understate the
 noise. A refusal leaves the sentinel's committed bound in place and still
