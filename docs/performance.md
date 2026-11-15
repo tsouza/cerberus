@@ -272,6 +272,15 @@ every PR) to *broad* (corpus-wide, nightly).
    dispatched statement, minimum of three samples interleaved with the
    peer's, must take at most `maxPlanningPeerRatio` (4x) the peer's minimum.
 
+   A gating run asserts one max-of-5 round per nightly sentinel. A
+   calibration (`just update-nightly-perf-baseline <image> [sentinel...]`, or
+   `perf-nightly.yml` dispatched with `calibrate`) measures each sentinel over
+   `nightlyCalibrationRounds` (5) rounds and commits the highest round's
+   max-of-5 as `max_of_n_bytes`, with the ceiling derived from it. A sentinel
+   whose rounds span more bytes than the margin its ceiling leaves above that
+   highest round fails the calibration instead of committing a bound: its
+   headroom (`Sentinel.BaselineHeadroom`) does not cover its run-to-run noise.
+
 The static fan-out lint is the per-PR gate (in the required `check` job); the
 scaling harness and cardinality ratchet are release-gate checks that no-op on
 an ordinary PR and run for real through the `perf-guards` chDB lane on

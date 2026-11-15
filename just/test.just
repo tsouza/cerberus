@@ -692,10 +692,15 @@ histogram-dashboard-unit:
 
 # Regenerate one ClickHouse release line's bound set in nightly-baseline.json
 # (the line of the image named; every other line's set is left unchanged):
-# for each #2370 nightly sentinel the calibration-time max-of-N peak
-# memory_usage plus the headroom-multiplied ceiling (Sentinel.BaselineHeadroom)
-# the gate actually asserts against, and the HTTP status it was calibrated to
-# expect. Naming sentinels after the image recalibrates only those. Requires Docker and (once,
+# for each #2370 nightly sentinel the highest max-of-N peak memory_usage of
+# nightlyCalibrationRounds rounds plus the headroom-multiplied ceiling
+# (Sentinel.BaselineHeadroom) the gate actually asserts against, and the HTTP
+# status it was calibrated to expect. A sentinel whose rounds span more than
+# the margin its ceiling leaves above the highest round fails the run instead
+# (calibratedBound, test/perf/nightly/baseline.go). The go test timeout is
+# nightlyCalibrationRounds (5) times perf-nightly-integration's 15m: every
+# sentinel is measured that many times over. Naming sentinels after the image
+# recalibrates only those. Requires Docker and (once,
 # if not already fetched) `git lfs pull` for the trimmed sample parquet
 # files. Run this — and REVIEW THE DIFF — only when a bound move is
 # genuinely intended (a real, justified memory-cost increase, or a
@@ -707,7 +712,7 @@ histogram-dashboard-unit:
 # Regenerate the nightly per-sentinel memory ceilings of one ClickHouse image. Needs Docker; review the diff.
 update-nightly-perf-baseline image *sentinels:
     @just _pull-retry {{image}}
-    PERF_NIGHTLY_CH_IMAGE={{image}} UPDATE_NIGHTLY_PERF_BASELINE=1 UPDATE_NIGHTLY_PERF_BASELINE_SENTINELS="{{replace(sentinels, ' ', ',')}}" go test -timeout 15m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
+    PERF_NIGHTLY_CH_IMAGE={{image}} UPDATE_NIGHTLY_PERF_BASELINE=1 UPDATE_NIGHTLY_PERF_BASELINE_SENTINELS="{{replace(sentinels, ' ', ',')}}" go test -timeout 75m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
     @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/nightly-baseline.json
 
 # Run #2437's periodic self-check: deliberately breaks each mechanism its

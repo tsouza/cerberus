@@ -49,10 +49,11 @@
 //     committed baseline — catches a regression even on a freshly-created,
 //     baseline-less sentinel.
 //   - PRONG (b): a committed per-sentinel ceiling in nightly-baseline.json,
-//     the calibration-time max-of-N measurement times a headroom multiplier
-//     (Sentinel.BaselineHeadroom, per-sentinel) — tighter than PRONG (a), so it is what
-//     actually catches a real regression long before the absolute ceiling
-//     would.
+//     the highest max-of-N of nightlyCalibrationRounds calibration rounds
+//     times a headroom multiplier (Sentinel.BaselineHeadroom, per-sentinel),
+//     refused when the rounds' spread does not fit under it (calibratedBound)
+//     — tighter than PRONG (a), so it is what actually catches a real
+//     regression long before the absolute ceiling would.
 //
 // A THIRD check this lane adds beyond test/perf/smoke's shape, because two
 // of its five sentinels are EXPECTED to be rejected rather than to
@@ -161,8 +162,21 @@ const nightlyPlanningSamples = 3
 // below the second.
 const maxPlanningPeerRatio = 4.0
 
+// perfNightlyRunTimeout bounds one gating run: the sample load plus one
+// max-of-N round of every sentinel. A calibration measures
+// nightlyCalibrationRounds rounds of every sentinel, so it gets that many
+// times this budget.
+const perfNightlyRunTimeout = 15 * time.Minute
+
 func TestPerfNightlyRealCH(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	update := os.Getenv("UPDATE_NIGHTLY_PERF_BASELINE") == "1"
+	// rounds is how many max-of-N rounds each sentinel is measured over: one
+	// to gate, nightlyCalibrationRounds to calibrate (calibratedBound).
+	rounds := 1
+	if update {
+		rounds = nightlyCalibrationRounds
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(rounds)*perfNightlyRunTimeout)
 	defer cancel()
 
 	container, client := startPerfNightlyCH(ctx, t)
@@ -248,7 +262,6 @@ func TestPerfNightlyRealCH(t *testing.T) {
 
 	baseline := loadNightlyBaseline(t)
 	versionBaseline, _ := baseline.forVersion(version)
-	update := os.Getenv("UPDATE_NIGHTLY_PERF_BASELINE") == "1"
 	calibrate := calibrationSelection(t, update)
 	updated := make(map[string]nightlyBound, len(Sentinels))
 
@@ -334,65 +347,69 @@ func TestPerfNightlyRealCH(t *testing.T) {
 				}
 			}
 
-			var maxBytes uint64
-			for i := range nightlySentinelRepeats {
-				queryID := fmt.Sprintf("perfnightly-%s-%d", sentinel.Name, i)
-				code, body := runSentinelOnce(t, mux, sentinel, queryID)
-				result.ActualStatus = code
-				// The status-class check comes first and is fatal, not just a
-				// logged finding: for the two ExpectedStatus=422 sentinels this
-				// IS the #2429 regression signal (the bound silently breaking
-				// or over-broadening), not a missed memory ceiling.
-				if code != sentinel.ExpectedStatus {
-					t.Fatalf("%s repeat %d: HTTP %d (want %d) — a status-class change is itself the regression here: %s",
-						sentinel.Name, i, code, sentinel.ExpectedStatus, body)
-				}
-				if sentinel.ExpectedStatus != http.StatusOK && !strings.Contains(body, sentinel.ExpectedErrorSubstring) {
-					t.Fatalf("%s repeat %d: HTTP %d body does not carry %q — a different fault than intended may be firing: %s",
-						sentinel.Name, i, code, sentinel.ExpectedErrorSubstring, body)
-				}
-
-				if err := conn.Exec(ctx, "SYSTEM FLUSH LOGS"); err != nil {
-					t.Fatalf("%s repeat %d: flush logs: %v", sentinel.Name, i, err)
-				}
-				rows, err := logSource.FinishedByQueryID(ctx, []string{queryID})
-				if err != nil {
-					t.Fatalf("%s repeat %d: read query_log: %v", sentinel.Name, i, err)
-				}
-				if len(rows) != 1 {
-					t.Fatalf("%s repeat %d: expected 1 query_log row for query_id %q, got %d",
-						sentinel.Name, i, queryID, len(rows))
-				}
-				if rows[0].MemoryUsage > maxBytes {
-					maxBytes = rows[0].MemoryUsage
-				}
-
-				// The settings prong, on every repeat like the status check:
-				// a stamp the peak depends on must reach every dispatch.
-				if wants := sentinel.WantedOn(line); len(wants) > 0 {
-					_, stamped, err := dispatchedStatement(ctx, pipelineConns[sentinel.Deployment], queryID)
-					if err != nil {
-						t.Fatalf("%s repeat %d: %v", sentinel.Name, i, err)
+			// roundMaxes holds each round's max-of-N peak: the one round a
+			// gating run asserts, or the rounds calibratedBound derives a
+			// committed bound from.
+			roundMaxes := make([]uint64, rounds)
+			for round := range rounds {
+				for i := range nightlySentinelRepeats {
+					queryID := fmt.Sprintf("perfnightly-%s-%d-%d", sentinel.Name, round, i)
+					at := fmt.Sprintf("%s round %d repeat %d", sentinel.Name, round, i)
+					code, body := runSentinelOnce(t, mux, sentinel, queryID)
+					result.ActualStatus = code
+					// The status-class check comes first and is fatal, not just a
+					// logged finding: for the two ExpectedStatus=422 sentinels this
+					// IS the #2429 regression signal (the bound silently breaking
+					// or over-broadening), not a missed memory ceiling.
+					if code != sentinel.ExpectedStatus {
+						t.Fatalf("%s: HTTP %d (want %d) — a status-class change is itself the regression here: %s",
+							at, code, sentinel.ExpectedStatus, body)
 					}
-					for _, want := range wants {
-						if got := stamped[want.Name]; got != want.Value {
-							t.Fatalf("%s repeat %d: the dispatched statement ran with %s=%v, want %s on ClickHouse %s — %s may have regressed",
-								sentinel.Name, i, want.Name, got, want.Value, version, sentinel.Family)
+					if sentinel.ExpectedStatus != http.StatusOK && !strings.Contains(body, sentinel.ExpectedErrorSubstring) {
+						t.Fatalf("%s: HTTP %d body does not carry %q — a different fault than intended may be firing: %s",
+							at, code, sentinel.ExpectedErrorSubstring, body)
+					}
+
+					if err := conn.Exec(ctx, "SYSTEM FLUSH LOGS"); err != nil {
+						t.Fatalf("%s: flush logs: %v", at, err)
+					}
+					rows, err := logSource.FinishedByQueryID(ctx, []string{queryID})
+					if err != nil {
+						t.Fatalf("%s: read query_log: %v", at, err)
+					}
+					if len(rows) != 1 {
+						t.Fatalf("%s: expected 1 query_log row for query_id %q, got %d",
+							at, queryID, len(rows))
+					}
+					roundMaxes[round] = max(roundMaxes[round], rows[0].MemoryUsage)
+
+					// The settings prong, on every repeat like the status check:
+					// a stamp the peak depends on must reach every dispatch.
+					if wants := sentinel.WantedOn(line); len(wants) > 0 {
+						_, stamped, err := dispatchedStatement(ctx, pipelineConns[sentinel.Deployment], queryID)
+						if err != nil {
+							t.Fatalf("%s: %v", at, err)
+						}
+						for _, want := range wants {
+							if got := stamped[want.Name]; got != want.Value {
+								t.Fatalf("%s: the dispatched statement ran with %s=%v, want %s on ClickHouse %s — %s may have regressed",
+									at, want.Name, got, want.Value, version, sentinel.Family)
+							}
 						}
 					}
-				}
 
-				// The plan prong, on every repeat like the status check: a
-				// mechanism that fires intermittently is as broken as one
-				// that never fires.
-				if sentinel.WantPipelineStep != "" {
-					pipeline, err := pipelineSteps(ctx, pipelineConns[sentinel.Deployment], queryID)
-					if err != nil {
-						t.Fatalf("%s repeat %d: %v", sentinel.Name, i, err)
-					}
-					if !strings.Contains(pipeline, sentinel.WantPipelineStep) {
-						t.Fatalf("%s repeat %d: EXPLAIN PIPELINE of the dispatched statement has no %s — %s may have regressed:\n%s",
-							sentinel.Name, i, sentinel.WantPipelineStep, sentinel.Family, pipeline)
+					// The plan prong, on every repeat like the status check: a
+					// mechanism that fires intermittently is as broken as one
+					// that never fires.
+					if sentinel.WantPipelineStep != "" {
+						pipeline, err := pipelineSteps(ctx, pipelineConns[sentinel.Deployment], queryID)
+						if err != nil {
+							t.Fatalf("%s: %v", at, err)
+						}
+						if !strings.Contains(pipeline, sentinel.WantPipelineStep) {
+							t.Fatalf("%s: EXPLAIN PIPELINE of the dispatched statement has no %s — %s may have regressed:\n%s",
+								at, sentinel.WantPipelineStep, sentinel.Family, pipeline)
+						}
 					}
 				}
 			}
@@ -400,6 +417,12 @@ func TestPerfNightlyRealCH(t *testing.T) {
 			// this point is never reached (a mismatch is fatal).
 			result.StatusOK = true
 
+			// A gating run's single round, or a calibration's highest.
+			maxBytes := slices.Max(roundMaxes)
+			if update {
+				t.Logf("%s: max-of-%d peak memory_usage of each of %d calibration rounds: %v",
+					sentinel.Name, nightlySentinelRepeats, rounds, roundMaxes)
+			}
 			capCeiling := nightlyCapCeilingBytes
 			t.Logf("%s (%s): max-of-%d peak memory_usage = %d bytes (%.1f%% of %d-byte cap; absolute ceiling %d), expected status %d",
 				sentinel.Name, sentinel.Family, nightlySentinelRepeats, maxBytes,
@@ -411,13 +434,15 @@ func TestPerfNightlyRealCH(t *testing.T) {
 			result.CapOK = !exceedsCapCeiling(maxBytes)
 
 			if update {
-				// committedCeilingBytes clamps to capCeiling — see its own
-				// comment for why an unclamped PRONG (b) ceiling gates nothing.
-				ceiling := committedCeilingBytes(maxBytes, sentinel.BaselineHeadroom)
-				updated[sentinel.Name] = nightlyBound{
-					Name: sentinel.Name, ExpectedStatus: sentinel.ExpectedStatus,
-					MaxOfNBytes: maxBytes, CeilingBytes: ceiling,
+				// calibratedBound commits the highest round and refuses rounds
+				// whose spread the headroom does not cover; its ceiling clamps
+				// to capCeiling — see committedCeilingBytes for why an
+				// unclamped PRONG (b) ceiling gates nothing.
+				bound, err := calibratedBound(sentinel.Name, sentinel.ExpectedStatus, roundMaxes, sentinel.BaselineHeadroom)
+				if err != nil {
+					t.Fatalf("%v", err)
 				}
+				updated[sentinel.Name] = bound
 				return
 			}
 

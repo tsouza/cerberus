@@ -32,6 +32,44 @@ server. That is why layer 5 seeds each sentinel at the scale #2364's own
 root-cause mechanisms need in order to engage, and reads peak per-query memory
 back from a real server's `system.query_log`.
 
+## Why a nightly calibration takes several rounds
+
+A nightly ceiling used to be the max-of-5 of a single calibration run times the
+sentinel's headroom. On ClickHouse 26.9, `label_values_matcher_stock_key_renamed`
+calibrated at 24,632,333 bytes (ceiling 29,558,799), and the next two gating
+runs measured 30,693,646 and 30,301,384. A second calibration landed at
+26,550,752 (ceiling 31,860,902), and a later gating run measured 32,643,773.
+Across fifteen gating runs of unchanged code its max-of-5 spanned 25.9M-33.0M
+bytes, a 1.28x range against a 1.20x headroom; its twin
+`label_values_matcher_stock_key`, measured seconds apart on the same server
+over the same data, did not move with it.
+
+The spread is per query. On a local 26.9 server limited to four CPUs, five
+fresh containers gave round maxima of 22.4M-26.2M, and the five repeats inside
+one container ranged as widely as 22.5M-26.2M over the same part. The statement
+runs on five threads (`peak_threads_usage`), and its peak `memory_usage` is the
+sum of whichever per-stream buffers are live at the same moment, so it depends
+on how the threads interleave. Under `max_threads=1` the same statement
+measured 10.7M-10.9M on most repeats and 12.2M-13.0M on the rest. The part
+layout of the freshly loaded tables — the first candidate, since a background
+merge racing the measurement would differ between runs — was the same in every
+container and every copy measured: one active part, 112-113 selected marks, no
+merge in flight. Precise memory accounting (`max_untracked_memory=1`) raised
+the readings by about 4M and left the spread in place, so the per-thread
+tracking granularity is not the source either.
+
+A max-of-5 is one draw from that distribution, and a ceiling anchored on one
+draw is anchored on wherever that draw landed. The highest of several rounds
+cannot be set by a low-tail round, and the spread between the rounds is a
+measurement of the noise the headroom has to cover. Measuring with one thread
+would narrow the spread without removing it, measure a pipeline no deployment
+runs, and move every committed bound at once.
+
+The spread check refuses rather than widens. Widening a ceiling to absorb the
+measured noise would keep the calibration green while the sentinel loses the
+regression its headroom was chosen to catch; refusing puts that choice back on
+the headroom constant, where the regression size it guards is recorded.
+
 ## Why `fan_factor` is nullable
 
 Before issue #1519, the stages the profiler's per-subquery `count()`

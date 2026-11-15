@@ -40,8 +40,10 @@ on:
       calibrate:
         description: >-
           Recalibrate instead of gating: each leg runs `just
-          update-nightly-perf-baseline` on its server and uploads the rewritten
-          nightly-baseline.json as the artifact nightly-baseline-<clickhouse>.
+          update-nightly-perf-baseline` on its server, which measures every
+          sentinel over several max-of-5 rounds and commits the highest, and
+          uploads the rewritten nightly-baseline.json as the artifact
+          nightly-baseline-<clickhouse>.
         type: boolean
         default: false
       calibrate_sentinels:
@@ -74,8 +76,11 @@ jobs:
       matrix:
         clickhouse: ['24.8', '25.9', '26.8', '26.9']
     # Pulls one ClickHouse image, loads ~4.3M real rows across 3 tables plus
-    # the exporter-keyed copies, and issues the sentinel corpus five times.
-    timeout-minutes: 30
+    # the exporter-keyed copies, and issues the sentinel corpus five times —
+    # or, recalibrating, nightlyCalibrationRounds (5) max-of-5 rounds of it,
+    # under update-nightly-perf-baseline's 75m go test timeout, which this
+    # cap stays above.
+    timeout-minutes: ${{ inputs.calibrate && 90 || 30 }}
     env:
       # The image the leg boots: the alpine tag of its release line, the form
       # every real-ClickHouse lane pins (just/common.just).

@@ -69,7 +69,8 @@ var nightlyCapCeilingBytes = uint64(math.Round(float64(perfNightlyMemoryCapBytes
 
 // committedCeilingBytes derives one sentinel's PRONG (b) ceiling — the number
 // written into nightly-baseline.json — from its calibration-time max-of-N
-// measurement and its own per-sentinel headroom multiplier.
+// measurement (the highest of calibratedBound's rounds) and its own
+// per-sentinel headroom multiplier.
 //
 // The min() is the load-bearing part: for a sentinel already close to the
 // absolute ceiling (pod_status_reason_gauge measured 76.6% against a 1.5x
@@ -79,6 +80,60 @@ var nightlyCapCeilingBytes = uint64(math.Round(float64(perfNightlyMemoryCapBytes
 // that silently never gates. PRONG (b) must never be looser than PRONG (a).
 func committedCeilingBytes(maxBytes uint64, headroom float64) uint64 {
 	return min(uint64(float64(maxBytes)*headroom), nightlyCapCeilingBytes)
+}
+
+// nightlyCalibrationRounds is how many max-of-N rounds a calibration measures
+// each sentinel over. A gating run measures one round and asserts its
+// max-of-N, so what a committed ceiling has to clear is the run-to-run
+// distribution of that max-of-N, not one draw of it. The rounds share one
+// server and one sample load because the spread they sample is per query —
+// how a multi-threaded read's per-stream buffers happen to overlap — not per
+// run (docs/performance.background.md). For
+// exchangeable rounds, a fresh gating run's max-of-N lands above the highest of
+// R calibration rounds with probability 1/(R+1): five rounds bring that to one
+// in six before any headroom applies, and give calibratedBound a measured
+// range to hold the headroom against.
+const nightlyCalibrationRounds = 5
+
+// calibratedBound derives one sentinel's committed bound from the max-of-N
+// peaks of its calibration rounds (roundMaxes, one per round) and its
+// per-sentinel headroom.
+//
+// The committed max-of-N is the HIGHEST round, so a low-tail round cannot set
+// the ceiling. The run-to-run range the rounds measured (highest minus lowest)
+// must then fit inside the margin the ceiling leaves above that highest round:
+// the next ordinary run can land as far above the highest round as the lowest
+// round sits below it, and a ceiling within that reach is one ordinary noise
+// crosses. Such a calibration is refused rather than committed — the
+// sentinel's headroom is narrower than its measured noise, and widening it is
+// a decision about which regression the sentinel can still catch, not
+// arithmetic.
+//
+// Fewer than nightlyCalibrationRounds rounds, or a round that measured
+// nothing, is refused too: a single round has no range to measure.
+func calibratedBound(name string, expectedStatus int, roundMaxes []uint64, headroom float64) (nightlyBound, error) {
+	if len(roundMaxes) < nightlyCalibrationRounds {
+		return nightlyBound{}, fmt.Errorf("%s: calibrated from %d max-of-N rounds, want at least %d — "+
+			"one round's max-of-N is a single draw of the run-to-run distribution the ceiling has to clear",
+			name, len(roundMaxes), nightlyCalibrationRounds)
+	}
+	lowest, highest := slices.Min(roundMaxes), slices.Max(roundMaxes)
+	if lowest == 0 {
+		return nightlyBound{}, fmt.Errorf("%s: a calibration round measured a peak of 0 bytes (rounds %v)", name, roundMaxes)
+	}
+	ceiling := committedCeilingBytes(highest, headroom)
+	spread := highest - lowest
+	var margin uint64
+	if ceiling > highest {
+		margin = ceiling - highest
+	}
+	if margin < spread {
+		return nightlyBound{}, fmt.Errorf("%s: the calibration rounds' max-of-N span %d bytes (%d to %d, rounds %v), "+
+			"more than the %d-byte margin the ceiling %d leaves above the highest round — an ordinary run can "+
+			"cross that ceiling, so the sentinel's %.2fx headroom does not cover its run-to-run noise",
+			name, spread, lowest, highest, roundMaxes, margin, ceiling, headroom)
+	}
+	return nightlyBound{Name: name, ExpectedStatus: expectedStatus, MaxOfNBytes: highest, CeilingBytes: ceiling}, nil
 }
 
 // exceedsCapCeiling reports whether a measured peak trips PRONG (a), the
@@ -106,12 +161,12 @@ func exceedsCommittedCeiling(maxBytes uint64, bound nightlyBound) bool {
 const nightlyBaselinePath = "../nightly-baseline.json"
 
 // nightlyBound is one sentinel's committed bound: the calibration-time
-// max-of-N measurement (kept for the diff/failure message), the
-// headroom-multiplied, cap-clamped ceiling the gate actually asserts against,
-// and the HTTP status the sentinel was calibrated to expect (PRONG (b) itself
-// re-checks this against the sentinel's CURRENT ExpectedStatus, catching a
-// baseline gone stale relative to sentinels.go rather than silently
-// comparing memory across two different outcome classes).
+// max-of-N measurement (the highest of the calibration rounds, kept for the
+// diff/failure message), the headroom-multiplied, cap-clamped ceiling the gate
+// actually asserts against, and the HTTP status the sentinel was calibrated to
+// expect (PRONG (b) itself re-checks this against the sentinel's CURRENT
+// ExpectedStatus, catching a baseline gone stale relative to sentinels.go
+// rather than silently comparing memory across two different outcome classes).
 type nightlyBound struct {
 	Name           string `json:"name"`
 	ExpectedStatus int    `json:"expected_status"`
