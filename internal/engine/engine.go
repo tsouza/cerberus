@@ -352,7 +352,13 @@ func ProbeQuerySettings(plan chplan.Node, rules SettingsRules, memCap int64, str
 // (the diagnostics / spec-golden read-out), so a stamp added to one cannot
 // silently drop out of the other.
 func routeAQuerySettings(ctx context.Context, plan chplan.Node, memCap int64, rules SettingsRules) context.Context {
-	f := inspectPlanShape(plan, rules.Traces.TraceIDColumn)
+	return routeAQuerySettingsOf(ctx, inspectPlanShape(plan, rules.Traces.TraceIDColumn), memCap, rules)
+}
+
+// routeAQuerySettingsOf is routeAQuerySettings over facts the caller already
+// inspected, so execContext can read further facts off the same single
+// inspection.
+func routeAQuerySettingsOf(ctx context.Context, f planShapeFacts, memCap int64, rules SettingsRules) context.Context {
 	if f.tsGridNative {
 		ctx = chclient.WithTSGridSetting(ctx)
 	}
@@ -389,12 +395,20 @@ func routeAQuerySettings(ctx context.Context, plan chplan.Node, memCap int64, ru
 // count of the EMITTED statement (chsql.EmitCounted), which only exists
 // once emitForHead has rendered the SQL, so every dispatch site stamps it
 // onto the ctx this function returns, right after the emit.
-func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language string, decision *solver.Decision) (context.Context, string) {
+//
+// The third result is the plan's classicHistogramStage fact, read off the
+// same inspection the settings come from, for the dispatch site to classify
+// a memory-limit abort with (wrapClassicHistogramMemoryLimit).
+func (e *Engine) execContext(
+	ctx context.Context, plan chplan.Node, language string, decision *solver.Decision,
+) (context.Context, string, bool) {
 	// Every per-query setting a route-A statement carries, sized from this
 	// statement's own memory cap. The plan-shape-gated part is shared
 	// verbatim with route B's seam (routeBExecCtx) so the two can never
 	// drift — see applySharedQuerySettings' own doc.
-	ctx = routeAQuerySettings(ctx, plan, e.queryMemoryCap(), e.settings())
+	rules := e.settings()
+	f := inspectPlanShape(plan, rules.Traces.TraceIDColumn)
+	ctx = routeAQuerySettingsOf(ctx, f, e.queryMemoryCap(), rules)
 	// Issue #2789: tag this route-A dispatch for actuals capture — see
 	// applyActualsCapture's own doc. No-op (ctx unchanged) whenever Actuals
 	// is nil or decision carries no ShapeID (either because Actuals was nil
@@ -412,7 +426,7 @@ func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language str
 	// Return the queryID so the caller can later stamp a cerberus-side terminal
 	// outcome (e.g. the sample-budget 422 surfacing through this dispatch) onto
 	// the same corpus record via observeOutcomeForErr.
-	return ctx, queryID
+	return ctx, queryID, f.classicHistogramStage
 }
 
 // applySharedQuerySettings layers every plan-shape-gated per-query ClickHouse
@@ -1563,7 +1577,7 @@ func (e *Engine) runGuards(ctx context.Context, lang Lang, meta Meta) error {
 		if err := requireSubquerySampleBudget(plan, e.MaxQuerySamples); err != nil {
 			return err
 		}
-		guardCtx, _ := e.execContext(ctx, plan, lang.Name(), nil)
+		guardCtx, _, _ := e.execContext(ctx, plan, lang.Name(), nil)
 		sql, args, physicalScans, err := emitForHead(guardCtx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.routeAResourceBounds(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
 		if err != nil {
 			return fmt.Errorf("engine: emit: guard %s: %w", g.Name, err)
@@ -1800,12 +1814,13 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	// their per-head labels.
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
-	execCtx, queryID := e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision)
+	execCtx, queryID, classicHistogramStage := e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision)
 	execCtx = chclient.WithDataShardFanoutMultiplier(execCtx, physicalScans)
 	samples, err := e.Client.Query(execCtx, sql, args...)
 	chMillis := time.Since(start).Milliseconds()
 	execT.Done(ctx)
 	if err != nil {
+		err = wrapClassicHistogramMemoryLimit(err, classicHistogramStage)
 		// The eager path drains the whole result inside Client.Query, so a
 		// sample-budget 422 (or a breaker fast-fail) surfaces here. Stamp the
 		// cerberus-side outcome onto the corpus before wrapping the error.
@@ -2207,6 +2222,7 @@ func (e *Engine) executeRouted(
 	}
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
+	classicHistogramStage := planHasClassicHistogramStage(plan)
 	cursor, info, err := e.Solver.Executor.Execute(
 		routeBExecCtx(
 			ctx, lang.Name(), meta.ResponseShape, decision, plan, e.queryMemoryCap(), e.settings(),
@@ -2216,6 +2232,7 @@ func (e *Engine) executeRouted(
 		), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	if err != nil {
+		err = wrapClassicHistogramMemoryLimit(err, classicHistogramStage)
 		execT.Done(ctx)
 		// Same stamping route A's eager path does at its own dispatch
 		// failure (cerberus issue #3184): a breaker rejection or a
@@ -2241,7 +2258,7 @@ func (e *Engine) executeRouted(
 	for cursor.Next() {
 		samples = append(samples, cursor.Sample())
 	}
-	if cerr := cursor.Err(); cerr != nil {
+	if cerr := wrapClassicHistogramMemoryLimit(cursor.Err(), classicHistogramStage); cerr != nil {
 		execT.Done(ctx)
 		// The route-B eager path drains inside this function, so this is the
 		// ONLY site that can stamp a drain outcome for it — the streaming
@@ -2575,7 +2592,7 @@ func (e *Engine) dispatchRouteACursor(
 	}
 
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
-	execCtx, queryID := e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision)
+	execCtx, queryID, classicHistogramStage := e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision)
 	execCtx = chclient.WithDataShardFanoutMultiplier(execCtx, physicalScans)
 	// Thread the adapter's declared response shape onto the execute ctx so
 	// chclient's columnar matrix decode can confirm (defense-in-depth, on top
@@ -2588,8 +2605,9 @@ func (e *Engine) dispatchRouteACursor(
 	cursor, err := cq.QueryCursor(execCtx, sql, args...)
 	execT.Done(ctx)
 	if err != nil {
-		return routeACursorAttempt{openErr: err, queryID: queryID}, nil
+		return routeACursorAttempt{openErr: wrapClassicHistogramMemoryLimit(err, classicHistogramStage), queryID: queryID}, nil
 	}
+	cursor = wrapClassicHistogramCursor(cursor, classicHistogramStage)
 
 	nodes := cerbtrace.CountNodes(plan)
 	strategy := strategyFor(meta)
@@ -2656,7 +2674,7 @@ func (e *Engine) buildRoutedCursorResult(
 	}
 	headers[HeaderRouteDecision] = solver.StrategyShardedTimeslice + ";k=" + strconv.Itoa(decision.K) + ";reason=" + via
 	return CursorResult{
-		Cursor:        cursor,
+		Cursor:        wrapClassicHistogramCursor(cursor, planHasClassicHistogramStage(plan)),
 		SQL:           sql,
 		Args:          args,
 		Strategy:      strategy,
@@ -2754,6 +2772,7 @@ func (e *Engine) executeRoutedCursor(
 	}
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
+	classicHistogramStage := planHasClassicHistogramStage(plan)
 	cursor, info, err := e.Solver.Executor.Execute(
 		routeBExecCtx(
 			ctx, lang.Name(), meta.ResponseShape, decision, plan, e.queryMemoryCap(), e.settings(),
@@ -2764,6 +2783,7 @@ func (e *Engine) executeRoutedCursor(
 	)
 	execT.Done(ctx)
 	if err != nil {
+		err = wrapClassicHistogramMemoryLimit(err, classicHistogramStage)
 		e.logQueryFailure(lang.Name(), plan, decision, time.Since(start), "", err)
 		return CursorResult{}, fmt.Errorf("engine: solver execute: %w", err)
 	}
@@ -2772,7 +2792,9 @@ func (e *Engine) executeRoutedCursor(
 	// evidence-based per-rung refinement, which supplies its OWN drain-time
 	// site by wrapping the cursor below.
 	e.observeRoutedQuery(info, plan, lang.Name(), decision)
-	cursor = wrapPerRungObserver(cursor, e.PerRungAdmission, e.RouteMemo, plan, decision)
+	cursor = wrapClassicHistogramCursor(
+		wrapPerRungObserver(cursor, e.PerRungAdmission, e.RouteMemo, plan, decision), classicHistogramStage,
+	)
 
 	nodes := cerbtrace.CountNodes(plan)
 	strategy := strategyFor(meta)

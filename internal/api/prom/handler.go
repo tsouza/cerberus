@@ -1119,6 +1119,34 @@ func memoryLimitAPIError(e *chclient.MemoryLimitError) *apiError {
 	}
 }
 
+// classicHistogramMemoryLimitMessage is the wire message for a ClickHouse
+// memory-limit abort (code 241) of a statement carrying a classic-histogram
+// window or bucket-merge stage: chplan.ClassicHistogramMemoryLimitMessage,
+// naming the per-query cap the way promMemoryLimitMessage does when one is
+// configured.
+func classicHistogramMemoryLimitMessage(limit int64) string {
+	if limit > 0 {
+		return fmt.Sprintf("%s (per-query cap %d bytes)", chplan.ClassicHistogramMemoryLimitMessage, limit)
+	}
+	return chplan.ClassicHistogramMemoryLimitMessage
+}
+
+// classicHistogramMemoryLimitAPIError is the rejection for a ClickHouse
+// memory-limit abort of a classic-histogram stage: the 422
+// errorType=execution shape of the stage's own throwIf guards, carrying
+// classicHistogramMemoryLimitMessage, with the resource-exhausted telemetry
+// reason the generic memory-limit rejection carries. Reached from
+// classifySentinelError, so the instant path (classifyEngineError) and the
+// query_range drain (classifyDrainError) answer it alike.
+func classicHistogramMemoryLimitAPIError(e *engine.ClassicHistogramMemoryLimitError) *apiError {
+	return &apiError{
+		Kind:   ErrExecution,
+		Err:    errors.New(classicHistogramMemoryLimitMessage(e.Limit)),
+		Status: http.StatusUnprocessableEntity,
+		Reason: telemetry.ReasonResourceExhausted,
+	}
+}
+
 // promDrainBytesMessage is the Go-heap sibling of promMaxSamplesMessage:
 // the wire message for a query whose decoded result crossed the
 // per-request drain byte budget (chclient.NewMatrixDrainBudget). Upstream
@@ -1452,15 +1480,9 @@ func classifyThrowIfGuardError(err error) *apiError {
 			Status: http.StatusUnprocessableEntity,
 		}
 	// The instant path's per-series window stage that feeds that merge
-	// carries its own throwIf (internal/promql's
-	// classic_bucket_window_bound.go), raised before the stage collects a
-	// sample. Same 422 shape.
-	case throwIfMessageMatches(err, chplan.ClassicBucketWindowBudgetMessage):
-		return &apiError{
-			Kind:   ErrExecution,
-			Err:    errors.New(chplan.ClassicBucketWindowBudgetMessage),
-			Status: http.StatusUnprocessableEntity,
-		}
+	// carries its own per-series throwIf (internal/promql's
+	// classic_bucket_window_bound.go), raised before the stage folds a
+	// series. Same 422 shape.
 	case throwIfMessageMatches(err, chplan.ClassicBucketWindowSeriesBudgetMessage):
 		return &apiError{
 			Kind:   ErrExecution,
@@ -1637,6 +1659,15 @@ func classifySentinelError(err error) *apiError {
 	var byteBudget *chclient.DrainByteBudgetError
 	if errors.As(err, &byteBudget) {
 		return drainBytesAPIError(byteBudget)
+	}
+	// ClickHouse memory-limit abort (code 241) of a statement carrying a
+	// classic-histogram window or bucket-merge stage: the engine marks it
+	// (engine.ClassicHistogramMemoryLimitError), and it answers as that
+	// stage's own guard rejection. Checked before the generic case below,
+	// which the marked error also unwraps to.
+	var classicMemLimit *engine.ClassicHistogramMemoryLimitError
+	if errors.As(err, &classicMemLimit) {
+		return classicHistogramMemoryLimitAPIError(classicMemLimit)
 	}
 	// ClickHouse memory-limit abort (code 241): the same
 	// resource-exhausted class as the sample budget, surfaced from the

@@ -47,6 +47,7 @@ import {
   isNativeHistogramSelector,
   isPinnedResourceBoundRejection,
   bodyContainsPinnedResourceBoundMessage,
+  CLASSIC_HISTOGRAM_MEMORY_LIMIT_MESSAGE,
   MEMORY_LIMIT_MESSAGE,
   RESOURCE_BOUND_GUARD_MESSAGES,
   iterateDashboards,
@@ -204,6 +205,12 @@ test('isPinnedResourceBoundRejection accepts the exact memory-limit and guard-me
     isPinnedResourceBoundRejection(
       422,
       JSON.stringify({ status: 'error', errorType: 'execution', error: MEMORY_LIMIT_MESSAGE }),
+    ),
+  ).toBe(true);
+  expect(
+    isPinnedResourceBoundRejection(
+      422,
+      JSON.stringify({ status: 'error', errorType: 'execution', error: CLASSIC_HISTOGRAM_MEMORY_LIMIT_MESSAGE }),
     ),
   ).toBe(true);
   for (const msg of RESOURCE_BOUND_GUARD_MESSAGES) {

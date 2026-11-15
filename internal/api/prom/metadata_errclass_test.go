@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/telemetry"
 )
 
 // metadataErrSentinels is every classified sentinel the Prometheus head
@@ -82,5 +84,38 @@ func TestClassifyMetadataError_UnclassifiedIsATransportFault(t *testing.T) {
 	}
 	if got.Status != http.StatusBadGateway || got.Kind != ErrInternal {
 		t.Errorf("unclassified metadata failure = %d %s; want 502 %s", got.Status, got.Kind, ErrInternal)
+	}
+}
+
+// TestClassifyEngineError_ClassicHistogramMemoryLimit pins the classification
+// of an engine-marked classic-histogram memory-limit abort on the instant
+// and the drain classifiers alike: 422 errorType=execution with the stage's
+// message and the resource-exhausted telemetry reason, the cap named only
+// when one is configured.
+func TestClassifyEngineError_ClassicHistogramMemoryLimit(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		limit int64
+		want  string
+	}{
+		{1 << 30, "classic-histogram quantile exceeds the ClickHouse memory limit (per-query cap 1073741824 bytes)"},
+		{0, "classic-histogram quantile exceeds the ClickHouse memory limit"},
+	} {
+		raw := &chclient.MemoryLimitError{Limit: tc.limit}
+		err := fmt.Errorf("engine: execute: %w", &engine.ClassicHistogramMemoryLimitError{Limit: tc.limit, Err: raw})
+		for name, classify := range map[string]func(error) error{
+			"engine": classifyEngineError,
+			"drain":  classifyDrainError,
+		} {
+			var got *apiError
+			if !errors.As(classify(err), &got) {
+				t.Fatalf("%s: no *apiError", name)
+			}
+			if got.Status != http.StatusUnprocessableEntity || got.Kind != ErrExecution ||
+				got.Reason != telemetry.ReasonResourceExhausted || got.Err.Error() != tc.want {
+				t.Fatalf("%s: %d %s reason %q %q; want 422 %s reason %q %q",
+					name, got.Status, got.Kind, got.Reason, got.Err, ErrExecution, telemetry.ReasonResourceExhausted, tc.want)
+			}
+		}
 	}
 }

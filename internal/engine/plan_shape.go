@@ -80,6 +80,13 @@ type planShapeFacts struct {
 	// (chplan.Scan.TimeShiftMillis), so no literal in the plan names the
 	// window it reads.
 	timeShifted bool
+	// classicHistogramStage: a throwIf anywhere raises one of the
+	// classic-histogram stage's own guard messages
+	// (chplan.IsClassicBucketBudgetMessage), so the plan carries a
+	// classic-histogram window or bucket-merge stage. It decides whether a
+	// ClickHouse memory-limit abort of the statement is reported as that
+	// stage's (wrapClassicHistogramMemoryLimit).
+	classicHistogramStage bool
 
 	// lazyLimits counts Limit(OrderBy(...)) nodes with a positive Count;
 	// lazyLimit is the Count of the last one seen. EligibleForLazyMaterialization
@@ -354,8 +361,9 @@ func (f *planShapeFacts) recordGridCarrier(gc chplan.GridCarrier) {
 }
 
 // recordExpr records the expression-level facts for one sub-expression: a
-// literal now()/now64() call, and a predicate that tests the bare trace-id
-// column for equality or membership (traceIDPredicateExpr).
+// literal now()/now64() call, a predicate that tests the bare trace-id
+// column for equality or membership (traceIDPredicateExpr), and a
+// classic-histogram stage guard (classicBucketGuardExpr).
 func (f *planShapeFacts) recordExpr(e chplan.Expr, traceIDColumn string) {
 	if fc, ok := e.(*chplan.FuncCall); ok && (fc.Fn == chplan.FnNow || fc.Fn == chplan.FnNow64) {
 		f.hasNowExpr = true
@@ -363,6 +371,27 @@ func (f *planShapeFacts) recordExpr(e chplan.Expr, traceIDColumn string) {
 	if traceIDColumn != "" && !f.traceIDPredicate && traceIDPredicateExpr(e, traceIDColumn) {
 		f.traceIDPredicate = true
 	}
+	if !f.classicHistogramStage && classicBucketGuardExpr(e) {
+		f.classicHistogramStage = true
+	}
+}
+
+// classicBucketGuardExpr reports whether e is a throwIf raising one of the
+// classic-histogram stage's guard messages — the per-series window guard or
+// the bucket-merge guard internal/promql plants. Those guards are the plan's
+// typed mark of the stage: it has no node kind of its own, being built from
+// the ordinary Aggregate / Filter / Project nodes every other plan uses.
+func classicBucketGuardExpr(e chplan.Expr) bool {
+	fc, ok := e.(*chplan.FuncCall)
+	if !ok || fc.Fn != chplan.FnThrowIf {
+		return false
+	}
+	for _, arg := range fc.Args {
+		if msg, ok := arg.(*chplan.InlineString); ok && chplan.IsClassicBucketBudgetMessage(msg.V) {
+			return true
+		}
+	}
+	return false
 }
 
 // lazyMaterializationLimit returns the sole Limit(OrderBy(...)) Count, or

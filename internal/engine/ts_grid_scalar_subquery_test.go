@@ -94,7 +94,7 @@ func TestExecContext_StampsTSGridSettingForScalarInterior(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			e := &Engine{Optimizer: optimizer.Default()}
-			ctx, _ := e.execContext(context.Background(), scalarInteriorTSGridPlan(interior), "promql", nil)
+			ctx, _, _ := e.execContext(context.Background(), scalarInteriorTSGridPlan(interior), "promql", nil)
 			got := chclient.QuerySettingsFromContext(ctx)[chclient.SettingExperimentalTSGridAggregate]
 			if got != 1 {
 				t.Errorf("%s = %v on the dispatch ctx, want 1 — the only %s in the plan is inside a "+
@@ -117,7 +117,7 @@ func TestExecContext_LeavesTSGridSettingOffPlainPlans(t *testing.T) {
 		Input:    &chplan.Scan{Table: "otel_metrics_gauge"},
 		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnMax, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "Value"}},
 	})
-	ctx, _ := e.execContext(context.Background(), plain, "promql", nil)
+	ctx, _, _ := e.execContext(context.Background(), plain, "promql", nil)
 	if got, ok := chclient.QuerySettingsFromContext(ctx)[chclient.SettingExperimentalTSGridAggregate]; ok {
 		t.Errorf("%s = %v on a plan with no ts-grid node anywhere, want absent",
 			chclient.SettingExperimentalTSGridAggregate, got)
