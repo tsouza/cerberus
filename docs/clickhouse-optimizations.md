@@ -978,11 +978,14 @@ The verdict is tri-state:
 
 - **available** — the server accepted the setting; the native family resolves
   per its version floor.
-- **forbidden** — the server answered with a typed rejection (constrained /
-  readonly profile); a *definitive* "no". The native family is **dropped to the
-  fan-out path**.
-- **unreachable** — the canary got no server verdict (a transport failure); an
-  *inconclusive* result. On a server with no remembered verdict, native stays
+- **forbidden** — the server refused the setting: `SETTING_CONSTRAINT_VIOLATION`
+  (a constrained profile), `READONLY` (a readonly profile), `UNKNOWN_SETTING`
+  (a build without the setting), or, for the workload canary,
+  `RESOURCE_ACCESS_DENIED` (a workload the server cannot resolve); a
+  *definitive* "no". The native family is **dropped to the fan-out path**.
+- **unreachable** — the canary got no server verdict: a transport failure, or
+  a server error that is not a refusal, such as a timeout or a memory or
+  concurrency limit; an *inconclusive* result. On a server with no remembered verdict, native stays
   off until a later re-probe gets a verdict, matching the version probe's
   connectivity fallback; a server with a remembered verdict keeps it (see
   [Capability canaries across servers](#capability-canaries-across-servers)).
@@ -1036,10 +1039,14 @@ at boot and on every [re-probe](#re-probe).
 
 - **available** — the table exists, every union member has the selected
   columns, and cerberus's user may `SELECT` it: the feature resolves in.
-- **forbidden** — the server answered with an error: the table is absent
-  (ClickHouse older than 26.8, or no `<create_union_system_log_tables>`
-  section), the `SELECT` is not granted, or a member refused.
-- **unreachable** — no server verdict.
+- **forbidden** — the server refused the read: the table is absent
+  (`UNKNOWN_TABLE`: ClickHouse older than 26.8, or no
+  `<create_union_system_log_tables>` section), the `SELECT` is not granted
+  (`ACCESS_DENIED`), a member lacks a selected column (`UNKNOWN_IDENTIFIER`,
+  `NO_SUCH_COLUMN_IN_TABLE`), or the server refused a setting the read
+  carries, with the codes the settings canaries read as a refusal.
+- **unreachable** — no server verdict: a transport failure, or a server error
+  that is not a refusal, such as a timeout or a memory or concurrency limit.
 
 Unlike every other capability-gated feature, a non-`available` verdict is
 **never fatal**, in `enforcing` as in `permissive`: the feature resolves out

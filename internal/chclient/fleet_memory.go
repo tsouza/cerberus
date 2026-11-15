@@ -28,10 +28,11 @@ import (
 // An unattributed verdict is read when a pass's canary request lands on the
 // replica that gives it, which under the same routing is as likely as the
 // identity read landing on it, so the same count keeps the chance of
-// forgetting a serving replica's verdict as small. Its cost is that a verdict
-// no replica gives any more — a replica fixed, or a transient server error
-// read as a refusal — keeps holding for the same count of passes, at the same
-// 10-second cadence, before it clears.
+// forgetting a serving replica's verdict as small. Its cost is that a refusal
+// no replica gives any more, once the replica is fixed, keeps holding for the
+// same count of passes, at the same 10-second cadence, before it clears. A
+// server error that is not a refusal is an unreachable verdict, which is not
+// held (classifyCapabilityFromProbeErr).
 const fleetNodeRetentionPassesPerServer = 40
 
 // retentionPasses is how many consecutive complete passes may miss a server

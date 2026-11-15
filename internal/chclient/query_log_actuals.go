@@ -265,12 +265,20 @@ func isQueryLogUnionRefusal(err error) bool {
 // against system.all_query_log for an empty page, so the verdict covers what
 // the server checks before it reads a row: the table exists, its columns are
 // the ones selected, and cerberus's user may SELECT it. A nil error is
-// Available, a typed server rejection is Forbidden, and a transport failure
-// is Unreachable (classifyCapabilityFromProbeErr). Never returns an error.
+// Available; the server refusing the read (isQueryLogUnionRefusal) or a
+// setting it carries (isSettingsRefusal) is Forbidden; anything else — a
+// transport failure, a timeout, a memory or concurrency limit — is
+// Unreachable (classifyCapabilityFromProbeErr). Never returns an error.
 func (c *Client) ProbeQueryLogUnionCapability(ctx context.Context) chopt.Capability {
 	_, err := c.QueryLogActuals(withCapabilityCanary(ctx), QueryLogActualsRequest{
 		Union: true,
 		After: QueryLogCursor{EventTime: time.Now()},
 	})
-	return classifyCapabilityFromProbeErr(err)
+	return classifyCapabilityFromProbeErr(err, isQueryLogUnionCanaryRefusal)
+}
+
+// isQueryLogUnionCanaryRefusal reports whether err refuses the query-log
+// union canary: the union read itself, or a setting the read carries.
+func isQueryLogUnionCanaryRefusal(err error) bool {
+	return isQueryLogUnionRefusal(err) || isSettingsRefusal(err)
 }

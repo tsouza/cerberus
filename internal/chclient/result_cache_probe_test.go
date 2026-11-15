@@ -15,7 +15,7 @@ import (
 // profile raises for use_query_cache — a SEPARATE setting name from the
 // ts-grid experimental gate ts_grid_probe_test.go pins, confirming the
 // shared classifier's mapping does not depend on the setting name at all
-// (nil -> Available, typed exception -> Forbidden, transport error ->
+// (nil -> Available, a refused setting -> Forbidden, transport error ->
 // Unreachable).
 func TestClassifyCapabilityFromProbeErr_ResultCacheShapes(t *testing.T) {
 	t.Parallel()
@@ -59,7 +59,7 @@ func TestClassifyCapabilityFromProbeErr_ResultCacheShapes(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := classifyCapabilityFromProbeErr(tc.err); got != tc.want {
+			if got := classifyCapabilityFromProbeErr(tc.err, isSettingsRefusal); got != tc.want {
 				t.Errorf("classifyCapabilityFromProbeErr(%v) = %v; want %v", tc.err, got, tc.want)
 			}
 		})

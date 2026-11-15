@@ -1465,13 +1465,8 @@ it keeps answering the canary, under the same retention as a remembered
 server, and a server's own accepted canaries cannot clear it. The cost is that
 an unattributed refusal outlives a replica's fix: it clears only once 40
 complete probes per remembered server have not read it, rather than on the
-first probe that lands on the fixed replica. The same holds for a transient
-server error the canary reads as a refusal (a query-log read that times out,
-or exceeds a memory or concurrency limit): over HTTP it keeps the capability
-off for that count of probes at the 10-second cadence — under seven minutes
-against one server — where over the native protocol the next accepted canary
-on that server clears it. Both errors fail toward the slower shape, never
-toward a wrong answer.
+first probe that lands on the fixed replica. A server error that is not a
+refusal never pays that cost, because it is not a refusal verdict (below).
 
 An unreachable verdict read over HTTP is not held. Over the native protocol a
 server's unreachable verdict is kept only until the server gives a real one,
@@ -1525,6 +1520,36 @@ back on until the next probe that reads the refusal again; letting it replace
 a remembered permit would demote the fleet to unreachable on a transient
 failure. A server with nothing remembered takes the unreachable verdict,
 since that is all that is known about it.
+
+**Why only a refusal code is a forbidden verdict.** A canary error is
+**forbidden** only when its code is one the server answers with for refusing
+the capability, and any other server error is **unreachable**. Reading every
+server exception as a refusal would turn a timeout, a memory limit or a burst
+of concurrent queries into a refusal; held the way a refusal is held — over
+HTTP, for 40 complete probes per remembered server at the 10-second cadence,
+after the 5-minute probe that read it — a single such error would keep the
+capability off for over eleven minutes against one server, where a probe that
+forgets each verdict at the next one keeps it off for one 5-minute interval.
+As unreachable, it is not held over HTTP and leaves a server's remembered
+verdict in place over the native protocol, so a capability already read
+available stays on, and one with no verdict yet stays off only until the next
+probe.
+
+The refusal codes were read off real servers from 24.8 to 26.10 by provoking
+every condition that refuses a canary: a readonly profile (`READONLY`),
+`CONST` and `MAX` constraints on the setting a canary turns on and on the
+settings it pins beside it (`SETTING_CONSTRAINT_VIOLATION`), a build that
+predates the setting (`UNKNOWN_SETTING`), a workload name the server cannot
+resolve under `throw_on_unknown_workload` (`RESOURCE_ACCESS_DENIED`), and,
+for the query-log union read, a server without the union table
+(`UNKNOWN_TABLE`) and a user without the `SELECT` grant on it, or with a
+grant on some columns only (`ACCESS_DENIED`). The union read also refuses a
+member that lacks a selected column (`UNKNOWN_IDENTIFIER`,
+`NO_SUCH_COLUMN_IN_TABLE`), which the reader already treats as the table not
+being provisioned. A readonly profile also refuses the identity read, which
+carries settings, so such a server is never read at all. A refusal answered
+with a code outside the list would read as unreachable: the capability stays
+off on a server with no verdict, and keeps the remembered verdict otherwise.
 
 **Why the order is forbidden, then unreachable, then available.** A query can
 land on any remembered server, so the fleet permits a setting only when every
