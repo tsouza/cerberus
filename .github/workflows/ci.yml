@@ -309,10 +309,18 @@ jobs:
       # the tree constrains on, so this pass sees the default build.
       # test/regression/lint_build_tags_test.go holds the two passes, the tag
       # union and the inert tag to what the tree's `//go:build` lines say.
+      #
+      # `install-mode: none` runs the binary the tagged pass installed and put
+      # on PATH, so the version comes from that step. A second install would
+      # `tar --overwrite` the same $HOME/golangci-lint-<version>-linux-amd64/
+      # golangci-lint while the first pass's process can still hold it mapped,
+      # and fail with `Text file busy` before analysing anything.
+      # test/regression/lint_install_once_test.go holds every job to one
+      # installing golangci-lint step.
       - name: golangci-lint (untagged build configuration)
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a  # v9
         with:
-          version: v2.12.2
+          install-mode: none
           args: --build-tags cerberus_untagged_build ./...
           skip-cache: true
 
