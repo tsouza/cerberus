@@ -130,10 +130,31 @@ import (
 // 21,379, taking 115M out of the fold's charge, and the query still answers
 // 270 MiB below the cap. 26.6.8.7, the upgrade floor, answers and refuses
 // the same way (58,000 × 20 at 640 MiB, every query-wide refusal below
-// 28 MiB). The fold runs one series per thread, so these figures hold for
-// two threads: 145 × 5,900, which peaks at 784 MiB on two threads, runs out
-// of memory at max_threads 8 on 26.8
-// (https://github.com/tsouza/cerberus/issues/4128).
+// 28 MiB).
+//
+// # Threads
+//
+// Every figure above is a statement running on two threads, and a peak is
+// not independent of the thread count. Through the same handler on 26.8
+// with max_threads set per query, shapes both ceilings admit:
+//
+//	series × samples   2 threads   8          12        16
+//	145 × 2,950        600-605     862-896    -         846-848
+//	180 × 2,950        700-739     972-1013   660       764-989
+//	185 × 2,950        738         746        969       OOM (1021)
+//	20,000 × 28        587         548        -         683
+//	58,000 × 20        715         719        -         720
+//	360 × 2,950        702         687        -         681
+//
+// The peaks above two threads are uneven from run to run, but they reach
+// the cap, while the same queries on two threads stay where the
+// calibration put them. A range query merging 20,000 × 14 disjoint series
+// over two steps goes from 701 MiB on two threads to 899 MiB on eight, so
+// the bucket-merge ceiling depends on the thread count as well. A ceiling
+// sized on two threads therefore holds only on two threads, and the engine
+// stamps max_threads = chplan.ClassicBucketGuardMaxThreads on every
+// statement that carries one of these checks, whatever the server's own
+// max_threads.
 const (
 	// classicBucketWindowSeriesBytes is the measured cost of one series the
 	// stage groups, independent of its width.
@@ -151,10 +172,10 @@ const (
 	// fold per bucket entry of the series it is folding.
 	classicBucketWindowFoldEntryBytes = 440
 
-	// classicBucketWindowFoldConcurrency is the number of series the
-	// calibration server folds at once: one per ClickHouse thread of the
-	// two-CPU calibration containers.
-	classicBucketWindowFoldConcurrency = 2
+	// classicBucketWindowFoldConcurrency is the number of series folded at
+	// once: one per ClickHouse thread of a statement the engine runs on
+	// chplan.ClassicBucketGuardMaxThreads threads.
+	classicBucketWindowFoldConcurrency = chplan.ClassicBucketGuardMaxThreads
 
 	// classicBucketWindowCapSharePercent is the share of the query cap the
 	// estimated stage may use. The rest is headroom.

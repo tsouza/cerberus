@@ -34,9 +34,12 @@ import (
 //
 // `histogram_quantile(0.5, sum by (le) (sum_over_time(<bucket>[5m])))` was
 // served through the production Prometheus handler (lowerer, emitter,
-// engine settings) against clickhouse/clickhouse-server containers capped
-// at 8 GiB, with the guard lifted and max_memory_usage at 6 GiB, so each
-// peak is the query's real need rather than the point an abort stopped at.
+// engine settings) against clickhouse/clickhouse-server containers of two
+// CPUs capped at 8 GiB, so each statement ran on two threads — the count the
+// engine stamps on every statement carrying this guard
+// (chplan.ClassicBucketGuardMaxThreads) — with the guard lifted and
+// max_memory_usage at 6 GiB, so each peak is the query's real need rather
+// than the point an abort stopped at.
 // Peak memory_usage was read from system.query_log after SYSTEM FLUSH LOGS
 // and a settle delay. Series i carries one sample with W bounds
 // `[i*W+1 .. i*W+W]` (disjoint) or the same W bounds as every other series

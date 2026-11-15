@@ -111,6 +111,9 @@ func compositionContributors() []settingsContributor {
 		{"compare_memory_bound", func(ctx context.Context, plan chplan.Node, memCap int64, _ SettingsRules) context.Context {
 			return applyCompareMemoryBound(ctx, shapeOf(plan), memCap)
 		}},
+		{"classic_bucket_thread_bound", func(ctx context.Context, plan chplan.Node, _ int64, _ SettingsRules) context.Context {
+			return applyClassicBucketThreadBound(ctx, shapeOf(plan))
+		}},
 		{"native_histogram_analyzer_fix", func(ctx context.Context, plan chplan.Node, _ int64, rules SettingsRules) context.Context {
 			return applyNativeHistogramAnalyzerFix(ctx, shapeOf(plan), rules)
 		}},
@@ -217,6 +220,7 @@ func compositionPlans() []struct {
 		{"trace-id negated mixed conjunction", traceIDNegatedConjunctionFilter()},
 		{"limit over order-by", tempoSearchRecentPlan(20)},
 		{"compare", compareOverScan()},
+		{"classic-histogram window check", classicBucketGuardOverScan(chplan.ClassicBucketWindowBudgetMessage)},
 		{"sorted slab", &chplan.RangeWindow{Input: filterScan("otel_metrics_sum"), SortedSlabOverTime: true}},
 		{"vector join", &chplan.VectorJoin{Left: filterScan("otel_metrics_sum"), Right: filterScan("otel_metrics_gauge")}},
 		{"exp-histogram window", expHistogramWindowPlan()},

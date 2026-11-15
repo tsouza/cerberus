@@ -507,7 +507,9 @@ func (r SettingsRules) applyFacts(ctx context.Context, f planShapeFacts) context
 // perf-sentinel: memory-bounding — every read thread holds its own column read
 // buffer, so this caps how many of those buffers can be live at once. Raising
 // it multiplies buffer RAM; that is why compare() needs it (see
-// applyCompareMemoryBound).
+// applyCompareMemoryBound). It bounds the concurrently running stages of a
+// statement too, which is what the classic-histogram memory ceilings depend
+// on (see applyClassicBucketThreadBound).
 const settingMaxThreads = "max_threads"
 
 // compareMaxThreads bounds the read parallelism of a TraceQL compare() query to
@@ -547,6 +549,36 @@ func applyCompareMemoryBound(ctx context.Context, f planShapeFacts, maxMemory in
 	ctx = chclient.WithQuerySetting(ctx, settingMaxBytesBeforeExternalGroupBy, spillThreshold(maxMemory))
 	ctx = chclient.WithQuerySetting(ctx, settingMaxThreads, compareMaxThreads)
 	return ctx
+}
+
+// applyClassicBucketThreadBound stamps max_threads =
+// chplan.ClassicBucketGuardMaxThreads on a plan carrying a classic-histogram
+// memory check (f.classicBucketGuard): the bucket-merge ceiling or the
+// per-series window ceilings of internal/promql's classic-histogram
+// lowerings. Every plain query keeps the server's own read parallelism and
+// is byte-unchanged.
+//
+// Those ceilings are sized from peaks measured on a server running the
+// statement on two threads, and a statement's peak is not independent of
+// its thread count. Measured on 26.8.36.3 under the 1 GiB cap with the
+// production handler, an instant quantile over 185 series of 2,950 samples
+// of one 50-bucket layout, which both window ceilings admit, peaks at
+// 738 MiB on two threads and runs out of memory on sixteen; the
+// calibration table is in internal/promql/classic_bucket_window_bound.go.
+// A server sizes `max_threads` from its own cores, so without this stamp
+// the same query holds on a two-core server and not on a larger one.
+// Bounding the threads is what makes the calibration the statement's own,
+// on every server.
+//
+// The cost is read parallelism on these statements only: the scan and the
+// per-series stage run on two threads however many cores the server has.
+// The setting is RESULT-EQUIVALENT — it changes how many lanes run
+// concurrently, never the rows — and every supported server knows it.
+func applyClassicBucketThreadBound(ctx context.Context, f planShapeFacts) context.Context {
+	if !f.classicBucketGuard {
+		return ctx
+	}
+	return chclient.WithQuerySetting(ctx, settingMaxThreads, chplan.ClassicBucketGuardMaxThreads)
 }
 
 // settingMaxBlockSize names the ClickHouse setting that caps the number of

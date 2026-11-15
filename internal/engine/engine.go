@@ -466,6 +466,9 @@ func applySharedQuerySettings(ctx context.Context, f planShapeFacts, memCap int6
 	// for the wide attribute Map columns can't blow the budget even after the
 	// aggregation spills.
 	ctx = applyCompareMemoryBound(ctx, f, memCap)
+	// Classic-histogram quantiles carrying a merge or window ceiling only:
+	// run them on the thread count those ceilings are calibrated at.
+	ctx = applyClassicBucketThreadBound(ctx, f)
 	// Native-histogram-only, while some reachable node runs a build below
 	// ClickHouse 26.8 (from which these plans run faster under the analyzer)
 	// and none runs 26.9 or newer (where the analyzer is mandatory): disable

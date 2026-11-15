@@ -41,6 +41,10 @@ type planShapeFacts struct {
 	distinctOverMapKeys bool
 	// hasCompare: a chplan.MetricsCompare node — TraceQL compare().
 	hasCompare bool
+	// classicBucketGuard: a classic-histogram memory check — a throwIf whose
+	// message chplan.IsClassicBucketBudgetMessage recognises — anywhere in
+	// any Expr tree. See applyClassicBucketThreadBound.
+	classicBucketGuard bool
 	// nativeHistogramAnalyzerHazard: a HistogramQuantileNative,
 	// HistogramQuantilesNative or HistogramProjection node, or a RangeBucketFanout whose RowType carries
 	// the exponential-only HistogramFieldScale column — see
@@ -359,6 +363,9 @@ func (f *planShapeFacts) recordGridCarrier(gc chplan.GridCarrier) {
 func (f *planShapeFacts) recordExpr(e chplan.Expr, traceIDColumn string) {
 	if fc, ok := e.(*chplan.FuncCall); ok && (fc.Fn == chplan.FnNow || fc.Fn == chplan.FnNow64) {
 		f.hasNowExpr = true
+	}
+	if is, ok := e.(*chplan.InlineString); ok && chplan.IsClassicBucketBudgetMessage(is.V) {
+		f.classicBucketGuard = true
 	}
 	if traceIDColumn != "" && !f.traceIDPredicate && traceIDPredicateExpr(e, traceIDColumn) {
 		f.traceIDPredicate = true

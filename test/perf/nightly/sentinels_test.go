@@ -75,7 +75,12 @@ func TestSentinels_HistogramShapesWantAdaptiveAggregatorOff(t *testing.T) {
 		{chopt.Version{Major: 26, Minor: 9}, true},
 	} {
 		for _, s := range Sentinels {
-			wanted := s.WantedOn(line.version)
+			var wanted []WantSetting
+			for _, w := range s.WantedOn(line.version) {
+				if w.Name == "enable_adaptive_aggregator" {
+					wanted = append(wanted, w)
+				}
+			}
 			if !want[s.Name] || !line.applies {
 				if len(wanted) != 0 {
 					t.Errorf("%s on %s wants %v; want none", s.Name, line.version, wanted)
@@ -84,6 +89,35 @@ func TestSentinels_HistogramShapesWantAdaptiveAggregatorOff(t *testing.T) {
 			}
 			if len(wanted) != 1 || wanted[0].Name != "enable_adaptive_aggregator" || wanted[0].Value != "0" {
 				t.Errorf("%s on %s wants %v; want enable_adaptive_aggregator=0", s.Name, line.version, wanted)
+			}
+		}
+	}
+}
+
+// TestSentinels_ClassicHistogramShapesWantTwoThreads pins which sentinels
+// require the max_threads=2 stamp the classic-histogram memory ceilings run
+// under: the classic-histogram quantile, on every line it runs on, and no
+// other sentinel.
+func TestSentinels_ClassicHistogramShapesWantTwoThreads(t *testing.T) {
+	want := map[string]bool{
+		"classic_histogram_quantile_by_route": true,
+	}
+	for _, line := range []chopt.Version{{Major: 24, Minor: 8}, {Major: 26, Minor: 6}, {Major: 26, Minor: 8}} {
+		for _, s := range Sentinels {
+			var wanted []WantSetting
+			for _, w := range s.WantedOn(line) {
+				if w.Name == "max_threads" {
+					wanted = append(wanted, w)
+				}
+			}
+			if !want[s.Name] {
+				if len(wanted) != 0 {
+					t.Errorf("%s on %s wants %v; want no max_threads", s.Name, line, wanted)
+				}
+				continue
+			}
+			if len(wanted) != 1 || wanted[0].Value != "2" {
+				t.Errorf("%s on %s wants %v; want max_threads=2", s.Name, line, wanted)
 			}
 		}
 	}

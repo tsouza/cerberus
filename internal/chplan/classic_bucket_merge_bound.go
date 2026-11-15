@@ -33,3 +33,25 @@ const ClassicBucketWindowBudgetMessage = "classic-histogram window exceeds the e
 // +Inf rung — than the configured ceiling
 // (CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_SERIES_MAX_ENTRIES).
 const ClassicBucketWindowSeriesBudgetMessage = "classic-histogram window exceeds the bucket-entries-per-series resource bound"
+
+// ClassicBucketGuardMaxThreads is the ClickHouse thread count the
+// classic-histogram memory ceilings are calibrated at: the bucket-merge
+// ceiling and the two per-series window ceilings, each measured on a server
+// running the statement on two threads. A statement carrying one of their
+// checks ([IsClassicBucketBudgetMessage]) runs on at most this many threads,
+// because the engine stamps `max_threads` to it (internal/engine,
+// applyClassicBucketThreadBound), so a ceiling sized for this count holds
+// whatever the server's own `max_threads` is.
+const ClassicBucketGuardMaxThreads = 2
+
+// IsClassicBucketBudgetMessage reports whether msg is the `throwIf` message
+// of one of the classic-histogram memory checks:
+// [ClassicBucketMergeBudgetMessage], [ClassicBucketWindowBudgetMessage] or
+// [ClassicBucketWindowSeriesBudgetMessage].
+func IsClassicBucketBudgetMessage(msg string) bool {
+	switch msg {
+	case ClassicBucketMergeBudgetMessage, ClassicBucketWindowBudgetMessage, ClassicBucketWindowSeriesBudgetMessage:
+		return true
+	}
+	return false
+}

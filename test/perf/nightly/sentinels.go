@@ -252,6 +252,18 @@ var histogramAdaptiveAggregatorOff = WantSetting{
 	Since: chopt.Version{Major: 26, Minor: 8},
 }
 
+// classicBucketThreadBound is the stamp the engine puts on a statement
+// carrying a classic-histogram bucket-merge or window check: those ceilings
+// are calibrated on two threads, and a statement on more threads peaks
+// higher (internal/promql/classic_bucket_window_bound.go, "Threads"). The
+// value is written out rather than read from chplan, so a thread count that
+// drifts from the calibration fails here instead of moving the check with
+// it. Every supported line knows the setting.
+var classicBucketThreadBound = WantSetting{
+	Name:  "max_threads",
+	Value: "2",
+}
+
 // SentinelsFor is the sentinel set of ClickHouse release line version: every
 // sentinel whose NotOn does not name it.
 func SentinelsFor(version string) []Sentinel {
@@ -372,6 +384,7 @@ var Sentinels = []Sentinel{
 		WindowEnd:        time.Date(2026, 8, 18, 9, 10, 0, 0, time.UTC),
 		Step:             time.Minute,
 		BaselineHeadroom: histogramBaselineHeadroom,
+		WantSettings:     []WantSetting{classicBucketThreadBound},
 		NotOn: map[string]string{
 			"24.8": "the native classic-histogram grid this sentinel measures (chopt ts_grid_histogram) floors at 25.9; " +
 				"on 24.8 the fan-out lowering's collapsed-payload resource bound rejects this window by design (" +

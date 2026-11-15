@@ -340,6 +340,74 @@ func TestApplyCompareMemoryBound_NonCompareStampsNeither(t *testing.T) {
 	}
 }
 
+// classicBucketGuardOverScan builds a Filter over a classic-histogram Scan
+// whose predicate is a classic-histogram memory check raising msg — the
+// shape internal/promql's window and bucket-merge checks lower to.
+func classicBucketGuardOverScan(msg string) chplan.Node {
+	return &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_metrics_histogram"},
+		Predicate: &chplan.Binary{
+			Op: chplan.OpEq,
+			Left: &chplan.FuncCall{Fn: chplan.FnThrowIf, Args: []chplan.Expr{
+				&chplan.LitBool{V: false},
+				&chplan.InlineString{V: msg},
+			}},
+			Right: &chplan.LitInt{V: 0},
+		},
+	}
+}
+
+// TestApplyClassicBucketThreadBound_EveryCheckStampsTwoThreads — a plan
+// carrying any of the three classic-histogram memory checks runs on the two
+// threads those ceilings are calibrated at, including a check nested in a
+// scalar subquery (the window pre-count's position).
+func TestApplyClassicBucketThreadBound_EveryCheckStampsTwoThreads(t *testing.T) {
+	// calibratedThreads is the LITERAL thread count the classic-histogram
+	// ceilings were measured at, not chplan.ClassicBucketGuardMaxThreads:
+	// computing the want from the constant under test would pass under any
+	// value it held.
+	const calibratedThreads = 2
+
+	for _, msg := range []string{
+		chplan.ClassicBucketMergeBudgetMessage,
+		chplan.ClassicBucketWindowBudgetMessage,
+		chplan.ClassicBucketWindowSeriesBudgetMessage,
+	} {
+		plans := map[string]chplan.Node{
+			"direct": classicBucketGuardOverScan(msg),
+			"nested": &chplan.Project{
+				Input: &chplan.Scan{Table: "otel_metrics_histogram"},
+				Projections: []chplan.Projection{{
+					Expr:  &chplan.ScalarSubquery{Input: classicBucketGuardOverScan(msg)},
+					Alias: "Value",
+				}},
+			},
+		}
+		for name, plan := range plans {
+			ctx := applyClassicBucketThreadBound(context.Background(), shapeOf(plan))
+			if got := settingValue(ctx, settingMaxThreads); got != calibratedThreads {
+				t.Errorf("%s %q: max_threads = %v; want %d", name, msg, got, calibratedThreads)
+			}
+		}
+	}
+}
+
+// TestApplyClassicBucketThreadBound_OtherPlansKeepTheirThreads — a plan with
+// no classic-histogram check, including one raising another throwIf
+// message, keeps the server's own read parallelism.
+func TestApplyClassicBucketThreadBound_OtherPlansKeepTheirThreads(t *testing.T) {
+	for name, plan := range map[string]chplan.Node{
+		"plain aggregate":    aggOverScan("otel_metrics_sum", "MetricName"),
+		"other throwIf":      classicBucketGuardOverScan(chplan.HistogramMergeBudgetMessage),
+		"classic scan alone": &chplan.Scan{Table: "otel_metrics_histogram"},
+	} {
+		ctx := applyClassicBucketThreadBound(context.Background(), shapeOf(plan))
+		if got := settingValue(ctx, settingMaxThreads); got != nil {
+			t.Errorf("%s: max_threads = %v; want absent", name, got)
+		}
+	}
+}
+
 // TestApplySortedSlabOverTimeMemoryBound_SortedSlabStampsMaxBlockSize — a
 // plan carrying a chplan.RangeWindow with SortedSlabOverTime set gets
 // max_block_size=1 stamped (cerberus issue #3046: real ClickHouse profiling
