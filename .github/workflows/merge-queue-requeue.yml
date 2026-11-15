@@ -1,24 +1,33 @@
 name: merge-queue-requeue
 
-# A push to a pull request in the Mergify merge queue removes it from the
-# queue, and Mergify does not re-add it while the `queue` label stays on. This
-# workflow re-applies the label after every push to a labelled pull request;
-# the logic and its rationale are in .github/scripts/merge-queue-requeue.mjs.
+# Puts a pull request back in the Mergify merge queue.
 #
-# `pull_request_target` gives a token that can write labels on a pull request
-# from a fork too. It checks out the BASE commit's scripts without persisted
-# credentials and never runs the pull request's own code.
+# - `requeue`: a push to a queued pull request removes it from the queue, and
+#   Mergify does not re-add it while the `queue` label stays on. The job
+#   re-applies the label after every push to a labelled pull request
+#   (.github/scripts/merge-queue-requeue.mjs).
+# - `requeue-dequeued`: Mergify keeps an entry it dequeued at an unchanged
+#   head out of the queue until it is sent `@mergifyio queue`. The job posts
+#   that command when Mergify adds `dequeued` or removes `queued` from an
+#   entry that left for an interrupted check, a bounded number of times per
+#   head, and when someone re-applies the `queue` label to an entry that was
+#   taken out of the queue (.github/scripts/merge-queue-requeue-dequeued.mjs).
+#
+# `pull_request_target` gives a token that can write labels, comments and
+# statuses on a pull request from a fork too. Each job checks out the BASE
+# commit's scripts without persisted credentials and never runs the pull
+# request's own code.
+#
+# Each job holds its own per-pull-request concurrency group. A workflow-level
+# group would put every `labeled` event of the pull request in one group, and
+# GitHub replaces a pending run with the next one in its group, so an
+# unrelated label could cancel a pending requeue.
 
 on:
   pull_request_target:
-    types: [synchronize]
+    types: [synchronize, labeled, unlabeled]
 
-permissions:
-  contents: read
-  pull-requests: write
-
-concurrency:
-  group: merge-queue-requeue-${{ github.event.pull_request.number }}
+permissions: {}
 
 env:
   # A git transfer that stalls is aborted, so actions/checkout retries it. A
@@ -31,7 +40,12 @@ env:
 jobs:
   requeue:
     name: requeue
-    if: contains(github.event.pull_request.labels.*.name, 'queue')
+    if: github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'queue')
+    permissions:
+      contents: read
+      pull-requests: write
+    concurrency:
+      group: merge-queue-requeue-${{ github.event.pull_request.number }}
     # 12m holds two capped checkout attempts
     # (test/regression/git_fetch_stall_test.go).
     runs-on: ubicloud-standard-2
@@ -64,3 +78,48 @@ jobs:
           GITHUB_API_URL: ${{ github.api_url }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node .github/scripts/merge-queue-requeue.mjs
+
+  requeue-dequeued:
+    name: requeue-dequeued
+    if: >-
+      (github.event.action == 'labeled' && (github.event.label.name == 'dequeued' || github.event.label.name == 'queue'))
+      || (github.event.action == 'unlabeled' && github.event.label.name == 'queued')
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+    concurrency:
+      group: merge-queue-requeue-dequeued-${{ github.event.pull_request.number }}
+    # 12m holds two capped checkout attempts and the one-minute wait for
+    # Mergify's status comment (test/regression/git_fetch_stall_test.go).
+    runs-on: ubicloud-standard-2
+    timeout-minutes: 12
+    steps:
+      - id: checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+        timeout-minutes: 3
+        continue-on-error: true
+      - name: Retry the checkout
+        if: steps.checkout.outcome == 'failure'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+        timeout-minutes: 3
+
+      - name: Guard the requeue logic
+        run: node .github/scripts/run-node-tests.mjs .github/scripts/merge-queue-requeue-dequeued.test.mjs
+
+      - name: Requeue a dequeued entry
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          TRIGGER: ${{ github.event.action }}:${{ github.event.label.name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/merge-queue-requeue-dequeued.mjs
