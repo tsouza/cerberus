@@ -46,22 +46,25 @@ type CanaryReading struct {
 type FleetVersions struct {
 	Versions []chopt.Version
 	// Verdicts holds, per canary name, the most conservative verdict any
-	// server the memory holds gave on that canary
-	// (chopt.Capability.Conservative). A server no pass ran the canary on
-	// contributes nothing.
+	// server the memory holds gave on that canary, or any unattributed
+	// verdict the memory holds on it (chopt.Capability.Conservative). A
+	// server no pass ran the canary on contributes nothing.
 	Verdicts map[string]chopt.Capability
 	Complete bool
 	// Held reports that Versions holds a build no server the pass reached
 	// runs, or that Verdicts holds a verdict no server the pass ran a canary
 	// on holds on that canary, read this pass or remembered for it, and the
 	// pass did not read unattributed: a server no canary of this pass ran on,
-	// which the memory has not forgotten, gave it. Every decision read off the
-	// fleet may then rest on that server.
+	// which the memory has not forgotten, gave it, or it is an unattributed
+	// verdict the memory still holds and this pass did not read. Every
+	// decision read off the fleet may then rest on a server this pass did not
+	// see.
 	Held bool
 }
 
 // Capability returns the fleet's verdict on the canary named name, or
-// CapabilityUnreachable when no server the fleet holds answered it.
+// CapabilityUnreachable when neither a server the fleet holds nor a held
+// unattributed verdict answered it.
 func (fv FleetVersions) Capability(name string) chopt.Capability {
 	if v, ok := fv.Verdicts[name]; ok {
 		return v

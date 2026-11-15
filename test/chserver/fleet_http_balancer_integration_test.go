@@ -34,9 +34,10 @@ const httpBalancerSeed = 4148
 // the balancer.
 const httpBalancedPasses = 16
 
-// httpCanaries are every canary whose verdict can name no server over HTTP:
-// the settings canaries, whose refusal is an exception, and the query-log
-// union canary, whose answer is the reader's record selection.
+// httpCanaries are canaries whose verdict can name no server over HTTP: the
+// settings canaries that need no workload defined, whose refusal is an
+// exception, and the query-log union canary, whose answer is the reader's
+// record selection.
 var httpCanaries = []chclient.FleetCanary{chclient.TSGridCanary(), chclient.ResultCacheCanary(), chclient.QueryLogUnionCanary()}
 
 // startHTTPCanaryServer boots a server with the canary user, granted the
@@ -85,6 +86,21 @@ func startPerRequestBalancer(t *testing.T, backends ...string) string {
 	return srv.Listener.Addr().String()
 }
 
+// requireHTTPVerdicts probes s alone over HTTP and fails the test unless it
+// gives want on every canary in httpCanaries, so the balanced test runs only
+// between servers that really disagree on each of them.
+func requireHTTPVerdicts(ctx context.Context, t *testing.T, s *server, want chopt.Capability) {
+	t.Helper()
+	cfg := canaryConfig(s.httpAddr)
+	cfg.Protocol = clickhouse.HTTP
+	fv := chclient.NewFleetMemory().Observe(chclient.ProbeFleet(ctx, cfg, "", nil, httpCanaries...))
+	for _, canary := range httpCanaries {
+		if got := fv.Capability(canary.Name); got != want {
+			t.Fatalf("%s probed directly: %s %s; want %s", s.httpAddr, canary.Name, got, want)
+		}
+	}
+}
+
 // TestFleetProbe_PerRequestHTTPBalancerHoldsTheRefusingReplica puts a
 // refusing and a permitting server behind one HTTP address whose balancer
 // routes every request on its own, and probes the fleet through it pass after
@@ -97,6 +113,8 @@ func TestFleetProbe_PerRequestHTTPBalancerHoldsTheRefusingReplica(t *testing.T) 
 	ctx := context.Background()
 	refusing := startHTTPCanaryServer(ctx, t, true)
 	permitting := startHTTPCanaryServer(ctx, t, false)
+	requireHTTPVerdicts(ctx, t, refusing, chopt.CapabilityForbidden)
+	requireHTTPVerdicts(ctx, t, permitting, chopt.CapabilityAvailable)
 	cfg := canaryConfig(startPerRequestBalancer(t, refusing.httpAddr, permitting.httpAddr))
 	cfg.Protocol = clickhouse.HTTP
 

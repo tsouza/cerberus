@@ -10,8 +10,9 @@ import (
 )
 
 // fleetNodeRetentionPassesPerServer sets how long FleetMemory keeps a server
-// no complete pass reaches: it is forgotten once that many consecutive complete
-// passes per remembered server have missed it (retentionPasses).
+// no complete pass reaches, and an unattributed canary verdict no complete
+// pass reads: each is forgotten once that many consecutive complete passes
+// per remembered server have missed it (retentionPasses).
 //
 // Behind a load balancer each pass reaches one replica, so a serving replica
 // is missed by most passes, and forgetting it early lets the version rise back
@@ -23,6 +24,14 @@ import (
 // 40 complete passes per remembered server, which at the re-probe's 10-second
 // cadence while the memory holds a build the last pass did not reach
 // (FleetVersions.Held) is under seven minutes per server.
+//
+// An unattributed verdict is read when a pass's canary request lands on the
+// replica that gives it, which under the same routing is as likely as the
+// identity read landing on it, so the same count keeps the chance of
+// forgetting a serving replica's verdict as small. Its cost is that a verdict
+// no replica gives any more — a replica fixed, or a transient server error
+// read as a refusal — keeps holding for the same count of passes, at the same
+// 10-second cadence, before it clears.
 const fleetNodeRetentionPassesPerServer = 40
 
 // retentionPasses is how many consecutive complete passes may miss a server
@@ -195,21 +204,21 @@ func (m *FleetMemory) Observe(pass FleetPass) FleetVersions {
 	readUnattributed := m.observeUnattributed(pass)
 
 	fv := FleetVersions{Versions: make([]chopt.Version, 0, len(m.nodes)), Complete: pass.Complete}
+	fold := func(canary string, v chopt.Capability) {
+		if fv.Verdicts == nil {
+			fv.Verdicts = make(map[string]chopt.Capability)
+		}
+		fv.Verdicts[canary] = fv.Verdicts[canary].Conservative(v)
+	}
 	for _, n := range m.nodes {
 		fv.Versions = append(fv.Versions, n.version)
 		fv.Held = fv.Held || !reachedBuilds[n.version]
 		for canary, v := range n.verdicts {
-			if fv.Verdicts == nil {
-				fv.Verdicts = make(map[string]chopt.Capability, len(n.verdicts))
-			}
-			fv.Verdicts[canary] = fv.Verdicts[canary].Conservative(v)
+			fold(canary, v)
 		}
 	}
 	for r := range m.unattributed {
-		if fv.Verdicts == nil {
-			fv.Verdicts = make(map[string]chopt.Capability, len(m.unattributed))
-		}
-		fv.Verdicts[r.Canary] = fv.Verdicts[r.Canary].Conservative(r.Verdict)
+		fold(r.Canary, r.Verdict)
 	}
 	for canary, v := range fv.Verdicts {
 		fv.Held = fv.Held || !(reachedHolds(reached, ranCanary, canary, v) || readUnattributed[CanaryReading{Canary: canary, Verdict: v}])
@@ -222,8 +231,9 @@ func (m *FleetMemory) Observe(pass FleetPass) FleetVersions {
 // returns the ones it read. A verdict read again is held anew. On a complete
 // pass, every held verdict pass did not read counts a miss, and
 // retentionPasses consecutive misses, for the servers the memory now holds,
-// forget it: the server that gave it is one of them, and a complete pass that
-// does not read its verdict may simply not have reached it. An unreachable
+// forget it: the server that gave it is expected to be one of them, and a
+// complete pass that does not read its verdict may simply not have reached
+// it. An unreachable
 // reading says nothing about any server and is not held. m.mu must be held.
 func (m *FleetMemory) observeUnattributed(pass FleetPass) map[CanaryReading]bool {
 	read := make(map[CanaryReading]bool, len(pass.Unattributed))
@@ -240,11 +250,12 @@ func (m *FleetMemory) observeUnattributed(pass FleetPass) map[CanaryReading]bool
 			if read[r] {
 				continue
 			}
-			if missed+1 >= limit {
+			missed++
+			if missed >= limit {
 				delete(m.unattributed, r)
 				continue
 			}
-			m.unattributed[r] = missed + 1
+			m.unattributed[r] = missed
 		}
 	}
 	return read

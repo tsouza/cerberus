@@ -899,7 +899,8 @@ the `result_cache` settings, the
 [query-log union](#capability-probe-query-log-union) table when the selection
 lists `query_log_union`, and `CERBERUS_CH_QUERY_WORKLOAD` when it is set — run
 inside the version probe, on every server it reads through a configured
-address, and each verdict is attributed to the server that gave it:
+address, and each verdict is attributed to the server that gave it, or held
+without one where the server cannot be named:
 
 - The ts_grid, `result_cache` and workload canaries stamp their settings on
   the identity read itself (`SELECT toString(serverUUID()), version()`), so
@@ -919,9 +920,10 @@ address, and each verdict is attributed to the server that gave it:
   **unreachable** verdict read this way is not held.
 - On each server, the canaries run in the order of how long ago a probe last
   ran them there: a canary never run on that server first, then the one run
-  there longest ago. A probe that lands on a replica refusing its first
-  canary therefore runs another canary first on that replica the next time
-  one lands there.
+  there longest ago. Over the native protocol, a probe that lands on a
+  replica refusing its first canary therefore runs another canary first on
+  that replica the next time one lands there. Over HTTP every probe runs
+  every canary.
 - A server a probe ran a canary on takes the verdict it gave, except that an
   **unreachable** verdict leaves the verdict remembered for it in place, and
   a server read twice in one probe takes a real verdict over an
@@ -938,8 +940,8 @@ address, and each verdict is attributed to the server that gave it:
 
 Behind one load-balanced address whose replicas disagree — a `CREATE WORKLOAD`
 defined on one replica only, or a profile that forbids the experimental
-setting on one replica only — the first probe that lands on the refusing
-replica turns the feature off, and it stays off while that replica serves:
+setting on one replica only — the first probe whose canary lands on the
+refusing replica turns the feature off, and it stays off while that replica serves:
 probes that land on the other replicas do not turn it back on. Over the native
 protocol, the `forbidden` verdict clears on the first probe that lands on that
 replica and gets **available**, or once the replica is forgotten; over HTTP, an

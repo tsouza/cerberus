@@ -1428,7 +1428,9 @@ hold it. Running each canary inside the version probe, on a client whose
 server was just identified, gives it one, and the fleet memory that already
 keys builds by identity keeps verdicts the same way. A second store keyed some
 other way would have had its own retention and forgetting rules to keep in
-step with the first.
+step with the first. The one verdict that has no identity — one read over
+HTTP, below — is held in such a store, and it takes its retention from the
+same per-server count rather than a rule of its own.
 
 **Why a settings canary reads the identity in its own statement.** A canary
 the server accepts returns a row, and a row that holds `serverUUID()` names
@@ -1440,7 +1442,8 @@ statement is the reader's own record selection, so neither can name its
 server that way. Over the native protocol both fall back to the identity read
 on the same client; over HTTP neither is attributed (below).
 
-**Why an identity read after every refusal.** The driver closes a connection
+**Why an identity read after every refusal, over the native protocol.** The
+driver closes a connection
 on any error, so the statement after a canary the server refused dials a new
 connection, and behind a load balancer that connection can reach a different
 server. Reading the identity again before the next canary ties the next
@@ -1462,7 +1465,21 @@ it keeps answering the canary, under the same retention as a remembered
 server, and a server's own accepted canaries cannot clear it. The cost is that
 an unattributed refusal outlives a replica's fix: it clears only once 40
 complete probes per remembered server have not read it, rather than on the
-first probe that lands on the fixed replica.
+first probe that lands on the fixed replica. The same holds for a transient
+server error the canary reads as a refusal (a query-log read that times out,
+or exceeds a memory or concurrency limit): over HTTP it keeps the capability
+off for that count of probes at the 10-second cadence — under seven minutes
+against one server — where over the native protocol the next accepted canary
+on that server clears it. Both errors fail toward the slower shape, never
+toward a wrong answer.
+
+An unreachable verdict read over HTTP is not held. Over the native protocol a
+server's unreachable verdict is kept only until the server gives a real one,
+and only for a server the memory can name. An unattributed unreachable
+verdict has no server to wait on: held for the full retention, it would mark
+the canary unreachable for minutes after one failed request to any replica,
+and an unreachable verdict says nothing about whether any server accepts the
+canary.
 
 Tying each statement to one server with an HTTP session (`session_id` on the
 identity read, `session_check=1` on the canary, which a server without the
@@ -1474,7 +1491,8 @@ first. And a balancer that alternates requests sends the request after the
 session-creating one to another server every time, so no canary would ever
 land on its session's server.
 
-**Why each server runs the canary it ran longest ago first.** After a
+**Why each server runs the canary it ran longest ago first, over the native
+protocol.** After a
 refusal, the remaining canaries run on whichever server the next connection
 reaches. With a fixed canary order, a balancer that hands out connections in
 a fixed rotation can give the refusing replica the first connection of every
