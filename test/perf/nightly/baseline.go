@@ -85,14 +85,16 @@ func committedCeilingBytes(maxBytes uint64, headroom float64) uint64 {
 // nightlyCalibrationRounds is how many max-of-N rounds a calibration measures
 // each sentinel over. A gating run measures one round and asserts its
 // max-of-N, so what a committed ceiling has to clear is the run-to-run
-// distribution of that max-of-N, not one draw of it. The rounds share one
-// server and one sample load because the spread they sample is per query —
-// how a multi-threaded read's per-stream buffers happen to overlap — not per
-// run (docs/performance.background.md). For
-// exchangeable rounds, a fresh gating run's max-of-N lands above the highest of
-// R calibration rounds with probability 1/(R+1): five rounds bring that to one
-// in six before any headroom applies, and give calibratedBound a measured
-// range to hold the headroom against.
+// distribution of that max-of-N, not one draw of it. Each round is one whole
+// pass over the sentinel corpus, as a gating run makes, on one server and one
+// sample load: the rounds sample the variance that arises per query — how a
+// multi-threaded read's per-stream buffers happen to overlap
+// (docs/performance.background.md) — and not variance that arises only with a
+// fresh runner or a fresh load. Where rounds and gating runs are
+// exchangeable, a fresh gating run's max-of-N lands above the highest of R
+// rounds with probability 1/(R+1): five rounds bring that to one in six before
+// any headroom applies, and give calibratedBound a measured range to hold the
+// headroom against.
 const nightlyCalibrationRounds = 5
 
 // calibratedBound derives one sentinel's committed bound from the max-of-N
@@ -100,17 +102,20 @@ const nightlyCalibrationRounds = 5
 // per-sentinel headroom.
 //
 // The committed max-of-N is the HIGHEST round, so a low-tail round cannot set
-// the ceiling. The run-to-run range the rounds measured (highest minus lowest)
-// must then fit inside the margin the ceiling leaves above that highest round:
-// the next ordinary run can land as far above the highest round as the lowest
-// round sits below it, and a ceiling within that reach is one ordinary noise
-// crosses. Such a calibration is refused rather than committed — the
-// sentinel's headroom is narrower than its measured noise, and widening it is
-// a decision about which regression the sentinel can still catch, not
-// arithmetic.
+// the ceiling. The range the rounds measured (highest minus lowest) must then
+// fit inside the margin the ceiling leaves above that highest round. This is
+// a rule, not a bound on the next draw: it refuses a ceiling that an ordinary
+// run could reach by sitting as far above the highest round as the lowest
+// round sits below it, the reach the rounds themselves demonstrated. A refused
+// calibration means the sentinel's headroom is narrower than its measured
+// noise; widening it is a decision about which regression the sentinel can
+// still catch, and dispatching calibrations until one passes would select the
+// rounds that understate the noise.
 //
-// Fewer than nightlyCalibrationRounds rounds, or a round that measured
-// nothing, is refused too: a single round has no range to measure.
+// Also refused: fewer than nightlyCalibrationRounds rounds (a single round has
+// no range to measure), a round that measured nothing, and a highest round
+// already over the absolute ceiling (PRONG (a) fails on the measurement that
+// would set the bound).
 func calibratedBound(name string, expectedStatus int, roundMaxes []uint64, headroom float64) (nightlyBound, error) {
 	if len(roundMaxes) < nightlyCalibrationRounds {
 		return nightlyBound{}, fmt.Errorf("%s: calibrated from %d max-of-N rounds, want at least %d — "+
@@ -120,6 +125,10 @@ func calibratedBound(name string, expectedStatus int, roundMaxes []uint64, headr
 	lowest, highest := slices.Min(roundMaxes), slices.Max(roundMaxes)
 	if lowest == 0 {
 		return nightlyBound{}, fmt.Errorf("%s: a calibration round measured a peak of 0 bytes (rounds %v)", name, roundMaxes)
+	}
+	if exceedsCapCeiling(highest) {
+		return nightlyBound{}, fmt.Errorf("%s: the highest calibration round, %d bytes, exceeds the absolute ceiling %d (rounds %v)",
+			name, highest, nightlyCapCeilingBytes, roundMaxes)
 	}
 	ceiling := committedCeilingBytes(highest, headroom)
 	spread := highest - lowest

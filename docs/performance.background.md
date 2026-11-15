@@ -56,7 +56,16 @@ merge racing the measurement would differ between runs — was the same in every
 container and every copy measured: one active part, 112-113 selected marks, no
 merge in flight. Precise memory accounting (`max_untracked_memory=1`) raised
 the readings by about 4M and left the spread in place, so the per-thread
-tracking granularity is not the source either.
+tracking granularity is not the source either. The single-thread outliers
+were not traced further.
+
+On CI the spread is wider than locally (1.28x across gating runs against about
+1.17x across local containers), and both calibration runs that set this
+sentinel's bounds sat at the bottom of the gating distribution. Part of the CI
+spread may come with the runner or the run rather than the query; calibration
+rounds taken inside one run do not sample that part. Each round is therefore a
+whole pass over the corpus, so a sentinel's rounds follow the same preceding
+workload its gating runs do, rather than repeats of the sentinel alone.
 
 A max-of-5 is one draw from that distribution, and a ceiling anchored on one
 draw is anchored on wherever that draw landed. The highest of several rounds
@@ -68,7 +77,14 @@ runs, and move every committed bound at once.
 The spread check refuses rather than widens. Widening a ceiling to absorb the
 measured noise would keep the calibration green while the sentinel loses the
 regression its headroom was chosen to catch; refusing puts that choice back on
-the headroom constant, where the regression size it guards is recorded.
+the headroom constant, where the regression size it guards is recorded. The
+check is a rule, not a statistical bound: five rounds do not bound how far the
+next run lands above the highest of them. Near the boundary its outcome is
+itself random, which is why a refusal is resolved in the headroom: dispatching
+calibrations until one passes would select the rounds that understate the
+noise. A refusal leaves the sentinel's committed bound in place and still
+writes every other sentinel's new bound, so it does not cost the rest of the
+server's calibration.
 
 ## Why `fan_factor` is nullable
 

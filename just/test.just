@@ -696,13 +696,13 @@ histogram-dashboard-unit:
 # nightlyCalibrationRounds rounds plus the headroom-multiplied ceiling
 # (Sentinel.BaselineHeadroom) the gate actually asserts against, and the HTTP
 # status it was calibrated to expect. A sentinel whose rounds span more than
-# the margin its ceiling leaves above the highest round fails the run instead
-# (calibratedBound, test/perf/nightly/baseline.go). The go test timeout is
-# nightlyCalibrationRounds (5) times perf-nightly-integration's 15m: every
-# sentinel is measured that many times over. Naming sentinels after the image
-# recalibrates only those. Requires Docker and (once,
-# if not already fetched) `git lfs pull` for the trimmed sample parquet
-# files. Run this — and REVIEW THE DIFF — only when a bound move is
+# the margin its ceiling leaves above the highest round keeps its committed
+# bound and fails the run (calibratedBound, test/perf/nightly/baseline.go).
+# The go test timeout is nightlyCalibrationRounds (5) times
+# perf-nightly-integration's 15m: the calibration makes that many passes over
+# the corpus. Naming sentinels after the image recalibrates only those, and
+# every pass still runs the whole corpus. Requires Docker and (once, if not
+# already fetched) `git lfs pull` for the trimmed sample parquet files. Run this — and REVIEW THE DIFF — only when a bound move is
 # genuinely intended (a real, justified memory-cost increase, or a
 # deliberate change to which sentinels are expected to be rejected by a
 # resource bound); a silent loosen is exactly the regression this lane

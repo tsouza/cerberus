@@ -100,7 +100,10 @@ const (
 	// regression they exist for, the emitter's PREWHERE split on a server
 	// where move_to_prewhere resolved in, measured 35.8M-40.1M and
 	// 36.8M-45.3M on the same data and server — at least 1.38x. 1.20x sits
-	// two orders of magnitude above the noise and well under that step.
+	// two orders of magnitude above that noise and well under that step. On
+	// the perf-nightly runners on 26.9 the renamed sentinel's max-of-5 spans
+	// 25.9M-33.0M across fifteen gating runs, wider than the margin 1.20x
+	// leaves above the highest, which calibratedBound refuses (#4151).
 	labelValuesBaselineHeadroom = 1.20
 	// rateByRouteBaselineHeadroom (rate_by_route_matcher_stock_key): the
 	// same rate query measured over 6 repeats per server when the PREWHERE

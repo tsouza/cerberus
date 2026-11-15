@@ -1,6 +1,7 @@
 package nightly
 
 import (
+	"net/http"
 	"slices"
 	"testing"
 
@@ -84,9 +85,12 @@ func TestCalibratedBound_LowTailRoundCannotSetTheCeiling(t *testing.T) {
 
 	for shift := range rounds {
 		rotated := append(slices.Clone(rounds[shift:]), rounds[:shift]...)
-		bound, err := calibratedBound("label_values_matcher_stock_key_renamed", 200, rotated, headroom)
+		bound, err := calibratedBound("label_values_matcher_stock_key_renamed", http.StatusOK, rotated, headroom)
 		if err != nil {
 			t.Fatalf("rounds %v: %v", rotated, err)
+		}
+		if bound.Name != "label_values_matcher_stock_key_renamed" || bound.ExpectedStatus != http.StatusOK {
+			t.Fatalf("rounds %v: bound names %q expecting %d", rotated, bound.Name, bound.ExpectedStatus)
 		}
 		if bound.MaxOfNBytes != highest {
 			t.Fatalf("rounds %v: committed max-of-N %d, want the highest round %d", rotated, bound.MaxOfNBytes, highest)
@@ -111,23 +115,23 @@ func TestCalibratedBound_RefusesNoiseWiderThanTheMargin(t *testing.T) {
 	// Five gating runs' max-of-5 on 26.9, against the label-values headroom:
 	// 25.9M to 32.6M is a 6.75M span, and 1.20x of 32.6M leaves 6.53M.
 	noisy := []uint64{25_890_318, 26_900_754, 29_349_973, 30_800_189, labelValuesRenamedGatingRedThird}
-	if _, err := calibratedBound("label_values_matcher_stock_key_renamed", 200, noisy, labelValuesBaselineHeadroom); err == nil {
+	if _, err := calibratedBound("label_values_matcher_stock_key_renamed", http.StatusOK, noisy, labelValuesBaselineHeadroom); err == nil {
 		t.Fatalf("rounds %v under a %.2fx headroom were accepted", noisy, labelValuesBaselineHeadroom)
 	}
 	// The same rounds under a headroom whose margin covers the span: the
 	// refusal above is the span's doing, not the rounds'.
 	const coveringHeadroom = 1.25
-	if _, err := calibratedBound("label_values_matcher_stock_key_renamed", 200, noisy, coveringHeadroom); err != nil {
+	if _, err := calibratedBound("label_values_matcher_stock_key_renamed", http.StatusOK, noisy, coveringHeadroom); err != nil {
 		t.Fatalf("rounds %v under a %.2fx headroom: %v", noisy, coveringHeadroom, err)
 	}
 
 	// The boundary: a margin exactly as wide as the span is accepted, one byte
 	// narrower is refused. 1.5x of 100 is exactly 150, a 50-byte margin.
 	const headroom = 1.5
-	if _, err := calibratedBound("s", 200, []uint64{50, 60, 70, 80, 100}, headroom); err != nil {
+	if _, err := calibratedBound("s", http.StatusOK, []uint64{50, 60, 70, 80, 100}, headroom); err != nil {
 		t.Fatalf("a 50-byte span under a 50-byte margin: %v", err)
 	}
-	if _, err := calibratedBound("s", 200, []uint64{49, 60, 70, 80, 100}, headroom); err == nil {
+	if _, err := calibratedBound("s", http.StatusOK, []uint64{49, 60, 70, 80, 100}, headroom); err == nil {
 		t.Fatal("a 51-byte span under a 50-byte margin was accepted")
 	}
 }
@@ -137,39 +141,49 @@ func TestCalibratedBound_RefusesNoiseWiderThanTheMargin(t *testing.T) {
 // clamps it to the absolute ceiling — not the one the nominal headroom would.
 func TestCalibratedBound_MarginIsTheClampedCeilings(t *testing.T) {
 	const headroom = 1.5
-	// pod_status_reason_gauge's calibrations across servers: clamped, with a
-	// 161M margin over a 31.6M span.
+	// Rounds at pod_status_reason_gauge's scale, whose 1.5x is clamped: a
+	// 161M margin over a 31.6M span. A non-200 status checks that the
+	// expected status rides through to the bound as given.
 	settled := []uint64{719_589_995, 722_049_382, 726_244_515, 740_000_000, 751_191_629}
-	bound, err := calibratedBound("pod_status_reason_gauge", 200, settled, headroom)
+	bound, err := calibratedBound("pod_status_reason_gauge", http.StatusUnprocessableEntity, settled, headroom)
 	if err != nil {
 		t.Fatalf("rounds %v: %v", settled, err)
 	}
-	if bound.CeilingBytes != nightlyCapCeilingBytes {
-		t.Fatalf("rounds %v: ceiling %d, want the absolute ceiling %d", settled, bound.CeilingBytes, nightlyCapCeilingBytes)
+	if bound.CeilingBytes != nightlyCapCeilingBytes || bound.ExpectedStatus != http.StatusUnprocessableEntity {
+		t.Fatalf("rounds %v: ceiling %d expecting %d, want the absolute ceiling %d expecting %d",
+			settled, bound.CeilingBytes, bound.ExpectedStatus, nightlyCapCeilingBytes, http.StatusUnprocessableEntity)
 	}
 
 	// A 50M span: inside the 450M margin 1.5x of 900M would leave, outside the
 	// 12.7M margin the clamped ceiling leaves.
 	clamped := []uint64{850_000_000, 860_000_000, 870_000_000, 880_000_000, 900_000_000}
-	if _, err := calibratedBound("s", 200, clamped, headroom); err == nil {
+	if _, err := calibratedBound("s", http.StatusOK, clamped, headroom); err == nil {
 		t.Fatalf("rounds %v were accepted against a clamped ceiling %d", clamped, nightlyCapCeilingBytes)
 	}
 }
 
-// TestCalibratedBound_RefusesFewerRoundsThanItMeasures: a single max-of-N
-// round — the shape of a single-run calibration — has no range to measure,
-// and a round that measured nothing has no peak.
-func TestCalibratedBound_RefusesFewerRoundsThanItMeasures(t *testing.T) {
-	for _, rounds := range [][]uint64{
-		{labelValuesRenamedCalibrationLow},
-		slices.Repeat([]uint64{labelValuesRenamedCalibrationLow}, nightlyCalibrationRounds-1),
-		{0, labelValuesRenamedCalibrationLow, labelValuesRenamedCalibrationLow, labelValuesRenamedCalibrationLow, labelValuesRenamedCalibrationLow},
+// TestCalibratedBound_RefusesRoundsItCannotDeriveFrom: a single max-of-N
+// round — the shape of a single-run calibration — has no range to measure, a
+// round that measured nothing has no peak, and a highest round over the
+// absolute ceiling already fails PRONG (a). The last two are built so the
+// spread check alone would accept them.
+func TestCalibratedBound_RefusesRoundsItCannotDeriveFrom(t *testing.T) {
+	const doubling = 2.0 // 2x of 100 leaves a 100-byte margin over a 100-byte span
+	overCap := slices.Repeat([]uint64{nightlyCapCeilingBytes + 1}, nightlyCalibrationRounds)
+	for _, tc := range []struct {
+		rounds   []uint64
+		headroom float64
+	}{
+		{[]uint64{labelValuesRenamedCalibrationLow}, labelValuesBaselineHeadroom},
+		{slices.Repeat([]uint64{labelValuesRenamedCalibrationLow}, nightlyCalibrationRounds-1), labelValuesBaselineHeadroom},
+		{[]uint64{0, 100, 100, 100, 100}, doubling},
+		{overCap, labelValuesBaselineHeadroom},
 	} {
-		if bound, err := calibratedBound("s", 200, rounds, labelValuesBaselineHeadroom); err == nil {
-			t.Errorf("rounds %v were accepted as %+v", rounds, bound)
+		if bound, err := calibratedBound("s", http.StatusOK, tc.rounds, tc.headroom); err == nil {
+			t.Errorf("rounds %v under %.2fx were accepted as %+v", tc.rounds, tc.headroom, bound)
 		}
 	}
-	if _, err := calibratedBound("s", 200, slices.Repeat([]uint64{labelValuesRenamedCalibrationLow}, nightlyCalibrationRounds), labelValuesBaselineHeadroom); err != nil {
+	if _, err := calibratedBound("s", http.StatusOK, slices.Repeat([]uint64{labelValuesRenamedCalibrationLow}, nightlyCalibrationRounds), labelValuesBaselineHeadroom); err != nil {
 		t.Errorf("%d identical rounds: %v", nightlyCalibrationRounds, err)
 	}
 }

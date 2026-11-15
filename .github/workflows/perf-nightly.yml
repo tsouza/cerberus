@@ -77,10 +77,11 @@ jobs:
         clickhouse: ['24.8', '25.9', '26.8', '26.9']
     # Pulls one ClickHouse image, loads ~4.3M real rows across 3 tables plus
     # the exporter-keyed copies, and issues the sentinel corpus five times —
-    # or, recalibrating, nightlyCalibrationRounds (5) max-of-5 rounds of it,
-    # under update-nightly-perf-baseline's 75m go test timeout, which this
-    # cap stays above.
-    timeout-minutes: ${{ inputs.calibrate && 90 || 30 }}
+    # or, recalibrating, makes nightlyCalibrationRounds (5) passes over it.
+    # The budget is the calibration's: update-nightly-perf-baseline's 75m go
+    # test timeout has to fit under it (go_test_timeout_budget_test.go), and
+    # a gating run stays bounded by perf-nightly-integration's own 15m.
+    timeout-minutes: 90
     env:
       # The image the leg boots: the alpine tag of its release line, the form
       # every real-ClickHouse lane pins (just/common.just).
@@ -126,8 +127,11 @@ jobs:
           read -ra sentinels <<< "$CALIBRATE_SENTINELS"
           just update-nightly-perf-baseline "$PERF_NIGHTLY_CH_IMAGE" "${sentinels[@]}"
 
+      # Also after a failed recalibration: a sentinel whose rounds the
+      # calibration refused keeps its committed bound in the file, and every
+      # other sentinel's new bound is still in it.
       - name: Upload the recalibrated baseline
-        if: ${{ inputs.calibrate }}
+        if: ${{ inputs.calibrate && !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
           name: nightly-baseline-${{ matrix.clickhouse }}
