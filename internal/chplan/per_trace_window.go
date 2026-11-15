@@ -1,5 +1,7 @@
 package chplan
 
+import "time"
+
 // This file bounds the per-trace subqueries of a TraceQL metrics pipeline by
 // the RangeWindow wrapped around it.
 //
@@ -14,12 +16,29 @@ package chplan
 // an Expr slot nor the lookup side of a join, so each per-trace subquery would
 // read the spans table across full retention.
 //
-// Each per-trace subquery reads the spans the metric reads, (Start - Offset -
-// Range, End - Offset], so a trace's value is computed from its spans inside
-// that span — the per-trace value /api/search computes from the spans inside
-// its request window. The plain row source a per-trace subquery filters (a
-// Scan, or a Filter chain over one) carries the same bound, so the MergeTree
-// read under the join or the membership test is pruned too.
+// Each per-trace subquery reads its traces' spans inside the metric's input
+// span (Start - Offset - Range, End - Offset] widened on both sides by the
+// metrics node's PerTraceLookback — the configured maximum trace duration —
+// so a trace no longer than that setting is read whole: its root span and its
+// full extent resolve even when they lie outside the input span. The plain
+// row source a per-trace subquery filters (a Scan, or a Filter chain over
+// one) carries the unwidened input span: the spans the metric counts are the
+// spans inside it, and the MergeTree read under the join or the membership
+// test is pruned to it.
+
+// rangeWindowInputSpan returns the instants of rw's input span,
+// (lower, upper], and whether rw carries a request window. A zero Range reads
+// as Step, as the metrics emitters read it.
+func rangeWindowInputSpan(rw *RangeWindow) (lower, upper time.Time, ok bool) {
+	if rw == nil || rw.Start.IsZero() || rw.End.IsZero() {
+		return time.Time{}, time.Time{}, false
+	}
+	reach := rw.Range
+	if reach == 0 {
+		reach = rw.Step
+	}
+	return rw.Start.Add(-rw.Offset).Add(-reach), rw.End.Add(-rw.Offset), true
+}
 
 // RangeWindowInputBound is the predicate that keeps a row of rw's input
 // exactly when some anchor of rw reads it, over the input's timestamp column
@@ -32,19 +51,26 @@ package chplan
 // nil when rw carries no request window (a zero Start or End) or tsCol is
 // empty.
 func RangeWindowInputBound(rw *RangeWindow, tsCol string) Expr {
-	if rw == nil || rw.Start.IsZero() || rw.End.IsZero() || tsCol == "" {
+	return PerTraceWindowBound(rw, tsCol, 0)
+}
+
+// PerTraceWindowBound is RangeWindowInputBound widened by lookback on both
+// sides — the window a per-trace subquery under rw reads its traces' spans
+// in:
+//
+//	tsCol > Start - Offset - Range - lookback AND tsCol <= End - Offset + lookback
+//
+// A zero lookback is RangeWindowInputBound itself. It is nil exactly when
+// RangeWindowInputBound is.
+func PerTraceWindowBound(rw *RangeWindow, tsCol string, lookback time.Duration) Expr {
+	lower, upper, ok := rangeWindowInputSpan(rw)
+	if !ok || tsCol == "" {
 		return nil
 	}
-	reach := rw.Range
-	if reach == 0 {
-		reach = rw.Step
-	}
-	lower := rw.Start.Add(-rw.Offset).Add(-reach)
-	upper := rw.End.Add(-rw.Offset)
 	return &Binary{
 		Op:    OpAnd,
-		Left:  TimestampBound(OpGt, lower, tsCol),
-		Right: TimestampBound(OpLe, upper, tsCol),
+		Left:  TimestampBound(OpGt, lower.Add(-lookback), tsCol),
+		Right: TimestampBound(OpLe, upper.Add(lookback), tsCol),
 	}
 }
 
@@ -77,17 +103,19 @@ func BoundMetricsPerTraceSubqueries(root Node) Node {
 
 // WindowMetricsPerTraceSubqueries returns metrics — the MetricsAggregate,
 // MetricsHistogramOverTime or MetricsCompare node rw wraps — with its Inner
-// replaced by WindowPerTraceSubqueries of it under rw's input bound
-// (RangeWindowInputBound over the node's own input timestamp column).
-// metrics is never modified; any other node type, a window with no request
-// span, or an Inner with no per-trace subquery returns metrics itself.
+// replaced by WindowPerTraceSubqueries of it: rw's input bound
+// (RangeWindowInputBound over the node's own input timestamp column) on the
+// plain row sources, and that bound widened by the node's PerTraceLookback
+// (PerTraceWindowBound) on the per-trace subqueries. metrics is never
+// modified; any other node type, a window with no request span, or an Inner
+// with no per-trace subquery returns metrics itself.
 func WindowMetricsPerTraceSubqueries(rw *RangeWindow, metrics Node) Node {
 	switch m := metrics.(type) {
 	case *MetricsAggregate:
 		return WindowMetricsAggregatePerTraceSubqueries(rw, m)
 	case *MetricsHistogramOverTime:
 		tsCol, _ := m.InputTimestampColumn()
-		if inner, changed := windowMetricsInner(rw, m.Inner, tsCol); changed {
+		if inner, changed := windowMetricsInner(rw, m.Inner, tsCol, m.PerTraceLookback); changed {
 			bounded := *m
 			bounded.Inner = inner
 			return &bounded
@@ -97,8 +125,8 @@ func WindowMetricsPerTraceSubqueries(rw *RangeWindow, metrics Node) Node {
 		// a trace-scoped intrinsic compared with a literal in it carries its
 		// membership subquery there, beside Inner rather than inside it.
 		tsCol, _ := m.InputTimestampColumn()
-		inner, innerChanged := windowMetricsInner(rw, m.Inner, tsCol)
-		selection, selectionChanged := windowCohortSubqueries(m.Selection, RangeWindowInputBound(rw, tsCol))
+		inner, innerChanged := windowMetricsInner(rw, m.Inner, tsCol, m.PerTraceLookback)
+		selection, selectionChanged := windowCohortSubqueries(m.Selection, PerTraceWindowBound(rw, tsCol, m.PerTraceLookback))
 		if innerChanged || selectionChanged {
 			bounded := *m
 			bounded.Inner = inner
@@ -114,7 +142,7 @@ func WindowMetricsPerTraceSubqueries(rw *RangeWindow, metrics Node) Node {
 // chokepoint (the exemplar statement).
 func WindowMetricsAggregatePerTraceSubqueries(rw *RangeWindow, m *MetricsAggregate) *MetricsAggregate {
 	tsCol, _ := m.InputTimestampColumn()
-	if inner, changed := windowMetricsInner(rw, m.Inner, tsCol); changed {
+	if inner, changed := windowMetricsInner(rw, m.Inner, tsCol, m.PerTraceLookback); changed {
 		bounded := *m
 		bounded.Inner = inner
 		return &bounded
@@ -123,9 +151,9 @@ func WindowMetricsAggregatePerTraceSubqueries(rw *RangeWindow, m *MetricsAggrega
 }
 
 // windowCohortSubqueries returns a copy of e whose cohort subqueries
-// (CohortSubqueries) take window at their leaves, and whether e carries any;
-// e is never modified, and is returned itself when it carries none or window
-// is nil.
+// (CohortSubqueries) take window — a per-trace window — at their leaves, and
+// whether e carries any; e is never modified, and is returned itself when it
+// carries none or window is nil.
 func windowCohortSubqueries(e, window Expr) (Expr, bool) {
 	if window == nil || len(CohortSubqueries(e)) == 0 {
 		return e, false
@@ -136,33 +164,35 @@ func windowCohortSubqueries(e, window Expr) (Expr, bool) {
 }
 
 // windowMetricsInner is WindowPerTraceSubqueries of a metrics node's inner
-// under rw's input bound over tsCol, and whether that changed it.
-func windowMetricsInner(rw *RangeWindow, inner Node, tsCol string) (Node, bool) {
-	bounded := WindowPerTraceSubqueries(inner, RangeWindowInputBound(rw, tsCol))
+// under rw's input bound over tsCol, widened by lookback for the per-trace
+// subqueries, and whether that changed it.
+func windowMetricsInner(rw *RangeWindow, inner Node, tsCol string, lookback time.Duration) (Node, bool) {
+	bounded := WindowPerTraceSubqueries(inner, RangeWindowInputBound(rw, tsCol), PerTraceWindowBound(rw, tsCol, lookback))
 	return bounded, bounded != inner
 }
 
-// WindowPerTraceSubqueries returns a copy of n in which window bounds every
-// per-trace subquery n's row-flow tree carries and the plain row source each
-// one filters:
+// WindowPerTraceSubqueries returns a copy of n in which perTrace bounds every
+// per-trace subquery n's row-flow tree carries, and rows bounds the plain row
+// source each one filters:
 //
-//   - a TraceLookupFilter: each lookup relation's leaves, each cohort
-//     subquery of its predicate, and its Input when that is a plain row
-//     source (a Scan, or a Filter chain over one);
+//   - a TraceLookupFilter: each lookup relation's leaves and each cohort
+//     subquery of its predicate take perTrace, and its Input takes rows when
+//     that is a plain row source (a Scan, or a Filter chain over one);
 //   - a Filter whose predicate carries a cohort subquery: each cohort
-//     subquery, and the Filter itself when it is a plain row source.
+//     subquery takes perTrace, and the Filter itself takes rows when it is a
+//     plain row source.
 //
-// No other leaf takes window: a metrics row source that carries no per-trace
+// No other leaf takes either: a metrics row source that carries no per-trace
 // subquery is bounded by the RangeWindow emitter alone, and a structural
 // join's operands keep reading what they read today.
 //
-// n is never modified. It is returned itself when window is nil or n carries
-// no per-trace subquery.
-func WindowPerTraceSubqueries(n Node, window Expr) Node {
-	if n == nil || window == nil || !carriesPerTraceSubquery(n) {
+// n is never modified. It is returned itself when rows or perTrace is nil or
+// n carries no per-trace subquery.
+func WindowPerTraceSubqueries(n Node, rows, perTrace Expr) Node {
+	if n == nil || rows == nil || perTrace == nil || !carriesPerTraceSubquery(n) {
 		return n
 	}
-	return windowPerTrace(CloneNode(n), window)
+	return windowPerTrace(CloneNode(n), rows, perTrace)
 }
 
 // carriesPerTraceSubquery reports whether n's row-flow tree holds a
@@ -174,7 +204,9 @@ func carriesPerTraceSubquery(n Node) bool {
 		case *TraceLookupFilter:
 			found = true
 		case *Filter:
-			found = len(CohortSubqueries(v.Predicate)) > 0
+			if len(CohortSubqueries(v.Predicate)) > 0 {
+				found = true
+			}
 		}
 		return !found
 	})
@@ -183,24 +215,24 @@ func carriesPerTraceSubquery(n Node) bool {
 
 // windowPerTrace is WindowPerTraceSubqueries' walk over a tree it solely
 // owns: PushLeafPredicate mutates the Filters it reaches in place.
-func windowPerTrace(n Node, window Expr) Node {
+func windowPerTrace(n Node, rows, perTrace Expr) Node {
 	switch v := n.(type) {
 	case *TraceLookupFilter:
-		PushLeafPredicateIntoCohort(v.Predicate, window)
+		PushLeafPredicateIntoCohort(v.Predicate, perTrace)
 		for i, lookup := range v.Lookups {
-			v.Lookups[i] = PushLeafPredicate(lookup, window)
+			v.Lookups[i] = PushLeafPredicate(lookup, perTrace)
 		}
-		v.Input = windowPlainRowSource(windowPerTrace(v.Input, window), window)
+		v.Input = windowPlainRowSource(windowPerTrace(v.Input, rows, perTrace), rows)
 		return v
 	case *Filter:
 		if len(CohortSubqueries(v.Predicate)) > 0 {
-			PushLeafPredicateIntoCohort(v.Predicate, window)
-			v.Input = windowPerTrace(v.Input, window)
-			return windowPlainRowSource(v, window)
+			PushLeafPredicateIntoCohort(v.Predicate, perTrace)
+			v.Input = windowPerTrace(v.Input, rows, perTrace)
+			return windowPlainRowSource(v, rows)
 		}
 	}
 	out, _ := RewriteChildren(n, func(c Node) (Node, bool) {
-		return windowPerTrace(c, window), true
+		return windowPerTrace(c, rows, perTrace), true
 	})
 	return out
 }
