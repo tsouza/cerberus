@@ -11,8 +11,8 @@ import (
 
 // TestIdentifierAlphabetBoundaries kills the CONDITIONALS_BOUNDARY and
 // CONDITIONALS_NEGATION mutants on the capture-identifier alphabet,
-// pattern.go:isIdentStart:`b >= 'a'` and its three siblings on the same
-// line, plus pattern.go:isIdentCont:`b >= '0'` and `b <= '9'`.
+// pattern.go:isNameStart's range bounds, plus pattern.go:isNamePart's
+// `'0' <= b` and `b <= '9'`.
 //
 // A capture is `<` then `[A-Za-z_][A-Za-z0-9_]*` then `>` (see the
 // package doc). Any `<` that does not open a valid capture stays an
@@ -59,12 +59,12 @@ func TestIdentifierAlphabetBoundaries(t *testing.T) {
 }
 
 // TestLineFilterOffsetAdvancesCumulatively kills the
-// REMOVE_SELF_ASSIGNMENTS mutant on pattern.go:Test:`off += j + len(lit)`
+// REMOVE_SELF_ASSIGNMENTS mutant on pattern.go:Test:`pos += at + len(h.until)`
 // (`+=` -> `=`).
 //
-// `off` is the cursor into the subject line: each literal run is searched
-// for in `in[off:]`, so the amount found must be ADDED to the cursor, not
-// assigned over it. The mutant is invisible while `off` is still 0, which
+// `pos` is the cursor into the subject line: each literal run is searched
+// for in `line[pos:]`, so the amount found must be ADDED to the cursor, not
+// assigned over it. The mutant is invisible while `pos` is still 0, which
 // is why the pattern below carries THREE literal runs — the error only
 // appears from the second advance onwards, and then compounds.
 //
@@ -86,34 +86,3 @@ func TestLineFilterOffsetAdvancesCumulatively(t *testing.T) {
 		t.Fatalf("ParseLineFilter(%q).Test(%q) = false, want true — the literal-run cursor was assigned instead of advanced, so it stopped short of the end of the line and reported a spurious remainder", pattern, line)
 	}
 }
-
-// NOT KILLABLE — documented, not defended by a test. These are the LIVED
-// and TIMED OUT mutants phase4-logql-other-b reports in this package that
-// the kills above do not reach.
-//
-// pattern.go:`i+1 >= len(e)` guards a bare `break` that INVERT_LOOPCTRL
-// rewrites to `continue`. The guard is true only on the LAST iteration of
-// `for i, n := range e`, and on the last iteration `continue` and `break`
-// do the same thing: the range is exhausted, so both leave the loop with
-// the same state and fall through to the same `return nil`. The
-// CONDITIONALS_BOUNDARY mutant on the same guard is killed, because
-// widening it to `i+1 > len(e)` lets `e[i+1]` index out of range.
-//
-// pattern.go:`len(s) < 2` — CONDITIONALS_BOUNDARY (`<` -> `<=`). The forms
-// differ only at len(s) == 2, i.e. a `<` and one identifier byte at the
-// very end of the input. The original then runs the scan: j starts at 2,
-// the continuation loop's `j < len(s)` is immediately false, and the
-// closing-`>` test `j < len(s)` is false too, so it returns
-// `("", 0, false)` — the same triple the mutant returns from the widened
-// guard. The `<` itself stays a literal either way. (The guard is NOT
-// redundant below that boundary: at len(s) < 2 it is what keeps `s[1]`
-// from indexing out of range.)
-//
-// pattern.go:`i += consumed` and pattern.go:`i += size` carry the leg's
-// three TIMED OUT mutants (INVERT_ASSIGNMENTS and REMOVE_SELF_ASSIGNMENTS).
-// Both statements are the sole advance of `parse`'s cursor, so every
-// mutant of either spins forever on the same input byte. They are the
-// memory-guard-reaped class recorded on cerberus issue #2949: the guard
-// holds after reaping precisely so no exit status can be read as a
-// verdict, which destroys the evidence a detection credit would be read
-// from. They stay in the denominator, credited to nobody.

@@ -367,7 +367,7 @@ func (l *lexer) next() token {
 
 	// Attribute mode ends as soon as the next rune can't belong to an
 	// attribute name; emit the synthetic terminator the grammar expects.
-	if l.parsingAttribute && !isAttributeRune(l.scanner.Peek()) {
+	if l.parsingAttribute && !allowedInBareAttribute(l.scanner.Peek()) {
 		l.parsingAttribute = false
 		return token{kind: tokEndAttribute, line: line, col: col}
 	}
@@ -468,7 +468,7 @@ func (l *lexer) parseAttribute() (string, error) {
 				return "", err
 			}
 			sb.WriteString(s)
-		case isAttributeRune(r):
+		case allowedInBareAttribute(r):
 			sb.WriteRune(l.scanner.Next())
 		default:
 			return sb.String(), nil
@@ -512,7 +512,7 @@ func (l *lexer) tryScopeAttribute() (tokenKind, bool) {
 			sb.WriteRune(probe.Next())
 			break
 		}
-		if !isAttributeRune(r) {
+		if !allowedInBareAttribute(r) {
 			break
 		}
 		// `>=` here would be indistinguishable from `>`: the '.' arm above
@@ -537,42 +537,39 @@ func (l *lexer) tryScopeAttribute() (tokenKind, bool) {
 	return 0, false
 }
 
-// tryScanDuration attempts to extend an already-scanned numeric literal into a
-// duration (e.g. `100` + `ms`). It consumes the suffix only on success.
+// tryScanDuration extends an already-scanned number into a duration
+// literal (`100` + `ms`) when the runes right after it complete one. It
+// consumes those runes only when they do.
 func (l *lexer) tryScanDuration(number string) (time.Duration, bool) {
-	var sb strings.Builder
-	sb.WriteString(number)
-
-	probe := l.scanner // value copy
-	consumed := 0
-	for {
-		r := probe.Peek()
-		// The EOF/space arm is a readability shortcut, not a distinct exit:
-		// the character test below rejects every rune this arm catches, since
-		// no rune is at once a space and a digit, a duration rune or '.'. An
-		// `&&` here leaves the loop on the same input, one line later. See
-		// lexer_mutation_test.go's NOT KILLABLE footer.
-		if r == scanner.EOF || unicode.IsSpace(r) {
-			break
-		}
-		if !unicode.IsNumber(r) && !isDurationRune(r) && r != '.' {
-			break
-		}
-		sb.WriteRune(probe.Next())
-		consumed++
-	}
-	if consumed == 0 {
+	suffix := l.peekDurationSuffix()
+	if len(suffix) == 0 {
 		return 0, false
 	}
-
-	d, err := parseDuration(sb.String())
+	d, err := parseDuration(number + string(suffix))
 	if err != nil {
 		return 0, false
 	}
-	for i := 0; i < consumed; i++ {
+	for range suffix {
 		l.scanner.Next()
 	}
 	return d, true
+}
+
+// peekDurationSuffix returns, without consuming them, the runes from the
+// cursor up to the first one a duration literal cannot hold.
+func (l *lexer) peekDurationSuffix() []rune {
+	probe := l.scanner // a value copy: reading it leaves l.scanner in place
+	var suffix []rune
+	for continuesDuration(probe.Peek()) {
+		suffix = append(suffix, probe.Next())
+	}
+	return suffix
+}
+
+// continuesDuration reports whether r may follow the leading digits of a
+// duration literal: a digit, a decimal point or a unit letter.
+func continuesDuration(r rune) bool {
+	return r == '.' || unicode.IsNumber(r) || isDurationRune(r)
 }
 
 // parseDuration accepts Prometheus-style durations first (to match the PromQL
@@ -588,28 +585,21 @@ func parseDuration(s string) (time.Duration, error) {
 	return d, nil
 }
 
-func isDurationRune(r rune) bool {
-	switch r {
-	case 'n', 's', 'u', 'm', 'h', 'µ', 'd', 'w', 'y':
-		return true
-	default:
-		return false
-	}
-}
+// durationUnitRunes are the letters of the duration units (ns, us / µs,
+// ms, s, m, h, d, w, y).
+const durationUnitRunes = "nsumhµdwy"
 
-// isAttributeRune reports whether r may appear unquoted inside an attribute
-// name. The excluded set is exactly the structural punctuation the grammar
-// uses to delimit expressions.
-func isAttributeRune(r rune) bool {
-	if unicode.IsSpace(r) {
-		return false
-	}
-	switch r {
-	case scanner.EOF, '{', '}', '(', ')', '=', '~', '!', '<', '>', '&', '|', '^', ',':
-		return false
-	default:
-		return true
-	}
+func isDurationRune(r rune) bool { return strings.ContainsRune(durationUnitRunes, r) }
+
+// attributeDelimiters is the structural punctuation the grammar uses to
+// delimit expressions; any of it ends an unquoted attribute name.
+const attributeDelimiters = "{}()=~!<>&|^,"
+
+// allowedInBareAttribute reports whether r may appear unquoted inside an
+// attribute name: anything but whitespace, attributeDelimiters and the end
+// of input.
+func allowedInBareAttribute(r rune) bool {
+	return r != scanner.EOF && !unicode.IsSpace(r) && !strings.ContainsRune(attributeDelimiters, r)
 }
 
 // startsAttribute reports whether the token, once emitted, switches the lexer

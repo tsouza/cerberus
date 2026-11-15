@@ -7,12 +7,10 @@ import "testing"
 //
 // `!= "a" or "b" or "c"` means "exclude every line containing a, b or c".
 // De Morgan turns that into `!a AND !b AND !c` — it distributes over the
-// WHOLE chain, not just its head. The alternates reach newOrLineFilterExpr
-// as an Or chain because parseOrFilter builds them before the head operator
-// is known (they default to LineMatchEqual and take the positive branch),
-// so folding only the first alternate left the tail hanging off Or and
-// produced `!a AND (!b OR !c)`. That predicate admits a line containing "b"
-// but not "c" — a row the reference engine drops.
+// WHOLE chain, not just its head. Folding only the first alternate leaves
+// the tail hanging off Or and produces `!a AND (!b OR !c)`. That predicate
+// admits a line containing "b" but not "c" — a row the reference engine
+// drops.
 //
 // The two-term case was the only one covered, and it is exactly the one
 // that happened to work: with a single alternate there is no tail to lose.

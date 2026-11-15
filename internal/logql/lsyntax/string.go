@@ -2,6 +2,7 @@ package lsyntax
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/prometheus/common/model"
@@ -11,17 +12,13 @@ import (
 // the `/loki/api/v1/format_query` endpoint and the `%s` formatting of
 // matchers; they are not used by the SQL lowering.
 
+// String renders the selector as `{` + its matchers joined by ", " + `}`.
 func (e *MatchersExpr) String() string {
-	var sb strings.Builder
-	sb.WriteString("{")
+	rendered := make([]string, len(e.Mts))
 	for i, m := range e.Mts {
-		sb.WriteString(m.String())
-		if i+1 != len(e.Mts) {
-			sb.WriteString(", ")
-		}
+		rendered[i] = m.String()
 	}
-	sb.WriteString("}")
-	return sb.String()
+	return "{" + strings.Join(rendered, ", ") + "}"
 }
 
 func (e *PipelineExpr) String() string {
@@ -155,17 +152,19 @@ func namedMatcherStage(op string, names []NamedLabelMatcher) string {
 	return sb.String()
 }
 
+// String renders ` | unwrap <target>` followed by ` | <filter>` for each
+// post-unwrap filter, where the target is the label, or the conversion
+// applied to it.
 func (u *UnwrapExpr) String() string {
-	var sb strings.Builder
+	target := u.Identifier
 	if u.Operation != "" {
-		fmt.Fprintf(&sb, " %s %s %s(%s)", OpPipe, OpUnwrap, u.Operation, u.Identifier)
-	} else {
-		fmt.Fprintf(&sb, " %s %s %s", OpPipe, OpUnwrap, u.Identifier)
+		target = u.Operation + "(" + u.Identifier + ")"
 	}
+	words := []string{"", OpPipe, OpUnwrap, target}
 	for _, f := range u.PostFilters {
-		fmt.Fprintf(&sb, " %s %s", OpPipe, f)
+		words = append(words, OpPipe, f.String())
 	}
-	return sb.String()
+	return strings.Join(words, " ")
 }
 
 func (e *OffsetExpr) String() string {
@@ -186,34 +185,35 @@ func (e *LogRangeExpr) String() string {
 	return sb.String()
 }
 
+// String renders ` by (a,b)` or ` without (a,b)`.
 func (g Grouping) String() string {
-	var sb strings.Builder
+	keyword := "by"
 	if g.Without {
-		sb.WriteString(" without ")
-	} else {
-		sb.WriteString(" by ")
+		keyword = "without"
 	}
-	sb.WriteString("(")
-	sb.WriteString(strings.Join(g.Groups, ","))
-	sb.WriteString(")")
-	return sb.String()
+	return " " + keyword + " (" + strings.Join(g.Groups, ",") + ")"
 }
 
 func (g Grouping) singleton() bool { return len(g.Groups) == 0 && !g.Without }
 
+// String renders `op(range)` or `op(param,range)`, then the grouping.
 func (e *RangeAggregationExpr) String() string {
-	var sb strings.Builder
-	sb.WriteString(e.Operation)
-	sb.WriteString("(")
+	args := e.Left.String()
 	if e.Params != nil {
-		fmt.Fprintf(&sb, "%s,", strings.TrimRight(strings.TrimRight(fmt.Sprintf("%f", *e.Params), "0"), "."))
+		args = sixDecimals(*e.Params) + "," + args
 	}
-	sb.WriteString(e.Left.String())
-	sb.WriteString(")")
+	out := e.Operation + "(" + args + ")"
 	if e.Grouping != nil {
-		sb.WriteString(e.Grouping.String())
+		out += e.Grouping.String()
 	}
-	return sb.String()
+	return out
+}
+
+// sixDecimals renders v rounded to six decimal places, without trailing
+// zeros or a trailing decimal point.
+func sixDecimals(v float64) string {
+	fixed := strings.TrimRight(strconv.FormatFloat(v, 'f', 6, 64), "0")
+	return strings.TrimSuffix(fixed, ".")
 }
 
 func (e *VectorAggregationExpr) String() string {

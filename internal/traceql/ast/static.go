@@ -1,9 +1,9 @@
 package ast
 
 import (
+	"bytes"
 	"iter"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -269,82 +269,80 @@ func slicesEqual[T comparable](a, b []T) bool {
 
 func (s Static) String() string { return s.EncodeToString(true) }
 
-// EncodeToString renders the literal in TraceQL surface syntax. When
-// quotes is true string values are wrapped in backticks (the form used
-// when printing a whole query); when false the bare string is returned
-// (used when a literal stands in for an identifier).
-func (s Static) EncodeToString(quotes bool) string {
+// EncodeToString renders the literal in TraceQL surface syntax. With
+// quoteStrings a string value is wrapped in backticks, the form a printed
+// query uses; without it the bare string is returned, for a literal that
+// stands in for an identifier. A string array backticks its elements
+// either way.
+func (s Static) EncodeToString(quoteStrings bool) string {
+	return string(s.appendSurface(nil, quoteStrings))
+}
+
+// appendSurface appends the literal's surface form to buf.
+func (s Static) appendSurface(buf []byte, quoteStrings bool) []byte {
 	switch s.Type {
 	case TypeNil:
-		return "nil"
+		return append(buf, "nil"...)
 	case TypeInt:
-		return strconv.FormatInt(s.num, 10)
+		return strconv.AppendInt(buf, s.num, 10)
 	case TypeFloat:
-		f := strconv.FormatFloat(s.flt, 'g', -1, 64)
-		if !strings.ContainsAny(f, "e.") {
-			f += ".0"
-		}
-		return f
+		return appendFloatLiteral(buf, s.flt)
 	case TypeString:
-		if quotes {
-			return "`" + s.str + "`"
+		if quoteStrings {
+			return appendBackticked(buf, s.str)
 		}
-		return s.str
+		return append(buf, s.str...)
 	case TypeBoolean:
-		return strconv.FormatBool(s.num != 0)
+		return strconv.AppendBool(buf, s.num != 0)
 	case TypeDuration:
-		return time.Duration(s.num).String()
+		return append(buf, time.Duration(s.num).String()...)
 	case TypeStatus:
-		return Status(s.num).String()
+		return append(buf, Status(s.num).String()...)
 	case TypeKind:
-		return Kind(s.num).String()
+		return append(buf, Kind(s.num).String()...)
 	case TypeIntArray:
-		return encodeArray(s.ints, false)
+		return appendList(buf, s.ints, appendIntLiteral)
 	case TypeFloatArray:
-		return encodeArray(s.floats, false)
+		return appendList(buf, s.floats, appendFloatLiteral)
 	case TypeStringArray:
-		return encodeArray(s.strs, true)
+		return appendList(buf, s.strs, appendBackticked)
 	case TypeBooleanArray:
-		return encodeArray(s.bools, false)
-	default:
-		return "static(" + strconv.Itoa(int(s.Type)) + ")"
+		return appendList(buf, s.bools, strconv.AppendBool)
 	}
+	// A type with no literal form renders as its number.
+	buf = append(buf, "static("...)
+	buf = strconv.AppendInt(buf, int64(s.Type), 10)
+	return append(buf, ')')
 }
 
-func encodeArray[T any](vals []T, quote bool) string {
-	var b strings.Builder
-	b.WriteByte('[')
-	for i, v := range vals {
+func appendIntLiteral(buf []byte, v int) []byte { return strconv.AppendInt(buf, int64(v), 10) }
+
+// appendFloatLiteral appends f in its shortest form, with a `.0` added when
+// that form has neither a decimal point nor an exponent, so a float never
+// reads as an int.
+func appendFloatLiteral(buf []byte, f float64) []byte {
+	start := len(buf)
+	buf = strconv.AppendFloat(buf, f, 'g', -1, 64)
+	if !bytes.ContainsAny(buf[start:], ".e") {
+		buf = append(buf, ".0"...)
+	}
+	return buf
+}
+
+func appendBackticked(buf []byte, v string) []byte {
+	buf = append(buf, '`')
+	buf = append(buf, v...)
+	return append(buf, '`')
+}
+
+// appendList appends items as `[a, b, c]`, each written by appendItem.
+func appendList[T any](buf []byte, items []T, appendItem func([]byte, T) []byte) []byte {
+	buf = append(buf, '[')
+	for i, item := range items {
 		if i > 0 {
-			b.WriteString(", ")
+			buf = append(buf, ", "...)
 		}
-		if quote {
-			b.WriteByte('`')
-		}
-		b.WriteString(scalarString(v))
-		if quote {
-			b.WriteByte('`')
-		}
+		buf = appendItem(buf, item)
 	}
-	b.WriteByte(']')
-	return b.String()
-}
-
-func scalarString(v any) string {
-	switch x := v.(type) {
-	case int:
-		return strconv.Itoa(x)
-	case float64:
-		f := strconv.FormatFloat(x, 'g', -1, 64)
-		if !strings.ContainsAny(f, "e.") {
-			f += ".0"
-		}
-		return f
-	case string:
-		return x
-	case bool:
-		return strconv.FormatBool(x)
-	default:
-		return ""
-	}
+	return append(buf, ']')
 }

@@ -11,16 +11,10 @@ import (
 // LogQL parser's guard against pathological inputs.
 const maxInputSize = 131072
 
-// ParseExpr parses a LogQL expression and validates it.
+// ParseExpr parses a LogQL expression and applies every post-parse
+// validation rule.
 func ParseExpr(input string) (Expr, error) {
-	expr, err := ParseExprWithoutValidation(input)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateExpr(expr); err != nil {
-		return nil, err
-	}
-	return expr, nil
+	return parseChecked(input, &exprValidator{})
 }
 
 // ParseExprAllowingEmptyCompatibleMatchers parses a LogQL expression and
@@ -40,14 +34,7 @@ func ParseExpr(input string) (Expr, error) {
 // lowering never calls Selector(), so nothing downstream re-raised them
 // — the query was simply accepted (cerberus issue #3183).
 func ParseExprAllowingEmptyCompatibleMatchers(input string) (Expr, error) {
-	expr, err := ParseExprWithoutValidation(input)
-	if err != nil {
-		return nil, err
-	}
-	if err := (exprValidator{allowEmptyCompatibleMatchers: true}).expr(expr); err != nil {
-		return nil, err
-	}
-	return expr, nil
+	return parseChecked(input, &exprValidator{allowEmptyCompatibleMatchers: true})
 }
 
 // ParseExprWithoutValidation parses a LogQL expression without running
@@ -58,34 +45,59 @@ func ParseExprAllowingEmptyCompatibleMatchers(input string) (Expr, error) {
 //
 // Callers wanting only the empty-compatible-matcher rule relaxed want
 // [ParseExprAllowingEmptyCompatibleMatchers] instead.
-func ParseExprWithoutValidation(input string) (expr Expr, err error) {
+func ParseExprWithoutValidation(input string) (Expr, error) {
+	return parseChecked(input, nil)
+}
+
+// parseChecked builds the syntax tree for input and, when rules is not
+// nil, walks it with those validation rules. A rejection from either step
+// returns no tree.
+func parseChecked(input string, rules *exprValidator) (Expr, error) {
+	tree, err := buildTree(input)
+	if err == nil && rules != nil {
+		err = rules.expr(tree)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return tree, nil
+}
+
+// buildTree lexes and parses input. The recursive-descent parser reports a
+// syntax error by panicking with it, so the panic is turned back into the
+// returned error here, at the one place every entry point passes through.
+func buildTree(input string) (tree Expr, err error) {
 	if len(input) >= maxInputSize {
 		return nil, NewParseError(fmt.Sprintf("input size too long (%d > %d)", len(input), maxInputSize), 0, 0)
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			if pe, ok := r.(ParseError); ok {
-				expr, err = nil, pe
-				return
-			}
-			if e, ok := r.(error); ok {
-				expr, err = nil, NewParseError(e.Error(), 0, 0)
-				return
-			}
-			expr, err = nil, NewParseError(fmt.Sprintf("%v", r), 0, 0)
+			tree, err = nil, asParseError(r)
 		}
 	}()
-
-	toks, lerr := lex(input)
-	if lerr != nil {
-		return nil, lerr
+	toks, err := lex(input)
+	if err != nil {
+		return nil, err
 	}
 	p := &parser{toks: toks}
-	e := p.parseExpr(0)
-	if p.cur().kind != tkEOF {
-		return nil, NewParseError(fmt.Sprintf("syntax error: unexpected trailing tokens near %q", p.tokenText(p.cur())), 0, 0)
+	tree = p.parseExpr(0)
+	if rest := p.cur(); rest.kind != tkEOF {
+		return nil, NewParseError(fmt.Sprintf("syntax error: unexpected trailing tokens near %q", p.tokenText(rest)), 0, 0)
 	}
-	return e, nil
+	return tree, nil
+}
+
+// asParseError converts a value the parser panicked with into the error a
+// parse entry point returns.
+func asParseError(r any) error {
+	switch v := r.(type) {
+	case ParseError:
+		return v
+	case error:
+		return NewParseError(v.Error(), 0, 0)
+	default:
+		return NewParseError(fmt.Sprint(v), 0, 0)
+	}
 }
 
 // ------------------------------------------------------------------
@@ -112,8 +124,6 @@ type exprValidator struct {
 	allowEmptyCompatibleMatchers bool
 }
 
-func validateExpr(expr Expr) error { return exprValidator{}.expr(expr) }
-
 func (v exprValidator) expr(expr Expr) error {
 	switch e := expr.(type) {
 	case SampleExpr:
@@ -125,42 +135,56 @@ func (v exprValidator) expr(expr Expr) error {
 	}
 }
 
+// sampleExpr validates a sample expression. A node that combines sample
+// operands reports, in order, the error stashed at its construction, the
+// failure of its own rule, and the first failing operand. A scalar reports
+// its stashed error. Any other node is validated through the log selector
+// it reads.
 func (v exprValidator) sampleExpr(expr SampleExpr) error {
 	switch e := expr.(type) {
-	case *BinOpExpr:
-		if e.err != nil {
-			return e.err
-		}
-		if err := v.sampleExpr(e.SampleExpr); err != nil {
-			return err
-		}
-		return v.sampleExpr(e.RHS)
 	case *LiteralExpr:
 		return e.err
 	case *VectorExpr:
 		return e.err
+	case *BinOpExpr:
+		return v.firstFailure(e.err, nil, e.SampleExpr, e.RHS)
 	case *VectorAggregationExpr:
-		if e.err != nil {
-			return e.err
-		}
-		if e.Operation == OpTypeSort || e.Operation == OpTypeSortDesc {
-			if err := validateSortGrouping(e.Grouping); err != nil {
-				return err
-			}
-		}
-		return v.sampleExpr(e.Left)
+		return v.firstFailure(e.err, sortGroupingError(e), e.Left)
 	case *LabelReplaceExpr:
-		if e.err != nil {
-			return e.err
-		}
-		return v.sampleExpr(e.Left)
-	default:
-		sel, err := e.Selector()
-		if err != nil {
+		return v.firstFailure(e.err, nil, e.Left)
+	}
+	sel, err := expr.Selector()
+	if err != nil {
+		return err
+	}
+	return v.logSelectorExpr(sel)
+}
+
+// firstFailure returns stashed, else own, else the first operand that
+// fails validation. The operands are not visited when stashed is set: a
+// node whose construction failed may leave them unset.
+func (v exprValidator) firstFailure(stashed, own error, operands ...SampleExpr) error {
+	if stashed != nil {
+		return stashed
+	}
+	if own != nil {
+		return own
+	}
+	for _, operand := range operands {
+		if err := v.sampleExpr(operand); err != nil {
 			return err
 		}
-		return v.logSelectorExpr(sel)
 	}
+	return nil
+}
+
+// sortGroupingError is the sort / sort_desc grouping rule's verdict on e;
+// any other aggregation passes it.
+func sortGroupingError(e *VectorAggregationExpr) error {
+	if e.Operation != OpTypeSort && e.Operation != OpTypeSortDesc {
+		return nil
+	}
+	return validateSortGrouping(e.Grouping)
 }
 
 func (v exprValidator) logSelectorExpr(expr LogSelectorExpr) error {
@@ -690,51 +714,39 @@ func lineMatchType(k tokenKind) LineMatchType {
 	return LineMatchEqual
 }
 
+// parseLineFilters parses a run of line-filter clauses into one stage.
+// The caller has checked isLineFilterStart.
 func (p *parser) parseLineFilters() *LineFilterExpr {
-	result := p.parseLineFilter()
+	last := p.parseLineFilterClause().attach(nil)
 	for p.isLineFilterStart() {
-		next := p.parseLineFilter()
-		result = newNestedLineFilterExpr(result, next)
+		last = p.parseLineFilterClause().attach(last)
 	}
-	return result
+	return last
 }
 
-func (p *parser) parseLineFilter() *LineFilterExpr {
-	ty := lineMatchType(p.cur().kind)
+// parseLineFilterClause parses `<op> operand (or operand)*`.
+func (p *parser) parseLineFilterClause() lineFilterClause {
+	clause := lineFilterClause{ty: lineMatchType(p.cur().kind)}
 	p.advance()
-	var head *LineFilterExpr
-	if p.at(tkIP) {
+	for {
+		clause.operands = append(clause.operands, p.parseLineFilterOperand(clause.ty))
+		if !p.at(tkOr) {
+			return clause
+		}
 		p.advance()
-		p.expect(tkOpenParen, "'('")
-		s := p.expect(tkString, "string").str
-		p.expect(tkCloseParen, "')'")
-		head = newLineFilterExpr(ty, OpFilterIP, s)
-	} else {
-		s := p.expect(tkString, "string").str
-		head = newLineFilterExpr(ty, "", s)
 	}
-	for p.at(tkOr) {
-		p.advance()
-		head = newOrLineFilterExpr(head, p.parseOrFilter())
-	}
-	return head
 }
 
-func (p *parser) parseOrFilter() *LineFilterExpr {
-	if p.at(tkIP) {
-		p.advance()
-		p.expect(tkOpenParen, "'('")
-		s := p.expect(tkString, "string").str
-		p.expect(tkCloseParen, "')'")
-		return newLineFilterExpr(LineMatchEqual, OpFilterIP, s)
+// parseLineFilterOperand parses a quoted string or an `ip("...")` call.
+func (p *parser) parseLineFilterOperand(ty LineMatchType) LineFilter {
+	if !p.at(tkIP) {
+		return LineFilter{Ty: ty, Match: p.expect(tkString, "string").str}
 	}
-	s := p.expect(tkString, "string").str
-	node := newLineFilterExpr(LineMatchEqual, "", s)
-	if p.at(tkOr) {
-		p.advance()
-		return newOrLineFilterExpr(node, p.parseOrFilter())
-	}
-	return node
+	p.advance()
+	p.expect(tkOpenParen, "'('")
+	operand := LineFilter{Ty: ty, Op: OpFilterIP, Match: p.expect(tkString, "string").str}
+	p.expect(tkCloseParen, "')'")
+	return operand
 }
 
 // ------------------------------------------------------------------

@@ -115,13 +115,8 @@ func (a Attribute) String() string {
 
 // containsNonAttributeRune reports whether s holds any rune that cannot
 // appear in a bare attribute name and therefore forces quoting. It is the
-// exact inverse of the lexer's isAttributeRune, so the disallowed set (the
+// exact inverse of the lexer's allowedInBareAttribute, so the disallowed set (the
 // structural punctuation plus whitespace) is defined in one place only.
 func containsNonAttributeRune(s string) bool {
-	for _, r := range s {
-		if !isAttributeRune(r) {
-			return true
-		}
-	}
-	return false
+	return strings.ContainsFunc(s, func(r rune) bool { return !allowedInBareAttribute(r) })
 }

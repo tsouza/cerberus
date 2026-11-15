@@ -9,6 +9,7 @@ import (
 	"strings"
 	"text/template"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Masterminds/sprig/v3"
 	"github.com/dustin/go-humanize"
@@ -101,9 +102,9 @@ func buildLogqlFunctionMap() template.FuncMap {
 		"urldecode": url.QueryUnescape,
 		"urlencode": url.QueryEscape,
 		// Loki-native conversions.
-		"bytes":            convertBytes,
-		"duration":         convertDuration,
-		"duration_seconds": convertDuration,
+		"bytes":            humanizedByteCount,
+		"duration":         durationSeconds,
+		"duration_seconds": durationSeconds,
 		"unixEpochMillis":  unixEpochMillis,
 		"unixEpochNanos":   unixEpochNanos,
 		"toDateInZone":     toDateInZone,
@@ -120,20 +121,19 @@ func buildLogqlFunctionMap() template.FuncMap {
 	return fm
 }
 
-func convertBytes(v string) (float64, error) {
-	b, err := humanize.ParseBytes(v)
-	if err != nil {
-		return 0, err
-	}
-	return float64(b), nil
+// humanizedByteCount converts a humanised size ("1KB", "2 MiB") to its
+// byte count. A template that passes an unparsable size fails with the
+// parser's error.
+func humanizedByteCount(size string) (float64, error) {
+	n, err := humanize.ParseBytes(size)
+	return float64(n), err
 }
 
-func convertDuration(v string) (float64, error) {
-	d, err := time.ParseDuration(v)
-	if err != nil {
-		return 0, err
-	}
-	return d.Seconds(), nil
+// durationSeconds converts a Go duration ("1m30s") to seconds. A template
+// that passes an unparsable duration fails with the parser's error.
+func durationSeconds(duration string) (float64, error) {
+	d, err := time.ParseDuration(duration)
+	return d.Seconds(), err
 }
 
 func unixEpochMillis(date time.Time) string {
@@ -188,26 +188,29 @@ const (
 	secondsPerDay      = 86400
 )
 
-func alignLeft(count int, src string) string {
-	runes := []rune(src)
-	l := len(runes)
-	if count < 0 || count == l {
-		return src
-	}
-	if pad := count - l; pad > 0 {
-		return src + strings.Repeat(" ", pad)
-	}
-	return string(runes[:count])
-}
+// alignLeft fits src to width runes: padded with spaces on the right, or
+// cut to its first width runes.
+func alignLeft(width int, src string) string { return fitWidth(src, width, false) }
 
-func alignRight(count int, src string) string {
-	runes := []rune(src)
-	l := len(runes)
-	if count < 0 || count == l {
+// alignRight fits src to width runes: padded with spaces on the left, or
+// cut to its last width runes.
+func alignRight(width int, src string) string { return fitWidth(src, width, true) }
+
+// fitWidth pads or cuts src to width runes, on the left when fromRight is
+// set and on the right otherwise. A negative width, or a src already that
+// wide, returns src unchanged.
+func fitWidth(src string, width int, fromRight bool) string {
+	n := utf8.RuneCountInString(src)
+	switch {
+	case width < 0 || width == n:
 		return src
+	case width > n && fromRight:
+		return strings.Repeat(" ", width-n) + src
+	case width > n:
+		return src + strings.Repeat(" ", width-n)
+	case fromRight:
+		return string([]rune(src)[n-width:])
+	default:
+		return string([]rune(src)[:width])
 	}
-	if pad := count - l; pad > 0 {
-		return strings.Repeat(" ", pad) + src
-	}
-	return string(runes[l-count:])
 }

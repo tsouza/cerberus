@@ -2,6 +2,7 @@ package loki
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"text/template"
 	"time"
@@ -291,5 +292,84 @@ func TestTemplateFunc_LineAndTimestampParity(t *testing.T) {
 	}
 	if got, want := bms.String(), "1673798889000"; got != want {
 		t.Errorf("__timestamp__|unixEpochMillis: got %q want %q", got, want)
+	}
+}
+
+// TestTemplateFunc_SizeAndDurationConversions pins the `bytes`,
+// `duration` and `duration_seconds` template functions: a humanised size
+// becomes its byte count and a Go duration its seconds, and an unparsable
+// argument fails the template execution with the parser's error.
+func TestTemplateFunc_SizeAndDurationConversions(t *testing.T) {
+	t.Parallel()
+
+	ok := []struct{ body, want string }{
+		{`{{ bytes "0" }}`, "0"},
+		{`{{ bytes "42" }}`, "42"},
+		{`{{ bytes "1.5KB" }}`, "1500"},
+		{`{{ bytes "1KiB" }}`, "1024"},
+		{`{{ bytes "2 MiB" }}`, "2.097152e+06"},
+		{`{{ bytes "1gb" }}`, "1e+09"},
+		{`{{ duration "1.5s" }}`, "1.5"},
+		{`{{ duration "-2m" }}`, "-120"},
+		{`{{ duration "250ms" }}`, "0.25"},
+		{`{{ duration_seconds "1h" }}`, "3600"},
+	}
+	for _, tc := range ok {
+		if got := renderInline(t, tc.body, nil); got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.body, got, tc.want)
+		}
+	}
+
+	funcs := templateFuncs(func() string { return "" }, func() int64 { return 0 })
+	for _, tc := range []struct{ body, wantErr string }{
+		{`{{ bytes "lots" }}`, `strconv.ParseFloat: parsing "": invalid syntax`},
+		{`{{ bytes "12 parsecs" }}`, "unhandled size name: parsecs"},
+		{`{{ duration "soon" }}`, `time: invalid duration "soon"`},
+		{`{{ duration_seconds "5" }}`, `time: missing unit in duration "5"`},
+	} {
+		tpl, err := template.New("t").Funcs(funcs).Parse(tc.body)
+		if err != nil {
+			t.Fatalf("parse %q: %v", tc.body, err)
+		}
+		var buf bytes.Buffer
+		err = tpl.Execute(&buf, nil)
+		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			t.Errorf("%s: error = %v, want it to contain %q", tc.body, err, tc.wantErr)
+		}
+	}
+}
+
+// TestTemplateFunc_AlignWidths pins alignLeft / alignRight over every
+// width case: negative and exact widths leave the text as it is (bytes
+// included), a wider width pads with spaces on the far side, and a
+// narrower one keeps the first (alignLeft) or last (alignRight) runes.
+func TestTemplateFunc_AlignWidths(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range []struct {
+		width       int
+		src         string
+		left, right string
+	}{
+		{-1, "abc", "abc", "abc"},
+		{0, "abc", "", ""},
+		{3, "abc", "abc", "abc"},
+		{5, "abc", "abc  ", "  abc"},
+		{2, "abc", "ab", "bc"},
+		{0, "", "", ""},
+		{2, "", "  ", "  "},
+		{2, "héllo", "hé", "lo"},
+		{4, "日本", "日本  ", "  日本"},
+		{1, "日本", "日", "本"},
+		{2, "a\xffb", "a�", "�b"},
+		{3, "a\xffb", "a\xffb", "a\xffb"},
+		{4, "a\xffb", "a\xffb ", " a\xffb"},
+	} {
+		if got := alignLeft(c.width, c.src); got != c.left {
+			t.Errorf("alignLeft(%d, %q) = %q, want %q", c.width, c.src, got, c.left)
+		}
+		if got := alignRight(c.width, c.src); got != c.right {
+			t.Errorf("alignRight(%d, %q) = %q, want %q", c.width, c.src, got, c.right)
+		}
 	}
 }

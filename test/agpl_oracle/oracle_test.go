@@ -2,7 +2,9 @@
 
 // Package agpl_oracle holds the differential A/B check that pins the in-house
 // clean-room TraceQL parser (internal/traceql/ast) against the AGPL reference
-// parser (grafana/tempo/pkg/traceql). It is guarded by the `agpl_oracle` build
+// parser (grafana/tempo/pkg/traceql), and the copy scan (copyscan_test.go)
+// that compares the in-house query-language packages with the pinned Loki
+// and Tempo sources. It is guarded by the `agpl_oracle` build
 // tag so the reference parser is NEVER linked into cmd/cerberus or any normal
 // `go test` run — it exists purely as a fidelity oracle you opt into with
 //
