@@ -3,6 +3,7 @@
   "head": "tempo-grpc",
   "bucket": "08",
   "cases": [
+    "search | parenthesised_pipeline_then_spanset_rejected",
     "search | scoped_instrumentation_version",
     "tags_v2 | tags_v2_intrinsic"
   ]

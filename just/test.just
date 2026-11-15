@@ -83,9 +83,8 @@ semantic-check:
     node .github/scripts/semantic-model.mjs
 
 # Executes one hand-authored, contract-linked mutant from test/semantic/mutants/
-# (issue #3448) against its declared detector(s), using the isolated-execution
-# protocol issue #3447's spike approved: apply the mutant's unified diff to a
-# scratch copy of its target file, point `go test -overlay` at the swap, and
+# against its declared detector(s), in isolation: apply the mutant's unified
+# diff to a scratch copy of its target file, point `go test -overlay` at the swap, and
 # never touch this checkout. A failing clean control aborts before the mutant
 # is ever attempted; a record whose pinned pre_image_fingerprint /
 # post_image_fingerprint disagree with its patch, or whose patch's pre-image
@@ -103,8 +102,9 @@ semantic-check:
 # MUTANT-SYNTH-KILLED-INVERT`. The runner's own writes land under a per-run
 # mkdtemp() scratch directory (RUNNER_TEMP when set), cleaned up on normal
 # exit, on error, and on SIGINT/SIGTERM alike — concurrent invocations never
-# share a path. Scope: the runner and its synthetic self-test records only;
-# real per-head query-language mutants arrive in #3449-#3451.
+# share a path. test/semantic/mutants/ holds the runner's synthetic self-test
+# records (MUTANT-SYNTH-*) and the per-head query-language mutants
+# (MUTANT-PROMQL-*, MUTANT-LOGQL-*, MUTANT-TRACEQL-*).
 
 # Run one semantic mutant from test/semantic/mutants/ and classify the result.
 semantic-mutate MUTANT_ID:

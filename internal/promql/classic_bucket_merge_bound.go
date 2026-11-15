@@ -75,13 +75,8 @@ import (
 // the guard's message at 128.3 / 128.0 MiB, before the merge ran.
 //
 // The per-series window stage that feeds the merge (classicBucketWindowStage)
-// runs before this guard and is not bounded by it. Its memory grows with
-// the samples the query scans: `rate` over 58,000 series with one shared
-// 50-bucket layout and 56 samples each — 2,958,000 merge entries, admitted —
-// peaks at 851.1 MiB (26.8) and 767.6 MiB (26.6) under the 1 GiB cap. On the
-// instant path no other bound covers that stage: CERBERUS_QUERY_MAX_SAMPLES
-// bounds the result cerberus drains, not what ClickHouse scans. See
-// https://github.com/tsouza/cerberus/issues/4084.
+// runs before this guard and is not bounded by it; its own ceilings are in
+// classic_bucket_window_bound.go.
 const (
 	// classicBucketMergeBytesPerEntry is the merge's peak memory per bucket
 	// entry at the largest calibrated shapes on 26.8: 2620.9 MiB over
@@ -97,14 +92,19 @@ const (
 	// peak takes between calibration points (75,000 x 50 peaks at 733 MiB,
 	// 100,000 x 50 at 1247 MiB on 26.8) and for the scan feeding the merge.
 	// It does not bound the per-series window stage, which runs before the
-	// guard and can by itself exceed the cap (this file's header and
-	// https://github.com/tsouza/cerberus/issues/4084).
+	// guard under its own ceilings (classic_bucket_window_bound.go).
 	classicBucketMergeCapSharePercent = 75
 
 	// percentDenominator turns classicBucketMergeCapSharePercent into a
 	// fraction.
 	percentDenominator = 100
 )
+
+// percentOf is percent percent of n, split into whole hundreds and a
+// remainder so the product never overflows for any int64 n.
+func percentOf(n, percent int64) int64 {
+	return (n/percentDenominator)*percent + (n%percentDenominator)*percent/percentDenominator
+}
 
 // ClassicBucketMergeEntriesForMemory derives the classic-histogram
 // cross-series merge ceiling from a ClickHouse per-query memory cap:
@@ -136,10 +136,7 @@ func ClassicBucketMergeEntriesForMemory(chQueryMaxMemory int64) int64 {
 	if chQueryMaxMemory <= 0 {
 		chQueryMaxMemory = bytesPerGiB
 	}
-	// The cap's share, split into whole hundreds and a remainder so the
-	// product never overflows for any int64 cap.
-	share := (chQueryMaxMemory/percentDenominator)*classicBucketMergeCapSharePercent +
-		(chQueryMaxMemory%percentDenominator)*classicBucketMergeCapSharePercent/percentDenominator
+	share := percentOf(chQueryMaxMemory, classicBucketMergeCapSharePercent)
 	return share / classicBucketMergeBytesPerEntry
 }
 
@@ -175,10 +172,7 @@ func ClassicBucketMergeEntriesForMemory(chQueryMaxMemory int64) int64 {
 // than read from the environment here because this package may not depend
 // on internal/config (.go-arch-lint.yml).
 func classicBucketMergeInputGate(perSeries chplan.Node, s schema.Metrics, maxEntries int64) chplan.Node {
-	total := &chplan.WindowExpr{Fn: chplan.FnSum, Args: []chplan.Expr{addExpr(
-		&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ExplicitBoundsColumn}}},
-		&chplan.LitInt{V: 1},
-	)}}
+	total := &chplan.WindowExpr{Fn: chplan.FnSum, Args: []chplan.Expr{classicBucketRowEntryCountExpr(s)}}
 	gated := func(column string) chplan.Projection {
 		col := &chplan.ColumnRef{Name: column}
 		guard := &chplan.FuncCall{

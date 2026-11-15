@@ -663,7 +663,7 @@ func run() error {
 	}
 	grpcServer := heads.grpcServer
 
-	startCHOptReprobe(ctx, logger, cfg, chOpts, heads.consumers, optRes.RawQueryWorkload, productionReprobeTiming, liveFleetProber(cfg))
+	startCHOptReprobe(ctx, logger, cfg, chOpts, heads.consumers, optRes.RawQueryWorkload, productionReprobeTiming, chOpts.probeFleet)
 
 	tracedAPI := wrapWithOTel(traceMux, "cerberus")
 
@@ -1390,6 +1390,10 @@ type chOptResolution struct {
 	// resolution could not reach every node, so the next pass runs at
 	// chOptFloorRetryInterval (nextReprobeDelay).
 	FleetIncomplete bool
+	// FleetHeld records that the fleet behind the resolution holds a build
+	// no server that pass reached runs (chclient.FleetVersions.Held), so the
+	// next pass runs at chOptFloorRetryInterval (nextReprobeDelay).
+	FleetHeld bool
 	// QueryWorkload is the EFFECTIVE CERBERUS_CH_QUERY_WORKLOAD (cerberus
 	// issue #2785): the configured name when the capability probe found the
 	// server accepts it, else "" (unconfigured, or a rejected/unreachable
@@ -1421,12 +1425,19 @@ var supportedFloorVersion = chopt.Version{Major: 24, Minor: 8}
 // wrapped in a live holder for reprobeCHOptimizations / the /info handler),
 // collapsing what would otherwise be five separate statements in run() into
 // one call + the mandatory error check.
+//
+// The live holder carries the boot probe's fleet prober, so the re-probe loop
+// reuses it and its fleet memory (rememberingFleetProber) carries from boot
+// into every pass.
 func startCHOptimizations(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg *config.Config) (chopt.EnabledSet, *chOptLive, chOptResolution, error) {
-	optRes, err := resolveCHOptimizations(ctx, logger, client, cfg, liveFleetProber(*cfg))
+	probeFleet := liveFleetProber(*cfg)
+	optRes, err := resolveCHOptimizations(ctx, logger, client, cfg, probeFleet)
 	if err != nil {
 		return chopt.EnabledSet{}, nil, chOptResolution{}, err
 	}
-	return optRes.Set, newCHOptLive(optRes), optRes, nil
+	live := newCHOptLive(optRes)
+	live.probeFleet = probeFleet
+	return optRes.Set, live, optRes, nil
 }
 
 // startCHOptReprobe starts the periodic capability re-probe: it re-resolves the
@@ -1652,6 +1663,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		ResolvedVersion:  resolvedVersion,
 		VersionFallback:  versionFallback,
 		FleetIncomplete:  !fleet.Complete,
+		FleetHeld:        fleet.Held,
 		QueryWorkload:    resolvedQueryWorkload,
 		RawQueryWorkload: rawQueryWorkload,
 	}, nil

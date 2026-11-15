@@ -382,14 +382,16 @@ func TestClassicBucketMergeBudget_ChDB_BoundCountsEveryGroup(t *testing.T) {
 // past the shipped ceiling of 2,982,616 — and asserts the default budget refuses
 // the instant query with the guard's own message. Few wide rows keep the
 // seed cheap: the guard counts entries before the merge Aggregate reads a
-// row, so it refuses before any merge array is built.
+// row, so it refuses before any merge array is built. Rows that wide are
+// past the per-series window ceiling too, so both window ceilings are lifted
+// to leave the merge ceiling the one that decides.
 func TestClassicBucketMergeBudget_ChDB_DefaultRejectsPastCeiling(t *testing.T) {
 	shape := classicBucketMergeBoundShape{series: 3, width: 1_000_000, samples: 1}
 	fixture := newClassicBucketMergeBoundFixture(t, shape)
 	if got, ceiling := shape.mergeEntries(), promql.ClassicBucketMergeEntriesForMemory(0); got <= ceiling {
 		t.Fatalf("seed %+v carries %d merged entries; want past the default ceiling %d", shape, got, ceiling)
 	}
-	err := runClassicBucketMergeBoundInstantQuery(t, fixture)
+	err := runClassicBucketMergeBoundInstantQueryWithOpts(t, fixture, windowBounds(classicBucketWindowUnbounded, classicBucketWindowUnbounded))
 	if err == nil || !strings.Contains(err.Error(), chplan.ClassicBucketMergeBudgetMessage) {
 		t.Fatalf("seed %+v: the default budget must refuse the merge with the guard's message: %v", shape, err)
 	}
@@ -400,7 +402,8 @@ func TestClassicBucketMergeBudget_ChDB_DefaultRejectsPastCeiling(t *testing.T) {
 // entries, within the ceiling the 1 GiB default cap derives and past the one a
 // 512 MiB cap derives — and asserts that lowering under a 512 MiB
 // CERBERUS_CH_QUERY_MAX_MEMORY, with no explicit ceiling, refuses the merge
-// with the guard's own message.
+// with the guard's own message. Both window ceilings are lifted, as in
+// TestClassicBucketMergeBudget_ChDB_DefaultRejectsPastCeiling.
 func TestClassicBucketMergeBudget_ChDB_HalfGiBCapRefusesPastDerivedCeiling(t *testing.T) {
 	const (
 		defaultCap = config.DefaultCHQueryMaxMemory
@@ -415,7 +418,11 @@ func TestClassicBucketMergeBudget_ChDB_HalfGiBCapRefusesPastDerivedCeiling(t *te
 	}
 	fixture := newClassicBucketMergeBoundFixture(t, shape)
 	err := runClassicBucketMergeBoundInstantQueryWithOpts(t, fixture, promql.LowerOpts{
-		ResourceBounds: promql.ResourceBounds{CHQueryMaxMemory: halfGiBCap},
+		ResourceBounds: promql.ResourceBounds{
+			CHQueryMaxMemory:                    halfGiBCap,
+			ClassicBucketWindowMaxCostUnits:     classicBucketWindowUnbounded,
+			ClassicBucketWindowSeriesMaxEntries: classicBucketWindowUnbounded,
+		},
 	})
 	if err == nil || !strings.Contains(err.Error(), chplan.ClassicBucketMergeBudgetMessage) {
 		t.Fatalf("seed %+v: a 512 MiB cap must refuse the merge with the guard's message: %v", shape, err)

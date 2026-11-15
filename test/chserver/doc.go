@@ -9,13 +9,14 @@
 // floor-known stamp class on every supported release, and the client's
 // answer to a node too old for a setting or function it sends, the external
 // DISTINCT a structural TraceQL query spills through once the distinct_spill
-// threshold is stamped, and the classic-histogram bucket merge's admission ceiling
-// against the 1 GiB query memory cap. Every test boots pinned
-// clickhouse/clickhouse-server builds — the supported floor, builds a known
-// upstream defect affects, and builds carrying its fix — under container CPU
-// and memory limits, drives cerberus-emitted shapes through the production
-// handlers and client, and checks the observed server behaviour against the
-// version policy internal/chopt records for that build.
+// threshold is stamped, and the classic-histogram bucket merge's and
+// per-series window stage's admission ceilings against the 1 GiB query memory
+// cap. Every test boots pinned clickhouse/clickhouse-server builds — the
+// supported floor, builds a known upstream defect affects, and builds
+// carrying its fix — under container CPU and memory limits, drives
+// cerberus-emitted shapes through the production handlers and client, and
+// checks the observed server behaviour against the version policy
+// internal/chopt records for that build.
 //
 // The real-server tests carry the `integration` build tag (Docker required)
 // and run in the ch-server-safety job of strict-scan.yml through

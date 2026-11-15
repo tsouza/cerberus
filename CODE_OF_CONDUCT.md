@@ -34,7 +34,7 @@ This Code of Conduct applies within all community spaces — issues (bug reports
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behaviour may be reported to the project maintainer at **<tcostasouza@gmail.com>**. All complaints will be reviewed and investigated promptly and fairly. The maintainer is obligated to respect the privacy and security of the reporter of any incident.
+Instances of abusive, harassing, or otherwise unacceptable behaviour may be reported to the project maintainer at **<maintainers@cerberus.foo>**. All complaints will be reviewed and investigated promptly and fairly. The maintainer is obligated to respect the privacy and security of the reporter of any incident.
 
 ## Enforcement guidelines
 

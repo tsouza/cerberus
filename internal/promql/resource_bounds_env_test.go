@@ -74,6 +74,41 @@ func TestResourceBoundsFromEnv_ClassicBucketMergeOverride(t *testing.T) {
 	}
 }
 
+// TestResourceBoundsFromEnv_ClassicBucketWindowOverrides confirms each
+// classic window variable sets its own ceiling alone, leaving the other
+// unset for its derivation.
+func TestResourceBoundsFromEnv_ClassicBucketWindowOverrides(t *testing.T) {
+	t.Setenv(EnvClassicBucketWindowMaxCostUnits, "")
+	t.Setenv(EnvClassicBucketWindowSeriesMaxEntries, "")
+	got, err := ResourceBoundsFromEnv()
+	if err != nil {
+		t.Fatalf("ResourceBoundsFromEnv() error = %v", err)
+	}
+	if got.ClassicBucketWindowMaxCostUnits != 0 || got.ClassicBucketWindowSeriesMaxEntries != 0 {
+		t.Fatalf("unset window ceilings = (%d, %d), want (0, 0) for the derivation",
+			got.ClassicBucketWindowMaxCostUnits, got.ClassicBucketWindowSeriesMaxEntries)
+	}
+
+	t.Setenv(EnvClassicBucketWindowMaxCostUnits, "1234")
+	got, err = ResourceBoundsFromEnv()
+	if err != nil {
+		t.Fatalf("ResourceBoundsFromEnv() error = %v", err)
+	}
+	if got.ClassicBucketWindowMaxCostUnits != 1234 || got.ClassicBucketWindowSeriesMaxEntries != 0 {
+		t.Fatalf("window ceilings = (%d, %d), want (1234, 0)", got.ClassicBucketWindowMaxCostUnits, got.ClassicBucketWindowSeriesMaxEntries)
+	}
+
+	t.Setenv(EnvClassicBucketWindowMaxCostUnits, "")
+	t.Setenv(EnvClassicBucketWindowSeriesMaxEntries, "5678")
+	got, err = ResourceBoundsFromEnv()
+	if err != nil {
+		t.Fatalf("ResourceBoundsFromEnv() error = %v", err)
+	}
+	if got.ClassicBucketWindowMaxCostUnits != 0 || got.ClassicBucketWindowSeriesMaxEntries != 5678 {
+		t.Fatalf("window ceilings = (%d, %d), want (0, 5678)", got.ClassicBucketWindowMaxCostUnits, got.ClassicBucketWindowSeriesMaxEntries)
+	}
+}
+
 // TestResourceBoundsFromEnv_MalformedFailsFast confirms a non-integer value
 // on either var is a startup error rather than a silent fallback to the
 // default — the same fail-fast contract internal/solver/config_env.go's
@@ -86,6 +121,8 @@ func TestResourceBoundsFromEnv_MalformedFailsFast(t *testing.T) {
 	}{
 		{"histogram merge", func(t *testing.T) { t.Setenv(EnvHistogramMergeMaxCostUnits, "not-a-number") }},
 		{"classic bucket merge", func(t *testing.T) { t.Setenv(EnvClassicBucketMergeMaxEntries, "not-a-number") }},
+		{"classic bucket window", func(t *testing.T) { t.Setenv(EnvClassicBucketWindowMaxCostUnits, "not-a-number") }},
+		{"classic bucket window series", func(t *testing.T) { t.Setenv(EnvClassicBucketWindowSeriesMaxEntries, "not-a-number") }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.set(t)
@@ -106,7 +143,10 @@ func TestResourceBoundsFromEnv_NonPositiveFailsFast(t *testing.T) {
 	// exp-histogram window knob in particular, whose density-units sibling
 	// in internal/config reads an explicit 0 as "derive" while this file
 	// rejects it (see EnvExpHistogramWindowMaxCostUnits' own doc).
-	for _, key := range []string{EnvHistogramMergeMaxCostUnits, EnvClassicBucketMergeMaxEntries, EnvExpHistogramWindowMaxCostUnits} {
+	for _, key := range []string{
+		EnvHistogramMergeMaxCostUnits, EnvClassicBucketMergeMaxEntries, EnvExpHistogramWindowMaxCostUnits,
+		EnvClassicBucketWindowMaxCostUnits, EnvClassicBucketWindowSeriesMaxEntries,
+	} {
 		for _, v := range []string{"0", "-1"} {
 			t.Run(key+"="+v, func(t *testing.T) {
 				t.Setenv(key, v)
@@ -136,6 +176,15 @@ func TestResourceBounds_WithDefaults(t *testing.T) {
 	if DefaultResourceBounds().ClassicBucketMergeMaxEntries != 0 {
 		t.Fatal("DefaultResourceBounds must leave ClassicBucketMergeMaxEntries unset: it is derived from CHQueryMaxMemory, not a shipped constant")
 	}
+	if got, want := zero.ClassicBucketWindowMaxCostUnits, ClassicBucketWindowCostUnitsForMemory(0); got != want {
+		t.Fatalf("ClassicBucketWindowMaxCostUnits = %d for an unset cap, want the derived %d", got, want)
+	}
+	if got, want := zero.ClassicBucketWindowSeriesMaxEntries, ClassicBucketWindowSeriesEntriesForMemory(0); got != want {
+		t.Fatalf("ClassicBucketWindowSeriesMaxEntries = %d for an unset cap, want the derived %d", got, want)
+	}
+	if d := DefaultResourceBounds(); d.ClassicBucketWindowMaxCostUnits != 0 || d.ClassicBucketWindowSeriesMaxEntries != 0 {
+		t.Fatal("DefaultResourceBounds must leave both classic window ceilings unset: they are derived from CHQueryMaxMemory, not shipped constants")
+	}
 	// The exp-histogram ceiling is derived from the deployment's ClickHouse
 	// cap rather than defaulted from a constant, so it is absent from
 	// DefaultResourceBounds by design. A zero cap means the deployment
@@ -160,10 +209,12 @@ func TestResourceBounds_WithDefaults(t *testing.T) {
 	// which is what makes CERBERUS_PROMQL_EXP_HISTOGRAM_WINDOW_MAX_COST_UNITS
 	// an override rather than a suggestion.
 	explicit := ResourceBounds{
-		HistogramMergeMaxCostUnits:     7,
-		ClassicBucketMergeMaxEntries:   9,
-		ExpHistogramWindowMaxCostUnits: 11,
-		CHQueryMaxMemory:               64 * bytesPerGiB,
+		HistogramMergeMaxCostUnits:          7,
+		ClassicBucketMergeMaxEntries:        9,
+		ClassicBucketWindowMaxCostUnits:     13,
+		ClassicBucketWindowSeriesMaxEntries: 15,
+		ExpHistogramWindowMaxCostUnits:      11,
+		CHQueryMaxMemory:                    64 * bytesPerGiB,
 	}
 	if got := explicit.withDefaults(); got != explicit {
 		t.Fatalf("a fully-populated ResourceBounds.withDefaults() = %+v, want it unchanged: %+v", got, explicit)
@@ -191,6 +242,8 @@ func TestEnvVarNames(t *testing.T) {
 		{EnvHistogramMergeMaxCostUnits, "CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS"},
 		{EnvClassicBucketMergeMaxEntries, "CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES"},
 		{EnvClassicBucketMergeMaxCostUnitsRetired, "CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS"},
+		{EnvClassicBucketWindowMaxCostUnits, "CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_MAX_COST_UNITS"},
+		{EnvClassicBucketWindowSeriesMaxEntries, "CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_SERIES_MAX_ENTRIES"},
 	} {
 		if tc.got != tc.want {
 			t.Fatalf("env var name = %q, want %q", tc.got, tc.want)

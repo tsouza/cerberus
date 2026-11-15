@@ -543,6 +543,25 @@ samples_non_negative
 groupby_labels_present:resource.service.name
 
 -- name --
+metrics_rate_after_aggregate_filter
+# A metrics function after a spanset-aggregate filter observes every span of
+# each spanset the filter passes. Each seeded trace holds one root and 2-4
+# children, so `count() > 3` keeps the traces of four and five spans and the
+# rate counts all of their spans, not one row per trace.
+-- query --
+{ } | count() > 3 | rate()
+-- endpoint --
+metrics_range
+-- step --
+60s
+-- expected_min_series --
+1
+-- expected_max_series --
+1
+-- semantic_checks --
+samples_non_negative
+
+-- name --
 metrics_compare_status_error
 # `| compare({...}, topN)` — the baseline-vs-selection attribute split
 # Grafana Traces Drilldown's Comparison tab consumes. The differ
@@ -1724,3 +1743,46 @@ search
 400
 -- expect_grpc_code --
 InvalidArgument
+
+-- name --
+parenthesised_pipeline_then_spanset_rejected
+# A parenthesised pipeline cannot be followed by `|`: the reference grammar
+# begins a `|`-chained pipeline with a spanset expression built from spanset
+# filters alone, and no production lets a `|` follow the wrapped form. Both
+# backends reject it at parse ("syntax error: unexpected |, expecting
+# with"), so the status is 400, not the lowering 422 cerberus answered when
+# its parser took the query and lowering then refused the nested pipeline.
+#
+# Carries the gRPC sibling: the reference's streaming search maps the parse
+# failure to codes.InvalidArgument (modules/frontend/search_handlers.go,
+# newCombiner), and cerberus's grpcCodeFor maps ErrClassParse to the same
+# code (internal/api/tempo/grpc/errclass.go).
+-- query --
+({ } | count() > 1) | { }
+-- endpoint --
+search
+-- expect_status --
+400
+-- expect_grpc_code --
+InvalidArgument
+
+-- name --
+parenthesised_pipeline_then_metrics_rejected
+# The metrics form of the same syntax error. cerberus used to parse it and
+# then fail to emit the metric over the per-trace rows of the aggregate
+# filter, a 500; both backends now answer 400 at parse. The reference's
+# HTTP query-range handler turns the failed combiner build into
+# httpInvalidRequest (modules/frontend/metrics_query_range_handler.go).
+#
+# HTTP only: the reference's streaming MetricsQueryRange returns that same
+# combiner error unwrapped, which gRPC reports as codes.Unknown, while
+# cerberus answers codes.InvalidArgument as it does for every other parse
+# error. The HTTP status is the parity this case pins.
+-- query --
+({ } | count() > 1) | rate()
+-- endpoint --
+metrics_range
+-- step --
+60s
+-- expect_status --
+400

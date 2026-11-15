@@ -435,9 +435,13 @@ that cluster. Any one of them on an affected build keeps the override on for
 all queries; it is lifted only once every one of them answers from a fixed
 build. The optimization set is resolved against the same nodes, using the
 lowest build among them, so a feature the oldest node lacks stays off. A
-replica hidden behind a load balancer that neither setting names is seen only
-when a probe lands on it, so list every address or set the cluster when builds
-can differ across nodes.
+replica hidden behind a load balancer that neither setting names is read only
+when a probe lands on it; cerberus remembers each server a probe read and
+decides across all of them
+([Replicas behind a load balancer](clickhouse-optimizations.md#replicas-behind-a-load-balancer)).
+List every address, or set the cluster, when builds can differ across nodes:
+the whole fleet is then read on every probe, including the first one after
+cerberus starts.
 
 A server reporting a non-upstream version string (a vendor suffix such as
 `.altinitystable`, or an extra version field) is judged by its `major.minor`
@@ -529,6 +533,45 @@ that sets it starts and logs one startup warning naming
 `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES`. Remove it, and set
 `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` to an entry count when the
 default does not fit; a value of the ignored variable is not an entry count.
+
+### Classic-histogram window ceilings
+
+An instant `histogram_quantile` over a classic histogram — over `rate`,
+`increase` or `sum_over_time` of a bucket selector, or over the bare selector,
+with or without an aggregation around it — first reduces each series'
+in-window samples to one bucket ladder, then merges the ladders under the
+bucket-merge ceiling above. Two ceilings bound that per-series window stage,
+and both refuse a query before the stage folds anything:
+
+- **The query-wide ceiling**, checked before the stage collects a sample. A
+  pre-count reads the scan once more — its bucket-entry total (every row's
+  finite bounds plus its `+Inf` bucket, after any `le` matcher), its row count
+  and an approximate count of its series — and estimates the stage's memory in
+  bytes: 160 per series, 40 per entry of each series' bucket ladder, 12 per
+  further scanned entry, and 880 per entry of the mean series for the fold. A
+  query whose estimate exceeds the ceiling is refused with HTTP 422 and the
+  message `classic-histogram window exceeds the estimated-memory resource
+  bound`. Unset, the ceiling is derived from `CERBERUS_CH_QUERY_MAX_MEMORY` as
+  75% of the cap: `805306368` at the 1 GiB default, linear in the cap, and the
+  1 GiB value when the cap is `0`. Setting
+  `CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_MAX_COST_UNITS` to a positive value
+  pins it.
+- **The per-series ceiling**, checked once the stage has collected each
+  series and before it folds it. A series whose window holds more bucket
+  entries than the ceiling refuses the query with HTTP 422 and the message
+  `classic-histogram window exceeds the bucket-entries-per-series resource
+  bound`. Unset, it is derived from `CERBERUS_CH_QUERY_MAX_MEMORY` as half of
+  the quarter of the cap the query-wide ceiling leaves free, at 880 bytes per
+  entry: `152520` at the 1 GiB default, which is 2,990 samples of a 50-bucket
+  layout. Setting `CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_SERIES_MAX_ENTRIES` to
+  a positive entry count pins it.
+
+At the 1 GiB default, 58,000 series of one 50-bucket layout are admitted with
+up to 20 samples each in the window — a `[5m]` range at a 15-second scrape —
+and refused from 21. The calibration and its measurements are recorded with the
+constants in `internal/promql/classic_bucket_window_bound.go`. The ceilings are
+calibrated against ClickHouse running each query on two threads; a server that
+folds more series at once uses more memory per admitted query (#4128).
 
 ### Prometheus resource-attribute labels
 
