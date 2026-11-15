@@ -28,8 +28,8 @@ import (
 //     the cursor to sit exactly at end-of-line; one ending in `<_>`
 //     requires a NON-empty remainder ("foo bar baz" matches "<_> baz"
 //     but not "<_> bar");
-//  4. an empty line only matches an empty pattern (and vice versa: an
-//     empty pattern matches only empty lines).
+//  4. an empty line matches no pattern (an empty pattern is rejected at
+//     parse).
 //
 // Crucially Test is first-occurrence greedy, NOT a backtracking
 // regex: "abab" does NOT match "<_>ab" (the first "ab" occurrence
@@ -58,8 +58,6 @@ type patternLineFilter struct {
 	// EndsWithCapture reports whether the pattern's last node is a
 	// `<_>` wildcard (the remainder must then be non-empty).
 	EndsWithCapture bool
-	// Empty reports an empty pattern — matches only empty lines.
-	Empty bool
 }
 
 // parsePatternLineFilter validates `match` with the pattern parser (so
@@ -72,9 +70,6 @@ func parsePatternLineFilter(match string) (patternLineFilter, error) {
 	m, err := logpattern.ParseLineFilter([]byte(match))
 	if err != nil {
 		return patternLineFilter{}, fmt.Errorf("logql: invalid pattern line filter %q: %w", match, err)
-	}
-	if m.Empty() {
-		return patternLineFilter{Empty: true}, nil
 	}
 	runs := m.Literals()
 	lits := make([]string, len(runs))
@@ -108,10 +103,6 @@ func patternLineFilterExpr(match string, negated bool, body chplan.Expr) (chplan
 // expr renders the Test() walk for one parsed pattern over `line`.
 func (p patternLineFilter) expr(line chplan.Expr) chplan.Expr {
 	lineLen := &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{line}}
-	if p.Empty {
-		// Empty pattern ⇔ empty line.
-		return &chplan.Binary{Op: chplan.OpEq, Left: lineLen, Right: &chplan.LitInt{V: 0}}
-	}
 	if len(p.Literals) == 0 {
 		// Pure `<_>`: the cursor never moves off 0 and the pattern ends
 		// on a wildcard — matches exactly the non-empty lines. Rendered

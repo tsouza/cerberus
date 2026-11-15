@@ -24,8 +24,10 @@ var (
 	ErrInvalidExpr       = errors.New("invalid expression")
 )
 
-// errEmptyPattern rejects a pattern with no text at all.
-var errEmptyPattern = errors.New("syntax error: empty pattern")
+// errEmptyPattern rejects a pattern with no text before its end or its
+// first invalid UTF-8 sequence, in the reference's words: no token was
+// read, so the position is the first column.
+var errEmptyPattern = errors.New("parse error at line 1, col 1: syntax error: unexpected $end, expecting IDENTIFIER or LITERAL")
 
 // unnamedCapture is the capture name that matches without extracting.
 const unnamedCapture = "_"
@@ -241,9 +243,6 @@ func ParseLiterals(in string) ([][]byte, error) {
 
 // Names returns the named captures, in order.
 func (m *Matcher) Names() []string { return m.names }
-
-// Empty reports whether the pattern has no element at all.
-func (m *Matcher) Empty() bool { return m.empty() }
 
 // Literals returns the pattern's literal runs, in order.
 func (m *Matcher) Literals() [][]byte {

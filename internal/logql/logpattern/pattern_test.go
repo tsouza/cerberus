@@ -3,6 +3,7 @@ package logpattern
 import (
 	"bytes"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -484,6 +485,45 @@ func TestScan_PartShape(t *testing.T) {
 	for i := range want {
 		if got[i].name != want[i].name || !bytes.Equal(got[i].text, want[i].text) {
 			t.Errorf("part %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestMatcher_LineFilterStructure pins the structure a compiled line
+// filter reports: its literal runs in order, whether its first element is
+// a literal, and whether its last element is a capture. A pattern ends at
+// its first invalid UTF-8 sequence.
+func TestMatcher_LineFilterStructure(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		pattern           string
+		literals          []string
+		startsWithLiteral bool
+		endsWithCapture   bool
+	}{
+		{"a<_>b", []string{"a", "b"}, true, false},
+		{"<_>", nil, false, true},
+		{"<_> x <_>", []string{" x "}, false, true},
+		{"<_>><_>", []string{">"}, false, true},
+		{"a<_>_><_>", []string{"a", "_>"}, true, true},
+		{"<_><<_>", []string{"<"}, false, true},
+		{"a\xff<_>", []string{"a"}, true, false},
+		{"<_>\xffz", nil, false, true},
+		{"a\xef\xbf\xbd<_>", []string{"a�"}, true, true},
+	}
+	for _, c := range cases {
+		m, err := ParseLineFilter([]byte(c.pattern))
+		if err != nil {
+			t.Fatalf("ParseLineFilter(%q): %v", c.pattern, err)
+		}
+		var got []string
+		for _, l := range m.Literals() {
+			got = append(got, string(l))
+		}
+		if !slices.Equal(got, c.literals) || m.StartsWithLiteral() != c.startsWithLiteral || m.EndsWithCapture() != c.endsWithCapture {
+			t.Errorf("ParseLineFilter(%q): literals %q, starts with a literal %v, ends with a capture %v; want %q, %v, %v",
+				c.pattern, got, m.StartsWithLiteral(), m.EndsWithCapture(), c.literals, c.startsWithLiteral, c.endsWithCapture)
 		}
 	}
 }

@@ -28,8 +28,6 @@ func TestPatternLineFilter_LowersThePatternUpToInvalidUTF8(t *testing.T) {
 		// a literal; the truncated pattern ends on its capture.
 		{`{job="api"} |> "a <_>\xff z"`, `{job="api"} |> "a <_>"`},
 		{`{job="api"} |> "<_>\xffz"`, `{job="api"} |> "<_>"`},
-		// A valid encoding of U+FFFD is ordinary text.
-		{`{job="api"} |> "a\xef\xbf\xbd<_>"`, `{job="api"} |> "a` + "\uFFFD" + `<_>"`},
 	}
 	for _, c := range cases {
 		t.Run(c.query, func(t *testing.T) {

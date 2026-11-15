@@ -16,7 +16,6 @@ import (
 	"math/rand/v2"
 	"reflect"
 	"testing"
-	"unicode/utf8"
 
 	lokipattern "github.com/grafana/loki/v3/pkg/logql/log/pattern"
 )
@@ -196,8 +195,9 @@ func randomPattern(r *rand.Rand) []byte {
 	return out
 }
 
-// randomFiller is zero to two random runes, the text a generated line
-// puts around a pattern's literal runs.
+// randomFiller is zero to two random entries of the alphabet, some of
+// them invalid UTF-8, the text a generated line puts around a pattern's
+// literal runs.
 func randomFiller(r *rand.Rand) []byte { return randomText(r, 2) }
 
 func sameCaptures(a, b [][]byte) bool {
@@ -287,30 +287,14 @@ func TestPattern_RandomDifferential_MatchesLoki(t *testing.T) {
 	}
 }
 
-// compareErrors fails unless both sides accept, or both reject. A
-// validation rejection must also carry the same text; the empty pattern's
-// syntax error is the one rejection whose wording is not matched. A
-// pattern is empty when nothing precedes its first invalid UTF-8
-// sequence.
+// compareErrors fails unless both sides accept, or both reject with the
+// same text.
 func compareErrors(t *testing.T, fn string, p []byte, want, got error) {
 	t.Helper()
 	if (want == nil) != (got == nil) {
 		t.Fatalf("%s(%q) accept/reject: loki err=%v in-house err=%v", fn, p, want, got)
 	}
-	if want != nil && len(validUTF8Prefix(p)) > 0 && want.Error() != got.Error() {
+	if want != nil && want.Error() != got.Error() {
 		t.Fatalf("%s(%q) error text: loki=%q in-house=%q", fn, p, want, got)
 	}
-}
-
-// validUTF8Prefix is p up to its first invalid UTF-8 sequence.
-func validUTF8Prefix(p []byte) []byte {
-	end := 0
-	for end < len(p) {
-		r, size := utf8.DecodeRune(p[end:])
-		if r == utf8.RuneError && size == 1 {
-			break
-		}
-		end += size
-	}
-	return p[:end]
 }
