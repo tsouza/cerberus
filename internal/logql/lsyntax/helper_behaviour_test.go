@@ -75,6 +75,7 @@ func TestBinOpConstruction(t *testing.T) {
 	two := mustNewLiteralExpr("2", false)
 	bad := mustNewLiteralExpr("nope", false)
 	opts := &BinOpOptions{ReturnBool: true}
+	const badLiteral = `parse error : unable to parse literal as a float: strconv.ParseFloat: parsing "nope": invalid syntax`
 
 	errorCases := []struct {
 		name     string
@@ -86,9 +87,9 @@ func TestBinOpConstruction(t *testing.T) {
 		{"right not a sample", OpTypeAdd, rate, logs, "parse error : unexpected type for right leg of binary operation (+): *lsyntax.MatchersExpr"},
 		{"left reported first", OpTypeAdd, logs, logs, "parse error : unexpected type for left leg of binary operation (+): *lsyntax.MatchersExpr"},
 		{"leg types before literal values", OpTypeAdd, bad, logs, "parse error : unexpected type for right leg of binary operation (+): *lsyntax.MatchersExpr"},
-		{"left literal error", OpTypeAdd, bad, rate, bad.err.Error()},
-		{"right literal error", OpTypeAdd, rate, bad, bad.err.Error()},
-		{"literal values before the logical check", OpTypeAnd, one, bad, bad.err.Error()},
+		{"left literal error", OpTypeAdd, bad, rate, badLiteral},
+		{"right literal error", OpTypeAdd, rate, bad, badLiteral},
+		{"literal values before the logical check", OpTypeAnd, one, bad, badLiteral},
 		{"logical left literal", OpTypeAnd, one, rate, "parse error : unexpected literal for left leg of logical/set binary operation (and): 1.000000"},
 		{"logical right literal", OpTypeOr, rate, two, "parse error : unexpected literal for right leg of logical/set binary operation (or): 2.000000"},
 		{"logical left reported first", OpTypeUnless, one, two, "parse error : unexpected literal for left leg of logical/set binary operation (unless): 1.000000"},

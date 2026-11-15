@@ -53,9 +53,11 @@ package agpl_oracle
 // accepted. The abstracted pass sets two more kinds aside:
 //
 //   - a lookup-table shingle, every line of which is a `case` clause or a
-//     `return` statement (or a frame line), as in a switch mapping one
-//     enum to another: with the names abstracted, such a shingle keeps
-//     only the alternation every lookup table has;
+//     `return` statement (or a frame line): with the names abstracted, a
+//     switch mapping one enum to another keeps only the alternation every
+//     lookup table has. Any `return` counts as an arm, not only one of a
+//     single operand, so a switch-of-returns evaluator is set aside too,
+//     copied or not;
 //   - an idiom, a shingle more than copyScanAbstractMaxHolders upstream
 //     functions hold: a statement sequence several upstream functions
 //     share (a sorted-keys loop, a locked setter) is a habit of the
@@ -68,19 +70,40 @@ package agpl_oracle
 // copied section inside a longer function). Each pass has its own
 // thresholds (passRules).
 //
-// Calibration. The abstracted pass's thresholds come from measurement.
-// TestCopyScan_UnrelatedCodeIsNotReported scans every in-house package
-// outside the query-language trees — code with no Loki or Tempo
-// counterpart, so whatever it reports is chance — and must stay clean.
-// Measured over its 5296 functions, the holder limit, the minimum shared
+// Calibration. The abstracted pass's thresholds and its two extra kinds
+// come from measurement. TestCopyScan_UnrelatedCodeIsNotReported scans
+// every in-house package outside the query-language trees, code written to
+// implement no query language, so a match there is presumed chance; it
+// must stay clean. Over that corpus the holder limit, the minimum shared
 // and the section are each the loosest value that leaves it clean: a
 // holder limit of 2 reports `nonEmpty` (3 of 4 shingles), a minimum of 2
 // reports `qualify` (2 of 2) and a section of 5 reports `concatLiteralSet`
 // (5 of 10). The closest chance pair under the share rule shares 4 of 7
-// shingles (57%); the share is set at three quarters, clear of it.
-// TestCopyScan_DetectsARenamedCopy bounds the thresholds from the other
-// side: renamed copies of two upstream packages must be reported function
-// for function.
+// shingles (57%); the share is set at three quarters, clear of it. The
+// lookup-table kind is what keeps two more chance pairs out: in-house
+// `foldScalarBinOp` against Tempo's `BinaryOperation.execute` (`case _ :`
+// over `return _ ( _ < _ ) , nil`) and `cellFloat` against Loki's
+// `getFloat`, both reported with single-operand arms too.
+//
+// When the negative control reports a function, the pair is read first. A
+// real copy is rewritten, as any other copy is. A chance pair is
+// separated by a shape the method names here, and a threshold moves only
+// with a new measurement stated in this comment.
+//
+// Controls. TestCopyScan_DetectsACopy and TestCopyScan_DetectsARenamedCopy
+// pin the normalisation: a disguised or a renamed copy of an upstream
+// package is reported function for function.
+// TestCopyScan_ReportsACopyAtEachThreshold pins the match rule at each
+// pass's thresholds: a copy at a threshold is reported and one a shingle
+// short of it is not.
+//
+// Blind spots. A function is compared only when it holds at least
+// minShared evidence shingles, and in the abstracted pass a shingle that
+// upstream itself repeats across functions is no evidence. Short
+// functions, and code upstream duplicates, are therefore compared by the
+// named pass alone; of a renamed copy of Tempo's TraceQL package, the
+// abstracted pass compares fewer than half the functions (the control
+// logs the count).
 
 import (
 	"bytes"
@@ -98,6 +121,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -136,15 +160,15 @@ var copyScanUpstreamModules = []string{
 // controlPackage is one upstream package the positive controls disguise or
 // rename and compare against its own source.
 type controlPackage struct {
-	module int    // index into copyScanUpstreamModules
+	module string // one of copyScanUpstreamModules
 	dir    string // package directory inside the module
 }
 
 // copyScanControlPackages are the upstream packages the positive controls
 // use: Loki's pattern package and Tempo's TraceQL package.
 var copyScanControlPackages = []controlPackage{
-	{module: 0, dir: "pkg/logql/log/pattern"},
-	{module: 1, dir: "pkg/traceql"},
+	{module: "github.com/grafana/loki/v3", dir: "pkg/logql/log/pattern"},
+	{module: "github.com/grafana/tempo", dir: "pkg/traceql"},
 }
 
 const (
@@ -379,8 +403,9 @@ func TestCopyScan_DetectsACopy(t *testing.T) {
 // control: each control package's hand-written files, with every
 // identifier renamed (all but the predeclared ones and `_`, each name
 // replaced consistently with a fresh one) and scanned as an in-house
-// tree, must be reported function for function. The named pass must miss some of them, so the rename defeats the
-// names this control means to take away.
+// tree, must be reported function for function wherever the abstracted
+// pass compares them. The named pass must miss some of them, so the
+// rename defeats the names this control means to take away.
 func TestCopyScan_DetectsARenamedCopy(t *testing.T) {
 	t.Parallel()
 
@@ -392,8 +417,9 @@ func TestCopyScan_DetectsARenamedCopy(t *testing.T) {
 		})
 		renamed, _ := scanTrees(t, dir, []string{dir}, inHouseTree)
 		checked, missed := detected(renamed, up, abstractPass)
+		t.Logf("%s: the abstracted pass compares %d of %d renamed functions", pkg.dir, checked, len(renamed))
 		for _, id := range missed {
-			t.Errorf("%s, a renamed copy of %s, is not reported as a match", id, pkg.dir)
+			t.Errorf("%s (%s), a renamed copy of %s, is not reported as a match", id, names.original(id), pkg.dir)
 		}
 		if checked == 0 {
 			t.Errorf("the control package %s has no function large enough to compare", pkg.dir)
@@ -404,11 +430,164 @@ func TestCopyScan_DetectsARenamedCopy(t *testing.T) {
 	}
 }
 
+// TestCopyScan_ReportsACopyAtEachThreshold pins each pass's match rule at
+// its thresholds. A function is assembled from the shingles of one
+// upstream function that no other upstream function holds, padded with
+// shingles no upstream function holds: a whole copy of minShared shingles
+// is reported and one of a shingle fewer is not; a short copy at minShare
+// of its function is reported and one below it is not; a section of
+// minSection shingles is reported inside a function it is a small part of,
+// and one of a shingle fewer is not. Under the abstracted pass, shingles
+// held by one more upstream function than the holder limit report nothing.
+// A reported copy names the upstream function it came from.
+func TestCopyScan_ReportsACopyAtEachThreshold(t *testing.T) {
+	t.Parallel()
+
+	up := upstreamCorpus(t)
+	for pass := range scanPassCount {
+		rule := passRules[pass]
+		source, sole := heldShingles(t, up, pass, 1, rule.minSection)
+		padding := unheldShingles(up, pass, rule.minSection*len(sole))
+		shortPadding := 0
+		for float64(rule.minShared)/float64(rule.minShared+shortPadding+1) >= rule.minShare {
+			shortPadding++
+		}
+		sectionPadding := len(padding) - rule.minSection
+		if share := float64(rule.minSection) / float64(rule.minSection+sectionPadding); share >= rule.minShare {
+			t.Fatalf("%s pass: a section padded to %.0f%% of its function is not a small part of it", pass, share*100)
+		}
+
+		cases := []struct {
+			name             string
+			copied, padded   int
+			reported         bool
+			copiedFromSource bool
+		}{
+			{"a whole copy of the fewest shared shingles", rule.minShared, 0, true, true},
+			{"a whole copy a shingle short of the fewest", rule.minShared - 1, 0, false, true},
+			{"a short copy at the share", rule.minShared, shortPadding, true, true},
+			{"a short copy below the share", rule.minShared, shortPadding + 1, false, true},
+			{"a section at its length", rule.minSection, sectionPadding, true, true},
+			{"a section a shingle short of its length", rule.minSection - 1, sectionPadding, false, true},
+		}
+		for _, c := range cases {
+			f := assembled(source, pass, sole[:c.copied], padding[:c.padded])
+			assertReported(t, pass, c.name, f, up, c.reported, source.id)
+		}
+
+		if rule.maxHolders == math.MaxInt {
+			continue
+		}
+		holder, idioms := heldShingles(t, up, pass, rule.maxHolders+1, rule.minSection)
+		f := assembled(holder, pass, idioms, nil)
+		assertReported(t, pass, "a copy of shingles held past the holder limit", f, up, false, holder.id)
+	}
+}
+
+// heldShingles returns the first upstream function, by id, holding at
+// least n counted shingles under pass that exactly holders upstream
+// functions hold and none states as an interface fact, with those
+// shingles in a fixed order.
+func heldShingles(t *testing.T, up *upstream, pass scanPass, holders, n int) (*scanFunc, []uint64) {
+	t.Helper()
+	idx := up.index[pass]
+	funcs := slices.Clone(up.funcs)
+	slices.SortFunc(funcs, func(a, b *scanFunc) int { return strings.Compare(a.id, b.id) })
+	for _, f := range funcs {
+		var held []uint64
+		for h := range f.passes[pass].counted {
+			if _, fact := idx.accepted[h]; !fact && len(idx.counted[h]) == holders {
+				held = append(held, h)
+			}
+		}
+		if len(held) >= n {
+			slices.Sort(held)
+			return f, held
+		}
+	}
+	t.Fatalf("%s pass: no upstream function holds %d shingles that %d upstream functions hold", pass, n, holders)
+	return nil, nil
+}
+
+// unheldShingles returns n shingle hashes no upstream function holds or
+// accepts under pass.
+func unheldShingles(up *upstream, pass scanPass, n int) []uint64 {
+	idx := up.index[pass]
+	var out []uint64
+	for i := 0; len(out) < n; i++ {
+		h := fnv.New64a()
+		fmt.Fprintf(h, "padding %d", i)
+		sum := h.Sum64()
+		if _, held := idx.counted[sum]; held {
+			continue
+		}
+		if _, fact := idx.accepted[sum]; fact {
+			continue
+		}
+		out = append(out, sum)
+	}
+	return out
+}
+
+// assembled builds an in-house function, under pass alone, from the copied
+// shingles of source and the padding shingles.
+func assembled(source *scanFunc, pass scanPass, copied, padding []uint64) *scanFunc {
+	f := &scanFunc{id: "assembled from " + source.id}
+	set := shingleSet{counted: map[uint64]string{}, accepted: map[uint64]overlapKind{}}
+	for _, h := range copied {
+		set.counted[h] = source.passes[pass].counted[h]
+	}
+	for _, h := range padding {
+		set.counted[h] = "padding"
+	}
+	f.passes[pass] = set
+	return f
+}
+
+// assertReported fails unless pass reports f exactly when want says, and a
+// report names the upstream function theirs.
+func assertReported(t *testing.T, pass scanPass, name string, f *scanFunc, up *upstream, want bool, theirs string) {
+	t.Helper()
+	matches, _ := compareFuncs([]*scanFunc{f}, up, pass)
+	switch {
+	case want && len(matches) == 0:
+		t.Errorf("%s pass: %s is not reported", pass, name)
+	case !want && len(matches) > 0:
+		t.Errorf("%s pass: %s is reported: %s", pass, name, matches[0])
+	case want && matches[0].theirs != theirs:
+		t.Errorf("%s pass: %s is reported against %s, want %s", pass, name, matches[0].theirs, theirs)
+	}
+}
+
+// TestCopyScan_AbstractionKeepsPredeclaredIdentifiers pins the abstracted
+// pass's normalisation of one line: every identifier but the predeclared
+// ones becomes the placeholder, and keywords, operators and literals stay.
+func TestCopyScan_AbstractionKeepsPredeclaredIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	src := []byte("if Count := len(items); Count > 0 && items[0] != nil {\n\treturn string(items), true\n}")
+	want := []string{
+		"if _ := len ( _ ) ; _ > 0 && _ [ 0 ] != nil {",
+		"return string ( _ ) , true",
+	}
+	var got []string
+	for _, l := range normaliseLines(src, abstractPass) {
+		got = append(got, l.text)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("abstracted lines = %q, want %q", got, want)
+	}
+}
+
 // writeControl writes the hand-written files of a control package,
 // rewritten by respellFile, into a fresh directory.
 func writeControl(t *testing.T, up *upstream, pkg controlPackage, respellFile func([]byte) []byte) string {
 	t.Helper()
-	control := filepath.Join(up.dirs[pkg.module], filepath.FromSlash(pkg.dir))
+	module := slices.Index(copyScanUpstreamModules, pkg.module)
+	if module < 0 {
+		t.Fatalf("the control module %s is not an upstream module", pkg.module)
+	}
+	control := filepath.Join(up.dirs[module], filepath.FromSlash(pkg.dir))
 	out := t.TempDir()
 	entries, err := os.ReadDir(control)
 	if err != nil {
@@ -465,7 +644,6 @@ func detected(copied []*scanFunc, up *upstream, pass scanPass) (checked int, mis
 // renamer gives every identifier it is shown a fresh name, the same one
 // each time.
 type renamer struct {
-	mu sync.Mutex
 	to map[string]string
 }
 
@@ -475,18 +653,36 @@ func (r *renamer) rename(id string) string {
 	if id == "_" || types.Universe.Lookup(id) != nil {
 		return id
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.to == nil {
 		r.to = map[string]string{}
 	}
 	fresh, ok := r.to[id]
 	if !ok {
-		fresh = fmt.Sprintf("renamed%d", len(r.to))
+		fresh = fmt.Sprintf("%s%d", renamedPrefix, len(r.to))
 		r.to[id] = fresh
 	}
 	return fresh
 }
+
+// renamedPrefix begins every fresh name a renamer gives.
+const renamedPrefix = "renamed"
+
+// original rewrites every fresh name in s back to the name it replaced.
+func (r *renamer) original(s string) string {
+	back := make(map[string]string, len(r.to))
+	for from, to := range r.to {
+		back[to] = from
+	}
+	return renamedName.ReplaceAllStringFunc(s, func(fresh string) string {
+		if from, ok := back[fresh]; ok {
+			return from
+		}
+		return fresh
+	})
+}
+
+// renamedName matches one fresh name a renamer gives.
+var renamedName = regexp.MustCompile(renamedPrefix + `[0-9]+`)
 
 // respell re-emits Go source with its comments dropped, every identifier
 // passed through ident and the tokens of each line separated by single

@@ -270,7 +270,7 @@ func TestLog2QuantileWithBucket_Behaviour(t *testing.T) {
 		{"an empty bucket before the target is passed over", 1, []histogramBucket{{Max: 2, Count: 1}, {Max: 4}, {Max: 8, Count: 1}}, 8, 2},
 		{"an empty predecessor still bounds the interpolation", 0.75, []histogramBucket{{Max: 2, Count: 2}, {Max: 4}, {Max: 8, Count: 2}}, math.Pow(2, 2.5), 2},
 		{"a target past the last sample extrapolates in the last bucket", 2, []histogramBucket{{Max: 2, Count: 1}, {Max: 4, Count: 1}}, 8, 1},
-		{"fractional position", 0.4, []histogramBucket{{Max: 1, Count: 2}, {Max: 16, Count: 8}}, math.Pow(2, 4*(2.0/8)), 1},
+		{"fractional position", 0.4, []histogramBucket{{Max: 1, Count: 2}, {Max: 16, Count: 8}}, 2, 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
