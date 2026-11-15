@@ -1700,7 +1700,6 @@ jobs:
             --include-fragments \
             --root-dir "$GITHUB_WORKSPACE" \
             --exclude-path compatibility/prometheus/upstream \
-            --exclude-path compatibility/loki/upstream \
             --exclude-path node_modules \
             "**/*.md"
 

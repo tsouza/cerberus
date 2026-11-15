@@ -28,8 +28,10 @@ try {
   if (actualSHA256 !== sourceSHA256) throw new Error(`source archive checksum mismatch: ${actualSHA256}`);
   writeFileSync(archivePath, archive);
   run('tar', ['-xzf', archivePath, '--strip-components=1', '-C', sourceDir]);
-  run('git', ['apply', '--check', patchPath]);
-  run('git', ['apply', patchPath]);
+  // The patch carries no upstream context lines (only the inserted guard), so
+  // it applies by line number against the checksum-pinned archive.
+  run('git', ['apply', '--unidiff-zero', '--check', patchPath]);
+  run('git', ['apply', '--unidiff-zero', patchPath]);
   // The upstream prebuild reads git HEAD; the verified release archive has no .git.
   writeFileSync(path.join(sourceDir, 'src/version.ts'), `export const GIT_COMMIT = '${sourceCommit}';\n`);
   run('corepack', ['pnpm', 'install', '--frozen-lockfile']);

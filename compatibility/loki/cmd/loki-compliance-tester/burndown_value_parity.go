@@ -4,7 +4,7 @@ package main
 // burndown (mirrors the detected_fields pass pattern in
 // detected_fields.go).
 //
-// The vendored loki-bench corpus exercises none of the operator
+// The upstream bench corpus exercises none of the operator
 // shapes cerberus historically 422'd — vector set ops, the `bool`
 // modifier on arithmetic, ip() line/label filters, `|>` / `!>`
 // pattern filters, first/last_over_time, absent_over_time,
@@ -45,9 +45,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/grafana/loki/v3/pkg/logproto"
-
-	bench "github.com/tsouza/cerberus/compatibility/loki/upstream/loki-bench"
+	"github.com/tsouza/cerberus/compatibility/loki/corpus"
 )
 
 // burndownSource is the report `testCase.source` for this pass.
@@ -67,7 +65,7 @@ const (
 // format / unwrappable field) surface as one UnexpectedFailure result
 // so the report shows the broken precondition instead of silently
 // shrinking the denominator.
-func compareBurndownValueParity(c *http.Client, f flags, metadata *bench.DatasetMetadata) []Result {
+func compareBurndownValueParity(c *http.Client, f flags, metadata *corpus.Metadata) []Result {
 	cases, err := burndownCases(metadata)
 	if err != nil {
 		return []Result{{
@@ -94,14 +92,14 @@ func compareBurndownValueParity(c *http.Client, f flags, metadata *bench.Dataset
 //     logfmt format and the `duration` unwrappable field. Drives the
 //     first/last_over_time unwrap cases (the corpus' proven
 //     `| logfmt | duration != "" | unwrap duration(duration)` shape).
-func burndownCases(metadata *bench.DatasetMetadata) ([]bench.TestCase, error) {
+func burndownCases(metadata *corpus.Metadata) ([]corpus.Case, error) {
 	jsonSels := metadata.ByServiceName["web-server"]
 	if len(jsonSels) == 0 {
 		return nil, fmt.Errorf("burndown: dataset metadata has no web-server selectors (required for ip()/pattern cases)")
 	}
 	selJSON := jsonSels[0]
 
-	durSels := intersectSorted(metadata.ByFormat[bench.LogFormatLogfmt], metadata.ByUnwrappableField["duration"])
+	durSels := intersectSorted(metadata.ByFormat[corpus.LogFormatLogfmt], metadata.ByUnwrappableField["duration"])
 	if len(durSels) == 0 {
 		return nil, fmt.Errorf("burndown: dataset metadata has no logfmt selector with an unwrappable `duration` field (required for first/last_over_time cases)")
 	}
@@ -167,21 +165,21 @@ func burndownCases(metadata *bench.DatasetMetadata) ([]bench.TestCase, error) {
 	// that edge could not produce a diff — which meant this pass could
 	// not see cerberus emitting an inclusive `end` on the entry path
 	// either.
-	cases := make([]bench.TestCase, 0, len(queries))
+	cases := make([]corpus.Case, 0, len(queries))
 	for _, def := range queries {
-		tc := bench.TestCase{
-			Query:     def.query,
-			Start:     start,
-			End:       end,
-			Direction: logproto.FORWARD,
-			Source:    burndownSource,
-			QueryDesc: def.desc,
-			Tags:      []string{"wrong-rejection-burndown"},
+		tc := corpus.Case{
+			Query:       def.query,
+			Start:       start,
+			End:         end,
+			Direction:   corpus.Forward,
+			Source:      burndownSource,
+			Description: def.desc,
+			Tags:        []string{"wrong-rejection-burndown"},
 		}
 		if def.kind == "metric" {
 			tc.Step = burndownStep
 		} else {
-			tc.Direction = logproto.BACKWARD
+			tc.Direction = corpus.Backward
 		}
 		cases = append(cases, tc)
 	}

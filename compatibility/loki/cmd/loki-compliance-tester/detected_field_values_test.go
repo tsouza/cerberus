@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	bench "github.com/tsouza/cerberus/compatibility/loki/upstream/loki-bench"
+	"github.com/tsouza/cerberus/compatibility/loki/corpus"
 )
 
 // The values pass exists because Logs Drilldown populates its filter
@@ -77,12 +77,12 @@ const (
 	valuesBodyNone = `{"values":[],"limit":1000}`
 )
 
-func fieldValuesMetadata() *bench.DatasetMetadata {
-	return &bench.DatasetMetadata{
+func fieldValuesMetadata() *corpus.Metadata {
+	return &corpus.Metadata{
 		ByServiceName: map[string][]string{
 			"api": {`{service_name="api"}`},
 		},
-		TimeRange: bench.TimeRange{
+		TimeRange: corpus.Window{
 			Start: time.Unix(1700000000, 0).UTC(),
 			End:   time.Unix(1700086400, 0).UTC(),
 		},

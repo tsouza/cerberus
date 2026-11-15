@@ -1131,11 +1131,10 @@ func lowerUnaryMinus(u traceql.UnaryOperation, s schema.Traces, j lookupJoin) (c
 //     compound AND/OR): reference silently drops the NOT operand,
 //     behaving as if it were that combinator's identity element —
 //     `x && !(<comparison>)` ≡ `x`, `x || !(<comparison>)` ≡ `x`. See
-//     const_boolean_true_matches_all in
-//     compatibility/tempo/driver/corpus/smoke.txtar (`("foo" != "bar")
-//     && !("foo" = "bar")`, an AND-operand case) and
 //     test/spec/traceql/unary_not_or_composition.txtar (an OR-operand
-//     case) for corpus/fixture pins of this behaviour.
+//     case) for a fixture pin of this behaviour. Reference evaluates a
+//     NOT over a comparison between two statics instead of dropping it,
+//     which this rule does not yet distinguish (#4139).
 //
 // Everything else — an AND/OR-operand NOT wrapping a compound (AND/OR)
 // sub-expression — is genuinely unresolved: differential probing showed

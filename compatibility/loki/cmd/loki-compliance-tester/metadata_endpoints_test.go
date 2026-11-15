@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	bench "github.com/tsouza/cerberus/compatibility/loki/upstream/loki-bench"
+	"github.com/tsouza/cerberus/compatibility/loki/corpus"
 )
 
 // metadataStub is an in-memory Loki-shaped metadata backend: a handful
@@ -210,9 +210,9 @@ func newMetadataStub(t *testing.T, stub *metadataStub) *httptest.Server {
 	return srv
 }
 
-func metadataTestWindow() *bench.DatasetMetadata {
-	return &bench.DatasetMetadata{
-		TimeRange: bench.TimeRange{
+func metadataTestWindow() *corpus.Metadata {
+	return &corpus.Metadata{
+		TimeRange: corpus.Window{
 			Start: time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC),
 			End:   time.Date(2026, 5, 12, 0, 0, 0, 0, time.UTC),
 		},
@@ -577,7 +577,7 @@ func TestDecodeMetadataBody_Shapes(t *testing.T) {
 // into a no-op.
 func TestMetadataFixedCases_TieBreakLimitCutsTiedRows(t *testing.T) {
 	t.Parallel()
-	metadata, err := bench.LoadMetadata(filepath.Join("..", ".."))
+	metadata, err := corpus.LoadMetadata(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatalf("LoadMetadata: %v", err)
 	}

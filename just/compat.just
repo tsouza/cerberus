@@ -19,9 +19,10 @@ compat-promql-down:
 # === Compatibility (LogQL — Loki compatibility harness) ===
 
 # Run the LogQL compatibility harness end-to-end. Brings up reference
-# Loki + cerberus + ClickHouse, seeds both, builds the diff driver from
-# the vendored upstream/loki-bench corpus, runs TestRemoteStorageEquality
-# against both endpoints, writes compatibility/loki/reports/diff.json.
+# Loki + cerberus + ClickHouse, seeds both, builds the diff driver, runs
+# the upstream grafana/loki pkg/logql/bench corpus (read from the pinned
+# module in the Go module cache) plus cerberus-queries/ against both
+# endpoints, writes compatibility/loki/reports/diff.json.
 # See compatibility/loki/README.md for the harness layout.
 
 # Run the LogQL compatibility harness end-to-end. Slow; expect minutes.
@@ -68,7 +69,7 @@ compat-traceql-down:
 # === Compatibility — all three heads ===
 
 # Run all three compatibility harnesses sequentially: PromQL
-# (prometheus/compliance), LogQL (vendored grafana/loki:pkg/logql/bench
+# (prometheus/compliance), LogQL (grafana/loki:pkg/logql/bench corpus
 # + cerberus-owned tester), TraceQL (TXTAR corpus + cerberus-owned
 # differ over /api/search + tags + metrics endpoints). Each sub-recipe
 # tears its own compose stack down on every exit path.

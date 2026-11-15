@@ -3,6 +3,7 @@
   "head": "tempo",
   "bucket": "2a",
   "cases": [
-    "metrics_instant | metrics_rate_instant"
+    "metrics_instant | metrics_rate_instant",
+    "search | scoped_span_kind_consumer"
   ]
 }

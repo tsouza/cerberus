@@ -448,7 +448,7 @@
       "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
       "evidence_class": "reference",
       "independence_group": "reference-stream-row-differential",
-      "test_ref": "compatibility/loki",
+      "test_ref": "compatibility/loki/cmd/loki-compliance-tester",
       "status": "active"
     },
     {
@@ -493,7 +493,7 @@
       "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
       "evidence_class": "reference",
       "independence_group": "range-aggregation-reference-differential",
-      "test_ref": "compatibility/loki/upstream/loki-bench/queries/exhaustive/aggregations.yaml",
+      "test_ref": "compatibility/loki/cmd/loki-compliance-tester",
       "status": "active"
     },
     {
@@ -709,7 +709,7 @@
       "verifier": "VERIFIER-REFERENCE-DIFFERENTIAL",
       "evidence_class": "reference",
       "independence_group": "logql-wire-parity",
-      "test_ref": "compatibility/loki",
+      "test_ref": "compatibility/loki/cmd/loki-compliance-tester",
       "status": "active"
     },
     {

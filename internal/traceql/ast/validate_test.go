@@ -579,9 +579,10 @@ func TestParseRejectsNilComparisonOnIntrinsic(t *testing.T) {
 		query string
 		want  string // the attribute the message must name
 	}{
-		// The three forms issue #3260 reports, in the reference's own
-		// invalid-query corpus (pkg/traceql/test_examples.yaml). The
-		// scoped spelling names itself in the message (#3270) — the
+		// The three forms issue #3260 reports; the reference rejects
+		// each of them (its pkg/traceql/test_examples.yaml lists them
+		// as invalid). The scoped spelling names itself in the message
+		// (#3270) — the
 		// reference does the same, since it never canonicalises
 		// span:status onto its bare twin either.
 		{`{ span:status = nil }`, "span:status"},

@@ -3,6 +3,7 @@
   "head": "tempo-grpc",
   "bucket": "3e",
   "cases": [
-    "search | resource_service_name_eq_nil_rejected"
+    "search | resource_service_name_eq_nil_rejected",
+    "search | scoped_event_name_absent"
   ]
 }

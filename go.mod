@@ -401,6 +401,4 @@ replace (
 	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger => github.com/tsouza/opentelemetry-collector-contrib/pkg/translator/jaeger v0.0.5-cerberus-ddl
 )
 
-ignore ./compatibility/loki/upstream
-
 tool golang.org/x/tools/cmd/goimports
