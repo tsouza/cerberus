@@ -287,11 +287,11 @@ func unwrapPostFilterHasMarks(t *testing.T, query string) bool {
 	}
 
 	innerLc := lc.withMatcherWindowExtension(ra.Left.Interval + ra.Left.Offset)
-	rows, labelsExpr, err := lowerLogRange(ra.Left, s, innerLc)
+	rows, labelsExpr, level, err := lowerLogRange(ra.Left, s, innerLc)
 	if err != nil {
 		t.Fatalf("lowerLogRange: %v", err)
 	}
-	_, hasMarks, err := applyUnwrapPostFilters(rows, ra.Left.Unwrap.PostFilters, s, labelsExpr)
+	_, hasMarks, err := applyUnwrapPostFilters(rows, ra.Left.Unwrap.PostFilters, s, labelsExpr, level)
 	if err != nil {
 		t.Fatalf("applyUnwrapPostFilters: %v", err)
 	}

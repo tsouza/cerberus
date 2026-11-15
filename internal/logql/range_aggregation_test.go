@@ -525,7 +525,7 @@ func TestLowerRangeAggregationExtendsMatcherWindowByIntervalPlusOffset(t *testin
 	}
 }
 
-// TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn pins that
+// TestLowerRangeAggregationOuterByWithoutParserReadsRawColumn pins that
 // an outer `by (...)` over a pipeline with no parser stage resolves its
 // key off the raw ResourceAttributes column.
 //
@@ -538,7 +538,7 @@ func TestLowerRangeAggregationExtendsMatcherWindowByIntervalPlusOffset(t *testin
 // (parser_merge_materialise_mutation_test.go): on this fixture the
 // merged map and the raw column are the same column, so the emitted SQL
 // cannot tell them apart.
-func TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn(t *testing.T) {
+func TestLowerRangeAggregationOuterByWithoutParserReadsRawColumn(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelLogs()
@@ -580,14 +580,12 @@ func TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn(t *testing.T) {
 	}
 }
 
-// TestLowerRangeAggregationParserUnwrapMaterialisesIntermediateColumn
-// pins that an unwrap over a parser stage reads its series identity off
-// the merged labels column: the identity carries the conversion-error
+// TestLowerRangeAggregationParserUnwrapIdentityReadsLabelsColumn pins
+// that an unwrap over a parser stage reads its series identity off the
+// row stage's labels column: the identity carries the conversion-error
 // bypass `if(mapContains(<labels>, '__error__'), ...)` over the
-// `_logql_unwrap_labels` column, which [unwrapSeriesIdentity] builds
-// only when [mergedLabelsColumn] returned that column. With a nil merged
-// column the identity is the bare strip and the bypass is absent.
-func TestLowerRangeAggregationParserUnwrapMaterialisesIntermediateColumn(t *testing.T) {
+// `_logql_unwrap_labels` column ([unwrapSeriesIdentity]).
+func TestLowerRangeAggregationParserUnwrapIdentityReadsLabelsColumn(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelLogs()
@@ -595,8 +593,6 @@ func TestLowerRangeAggregationParserUnwrapMaterialisesIntermediateColumn(t *test
 	end := start.Add(time.Hour)
 	step := time.Minute
 
-	// Parser stage `| logfmt` makes the labels map a parser-merged
-	// column, so [mergedLabelsColumn] returns it.
 	query := `sum_over_time({app="api"} | logfmt | unwrap latency [5m])`
 	expr, err := syntax.ParseExpr(query)
 	if err != nil {

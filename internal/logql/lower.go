@@ -120,15 +120,39 @@ type lowerCtx struct {
 	// recursion level.
 	logLineWindow bool
 
-	// variantArm marks the lowering of one arm of a `variants(...) of
-	// (...)` query. Every arm reads the same log range and differs only
-	// in its range function, and [fuseVariantArms] fuses arms whose row
-	// stages are identical. The only table column a range function's
-	// value reads is the log line, so a variant arm carries the line
-	// through its row stage whether or not its own function reads it,
-	// which keeps `count_over_time` and `bytes_over_time` arms over one
-	// range on the same row stage.
-	variantArm bool
+	// variantArmsReadLine marks the lowering of one arm of a
+	// `variants(...) of (...)` query whose arms include a range function
+	// that reads the log line ([readsLogLine]). Every arm reads the same
+	// log range and differs only in its range function, and
+	// [fuseVariantArms] fuses arms whose row stages are identical. The log
+	// line is the only table column a range function's value reads, so
+	// when one arm reads it every arm carries it through its row stage,
+	// which keeps a `count_over_time` arm and a `bytes_over_time` arm over
+	// one range on the same row stage.
+	variantArmsReadLine bool
+
+	// row is the row stage the pipeline's label filters are lowered
+	// onto; see [filterRow].
+	row filterRow
+}
+
+// filterRow is the row stage a label filter is lowered onto. level is
+// the stage's normalised `detected_level` column ([defineDetectedLevel]),
+// which a `detected_level` matcher compares instead of re-deriving the
+// level cascade; rows is the stage a duration filter defines its parse's
+// repeated values on ([rowLayers.scope]). The zero value derives the
+// level and inlines every value at the filter.
+type filterRow struct {
+	level chplan.Expr
+	rows  *rowLayers
+}
+
+// definer returns the [defineFunc] one filter defines its values with.
+func (f filterRow) definer() defineFunc {
+	if f.rows == nil {
+		return inlineDefine
+	}
+	return f.rows.scope()
 }
 
 // withOuterByLabels returns a copy of c with OuterByLabels set to
@@ -473,6 +497,7 @@ func pipelineLabelsAlias(i int) string {
 // materialising stack computes it once per row and every later stage
 // reads the column.
 func lowerPipelineStages(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx, rows *rowLayers) (chplan.Expr, error) {
+	lc.row.rows = rows
 	labelsExpr := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
 	// dynamicLabels becomes true once a `| pattern` stage runs — it is
 	// the one parser that extracts labels in Go after the rows return
@@ -646,7 +671,7 @@ func pipelineStageLabels(stage syntax.StageExpr, s schema.Logs, labelsExpr chpla
 		// projection-side walk must mirror that so the per-row
 		// Attributes column carries the same label set the lowering's
 		// labelsExpr does.
-		_, marks, err := labelFiltererLower(st.LabelFilterer, s, labelsExpr)
+		_, marks, err := labelFiltererLower(st.LabelFilterer, s, labelsExpr, filterRow{})
 		if err != nil {
 			return nil, err
 		}
@@ -783,7 +808,7 @@ func lowerStage(stage syntax.StageExpr, s schema.Logs, labelsExpr chplan.Expr, l
 		p, err := lowerLineFilter(st, s, lc)
 		return p, nil, err
 	case *syntax.LabelFilterExpr:
-		pred, marks, err := labelFiltererLower(st.LabelFilterer, s, labelsExpr)
+		pred, marks, err := labelFiltererLower(st.LabelFilterer, s, labelsExpr, lc.row)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1984,16 +2009,16 @@ func regexpMergeLabels(prev chplan.Expr, s schema.Logs, pattern string) (chplan.
 // humanize.ParseBytes — see durationLabelFilterExpr /
 // numericLabelFilterExpr / bytesLabelFilterExpr). String filters never
 // error in reference Loki, so they contribute no mark.
-func labelFiltererLower(lf syntax.LabelFilterer, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, []labelFilterMark, error) {
+func labelFiltererLower(lf syntax.LabelFilterer, s schema.Logs, labelsExpr chplan.Expr, row filterRow) (chplan.Expr, []labelFilterMark, error) {
 	switch v := lf.(type) {
 	case *syntax.StringLabelFilter:
-		return labelMatcherToExpr(v.Matcher, s, labelsExpr), nil, nil
+		return labelMatcherToExpr(v.Matcher, s, labelsExpr, row.level), nil, nil
 	case *syntax.BinaryLabelFilter:
-		left, leftMarks, err := labelFiltererLower(v.Left, s, labelsExpr)
+		left, leftMarks, err := labelFiltererLower(v.Left, s, labelsExpr, row)
 		if err != nil {
 			return nil, nil, err
 		}
-		right, rightMarks, err := labelFiltererLower(v.Right, s, labelsExpr)
+		right, rightMarks, err := labelFiltererLower(v.Right, s, labelsExpr, row)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -2015,7 +2040,7 @@ func labelFiltererLower(lf syntax.LabelFilterer, s schema.Logs, labelsExpr chpla
 		pred, mark := numericLabelFilterExpr(v, s, labelsExpr)
 		return pred, []labelFilterMark{mark}, nil
 	case *syntax.DurationLabelFilter:
-		pred, mark := durationLabelFilterExpr(v, s, labelsExpr)
+		pred, mark := durationLabelFilterExpr(v, s, labelsExpr, row.definer())
 		return pred, []labelFilterMark{mark}, nil
 	case *syntax.BytesLabelFilter:
 		pred, mark := bytesLabelFilterExpr(v, s, labelsExpr)
@@ -2098,9 +2123,9 @@ func numericLabelFilterExpr(f *syntax.NumericLabelFilter, s schema.Logs, labelsE
 // the first row it can't parse — including Go-valid shapes like
 // `291.792µs` on CH 24.8 — aborting the whole query where reference
 // Loki degrades per-row.
-func durationLabelFilterExpr(f *syntax.DurationLabelFilter, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, labelFilterMark) {
-	access := structuredOrStreamLookupOnMap(s, labelsExpr, f.Name)
-	parse := newDurationParse(access, inlineDefine)
+func durationLabelFilterExpr(f *syntax.DurationLabelFilter, s schema.Logs, labelsExpr chplan.Expr, define defineFunc) (chplan.Expr, labelFilterMark) {
+	access := define("source", structuredOrStreamLookupOnMap(s, labelsExpr, f.Name))
+	parse := newDurationParse(access, define)
 	exists := labelPresenceOnMap(s, labelsExpr, f.Name)
 	pred := &chplan.FuncCall{
 		Fn: chplan.FnMultiIf,
@@ -2205,13 +2230,17 @@ func labelFilterOp(t syntax.LabelFilterType) chplan.BinaryOp {
 //
 // The synthesized `detected_level` label short-circuits the standard
 // MapAccess resolution: instead of reading `<labels>[detected_level]`,
-// the LHS becomes a `multiIf(...)` normalisation of SeverityText that
+// the LHS is level — the row stage's normalised level column — or, when
+// level is nil, the `multiIf(...)` normalisation of SeverityText that
 // matches upstream Loki's `normalizeLogLevel` mapping.
-func labelMatcherToExpr(m *labels.Matcher, s schema.Logs, labelsExpr chplan.Expr) chplan.Expr {
+func labelMatcherToExpr(m *labels.Matcher, s schema.Logs, labelsExpr, level chplan.Expr) chplan.Expr {
 	var lhs chplan.Expr
-	if isDetectedLevelLabel(m.Name) {
+	switch {
+	case isDetectedLevelLabel(m.Name) && level != nil:
+		lhs = level
+	case isDetectedLevelLabel(m.Name):
 		lhs = detectedLevelExpr(s)
-	} else {
+	default:
 		lhs = structuredOrStreamLookupOnMap(s, labelsExpr, m.Name)
 	}
 	return &chplan.Binary{

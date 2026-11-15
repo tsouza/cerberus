@@ -2,6 +2,7 @@ package logql
 
 import (
 	"slices"
+	"strconv"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -39,6 +40,7 @@ type rowLayers struct {
 	node        chplan.Node
 	materialise bool
 	layers      []*chplan.Project
+	scopes      int
 }
 
 // newRowLayers starts a per-row stage over node, the lowered stream
@@ -195,6 +197,22 @@ func addColumnsRead(set map[string]bool, expr chplan.Expr) {
 		}
 		return true
 	})
+}
+
+// filterAliasPrefix starts the aliases of the values one label filter
+// defines on the stack; [rowLayers.scope] numbers each filter.
+const filterAliasPrefix = "_logql_filter_"
+
+// scope returns the [defineFunc] for one value set that can occur more
+// than once in a stack — one duration filter's parse among several —
+// naming its values under a prefix no other scope of r uses. A stack
+// that does not materialise defines nothing.
+func (r *rowLayers) scope() defineFunc {
+	if !r.materialise {
+		return inlineDefine
+	}
+	r.scopes++
+	return r.definer(filterAliasPrefix + strconv.Itoa(r.scopes) + "_")
 }
 
 // definer returns the [defineFunc] that defines each value on r under

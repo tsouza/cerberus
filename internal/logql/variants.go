@@ -81,7 +81,9 @@ func lowerMultiVariant(e *syntax.MultiVariantExpr, s schema.Logs, lc lowerCtx) (
 	}
 
 	armCtx := lc
-	armCtx.variantArm = true
+	for _, v := range variants {
+		armCtx.variantArmsReadLine = armCtx.variantArmsReadLine || readsLogLine(v)
+	}
 	lowered := make([]chplan.Node, 0, len(variants))
 	for i, v := range variants {
 		ve, ok := v.(syntax.Expr)
@@ -113,6 +115,22 @@ func lowerMultiVariant(e *syntax.MultiVariantExpr, s schema.Logs, lc lowerCtx) (
 	// the series with `__variant__="0"`. UnionAll with one input renders
 	// as the bare arm (no UNION ALL keyword), which is correct.
 	return &chplan.UnionAll{Inputs: arms}, nil
+}
+
+// readsLogLine reports whether e evaluates a range function whose
+// per-row value reads the log line: `bytes_over_time` / `bytes_rate`.
+func readsLogLine(e syntax.SampleExpr) bool {
+	switch v := e.(type) {
+	case *syntax.RangeAggregationExpr:
+		return v.Operation == syntax.OpRangeTypeBytes || v.Operation == syntax.OpRangeTypeBytesRate
+	case *syntax.VectorAggregationExpr:
+		return readsLogLine(v.Left)
+	case *syntax.LabelReplaceExpr:
+		return readsLogLine(v.Left)
+	case *syntax.BinOpExpr:
+		return readsLogLine(v.SampleExpr) || readsLogLine(v.RHS)
+	}
+	return false
 }
 
 // variantValueSlotColumn names one DISTINCT per-sample value column the fused

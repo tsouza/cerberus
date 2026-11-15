@@ -71,6 +71,20 @@ func TestRowStageValuesAreDefinedOnce(t *testing.T) {
 			parser: 1, level: 1, duration: 1, lookup: 2,
 		},
 		{
+			// Each `detected_level` filter compares the level column;
+			// the `level` filter is the one stage reading a parsed label.
+			name: "detected_level_filters",
+			query: `sum by (detected_level) (count_over_time(` + selector +
+				` | detected_level="debug" or detected_level="info" or detected_level="warn" | logfmt | level=~"(?i)info" [5m]))`,
+			parser: 1, level: 1, lookup: 1,
+		},
+		{
+			// Each duration filter parses its label once.
+			name:   "duration_filters",
+			query:  `count_over_time(` + selector + ` | logfmt | latency > 250ms or latency < 1ms [5m])`,
+			parser: 1, level: 1, duration: 2, lookup: 2,
+		},
+		{
 			name: "by_detected_level",
 			query: `sum by (detected_level) (sum_over_time(` + selector +
 				` | logfmt | duration != "" | unwrap duration(duration) [5m]))`,

@@ -61,12 +61,12 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 	// `[start, anchor_ts]` slice. Mirrors reference Loki / Prom, which
 	// have no equivalent pre-scan clamp. See lowerCtx.withMatcherWindowExtension.
 	innerLc := lc.withMatcherWindowExtension(e.Left.Interval + e.Left.Offset)
-	rows, labelsExpr, err := lowerLogRange(e.Left, s, innerLc)
+	rows, labelsExpr, level, err := lowerLogRange(e.Left, s, innerLc)
 	if err != nil {
 		return nil, err
 	}
 
-	labelsExpr, unwrapValue, unwrapHasErrorMarks, err := applyUnwrapRowSemantics(e, s, rows, labelsExpr)
+	labelsExpr, unwrapValue, unwrapHasErrorMarks, err := applyUnwrapRowSemantics(e, s, rows, labelsExpr, level)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +104,7 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 	identityBase := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
 	var errorBypassLabels chplan.Expr
 	if e.Left.Unwrap != nil {
-		identityBase, errorBypassLabels = unwrapSeriesIdentity(e, labelsExpr, mergedCol, unwrapHasErrorMarks)
+		identityBase, errorBypassLabels = unwrapSeriesIdentity(e, labelsExpr, unwrapHasErrorMarks)
 	}
 	// `| drop` / `| keep` narrow the series identity before it becomes a
 	// grouping key. On a log query the same projection runs post-fetch in
@@ -122,7 +122,7 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 	// of the identity entirely. The value is a column of the row stage
 	// ([detectedLevelColumn]); several positions below read it at once
 	// (the two arms of the error bypass, one entry per `by (...)` label).
-	newLevelValue := detectedLevelColumn(rows, s, e.Left.Left)
+	newLevelValue := projectedLevelColumn(rows, level, e.Left.Left)
 
 	// The grouping key is computed AGAINST identityBase — the full
 	// series identity (parser-merged labels minus the unwrap target
@@ -167,7 +167,7 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		Projections: projections,
 	}
 	var carry []string
-	if lc.variantArm {
+	if lc.variantArmsReadLine {
 		carry = []string{s.BodyColumn}
 	}
 	rows.seal(projected, carry...)
@@ -301,11 +301,11 @@ func canonicalIdentityExpr(identity chplan.Expr) chplan.Expr {
 // row presence, so the labels/marks outputs are deliberately unused.
 func lowerAbsentOverTime(e *syntax.RangeAggregationExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	innerLc := lc.withMatcherWindowExtension(e.Left.Interval + e.Left.Offset)
-	rows, labelsExpr, err := lowerLogRange(e.Left, s, innerLc)
+	rows, labelsExpr, level, err := lowerLogRange(e.Left, s, innerLc)
 	if err != nil {
 		return nil, err
 	}
-	if _, _, _, err = applyUnwrapRowSemantics(e, s, rows, labelsExpr); err != nil {
+	if _, _, _, err = applyUnwrapRowSemantics(e, s, rows, labelsExpr, level); err != nil {
 		return nil, err
 	}
 
@@ -378,23 +378,32 @@ func absentSynthLabels(sel syntax.LogSelectorExpr) []chplan.SynthLabel {
 // lowerLogRange unwraps the LogRangeExpr's inner selector (either bare
 // matchers or a pipeline) into a materialising per-row stage
 // ([rowLayers]) and returns it plus the final labelsExpr the pipeline
-// produced. Range aggregations thread this
-// labelsExpr to unwrap's value extraction and any unwrap-post filters
-// so they resolve against the same map that ordinary label filters do.
-func lowerLogRange(lr *syntax.LogRangeExpr, s schema.Logs, lc lowerCtx) (*rowLayers, chplan.Expr, error) {
+// produced and the normalised `detected_level` column
+// ([defineDetectedLevel]). Range aggregations thread this labelsExpr to
+// unwrap's value extraction and any unwrap-post filters so they resolve
+// against the same map that ordinary label filters do.
+func lowerLogRange(lr *syntax.LogRangeExpr, s schema.Logs, lc lowerCtx) (rows *rowLayers, labelsExpr, level chplan.Expr, err error) {
+	var stream *syntax.MatchersExpr
+	var pipeline *syntax.PipelineExpr
 	switch left := lr.Left.(type) {
 	case *syntax.MatchersExpr:
-		// No pipeline — labels-map is the ResourceAttributes column.
-		return newRowLayers(lowerMatchers(left, s, lc), true), &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, nil
+		stream = left
 	case *syntax.PipelineExpr:
-		rows := newRowLayers(lowerMatchers(left.Left, s, lc), true)
-		labelsExpr, err := lowerPipelineStages(left, s, lc, rows)
-		if err != nil {
-			return nil, nil, err
-		}
-		return rows, labelsExpr, nil
+		stream, pipeline = left.Left, left
+	default:
+		return nil, nil, nil, fmt.Errorf("logql: range-aggregation inner is %T (not MatchersExpr or PipelineExpr)", lr.Left)
 	}
-	return nil, nil, fmt.Errorf("logql: range-aggregation inner is %T (not MatchersExpr or PipelineExpr)", lr.Left)
+	rows = newRowLayers(lowerMatchers(stream, s, lc), true)
+	level = defineDetectedLevel(rows, s)
+	// No pipeline — labels-map is the ResourceAttributes column.
+	labelsExpr = &chplan.ColumnRef{Name: s.ResourceAttributesColumn}
+	if pipeline != nil {
+		lc.row.level = level
+		if labelsExpr, err = lowerPipelineStages(pipeline, s, lc, rows); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	return rows, labelsExpr, level, nil
 }
 
 // applyUnwrapRowSemantics folds reference Loki's per-row unwrap
@@ -428,7 +437,7 @@ func lowerLogRange(lr *syntax.LogRangeExpr, s schema.Logs, lc lowerCtx) (*rowLay
 //
 // No-op (and mark-free) for range aggregations without an unwrap
 // clause.
-func applyUnwrapRowSemantics(e *syntax.RangeAggregationExpr, s schema.Logs, rows *rowLayers, labelsExpr chplan.Expr) (labels, value chplan.Expr, hasErrorMarks bool, err error) {
+func applyUnwrapRowSemantics(e *syntax.RangeAggregationExpr, s schema.Logs, rows *rowLayers, labelsExpr, level chplan.Expr) (labels, value chplan.Expr, hasErrorMarks bool, err error) {
 	if e.Left.Unwrap == nil {
 		return labelsExpr, nil, false, nil
 	}
@@ -477,7 +486,7 @@ func applyUnwrapRowSemantics(e *syntax.RangeAggregationExpr, s schema.Logs, rows
 	hasErrorMarks = true
 
 	if len(e.Left.Unwrap.PostFilters) > 0 {
-		postLabels, postMarks, err := applyUnwrapPostFilters(rows, e.Left.Unwrap.PostFilters, s, labelsExpr)
+		postLabels, postMarks, err := applyUnwrapPostFilters(rows, e.Left.Unwrap.PostFilters, s, labelsExpr, level)
 		if err != nil {
 			return nil, nil, false, err
 		}
@@ -494,9 +503,9 @@ func applyUnwrapRowSemantics(e *syntax.RangeAggregationExpr, s schema.Logs, rows
 // their role (see [defineFunc]).
 const (
 	unwrapAliasPrefix     = "_logql_unwrap_"
-	unwrapSourceAlias     = "_logql_unwrap_source"
-	unwrapLabelsAlias     = "_logql_unwrap_labels"
-	unwrapPostLabelsAlias = "_logql_unwrap_post_labels"
+	unwrapSourceAlias     = unwrapAliasPrefix + "source"
+	unwrapLabelsAlias     = unwrapAliasPrefix + "labels"
+	unwrapPostLabelsAlias = unwrapAliasPrefix + "post_labels"
 )
 
 // errorBypassIdentityExpr wraps a series-identity expression with the
@@ -539,10 +548,10 @@ func errorBypassIdentityExpr(s schema.Logs, fullLabels, identity, levelValue chp
 // postFilter stage runs against the extractor's LabelsBuilder, so its
 // error stamps surface on the sample's labels exactly like pipeline-
 // stage filters). hasMarks reports whether any mark was folded in.
-func applyUnwrapPostFilters(rows *rowLayers, filters []syntax.LabelFilterer, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, bool, error) {
+func applyUnwrapPostFilters(rows *rowLayers, filters []syntax.LabelFilterer, s schema.Logs, labelsExpr, level chplan.Expr) (chplan.Expr, bool, error) {
 	var marks []labelFilterMark
 	for _, lf := range filters {
-		extra, lfMarks, err := labelFiltererLower(lf, s, labelsExpr)
+		extra, lfMarks, err := labelFiltererLower(lf, s, labelsExpr, filterRow{level: level, rows: rows})
 		if err != nil {
 			return nil, false, err
 		}
@@ -791,22 +800,16 @@ func unwrapConversion(u *syntax.UnwrapExpr, source chplan.Expr, define defineFun
 	return nil, nil, nil, fmt.Errorf("logql: unsupported unwrap conversion %q", u.Operation)
 }
 
-// hasParserMergedLabels reports whether labelsExpr carries a parser-stage
-// `mapConcat(...)` wrap on top of the raw ResourceAttributes column. Used
-// by [lowerRangeAggregation] to gate the two-stage Project rewrite: when
-// the parser-merged labels expression nests a lambda-bearing call (e.g.
-// `mapApply` from `logfmtMergeLabels`'s rename-on-collision shape),
-// wrapping it inside the outer identity's `mapFilter` triggers
-// ClickHouse's `Recursive lambda (UNSUPPORTED_METHOD)` error. The fix
-// materialises labelsExpr into an intermediate column so the outer
-// `mapFilter`'s source is a plain column reference.
-//
-// Detection: any expression that ISN'T a bare ColumnRef on the resource-
-// attributes column needs the materialise rewrite. The parser-stage
-// helpers ([logfmtMergeLabels] / [jsonBareMergeLabels] / [regexpMergeLabels]
-// / [logfmtExpressionMergeLabels] / [jsonExpressionMergeLabels]) all
-// return a `mapConcat(prev, …)` shape, so this predicate captures every
-// parser flavour without enumerating them.
+// hasParserMergedLabels reports whether labelsExpr is anything other
+// than the raw ResourceAttributes column: a labels map some pipeline
+// stage produced, which [mergedLabelsColumn] hands to the readers of the
+// merged map. In the metric path that map is a column of the row stage
+// ([pipelineLabelsAlias], [unwrapLabelsAlias], [unwrapPostLabelsAlias]);
+// any other expression is still a stage's merged map — the parser-stage
+// helpers ([logfmtMergeLabels] / [jsonBareMergeLabels] /
+// [regexpMergeLabels] / [logfmtExpressionMergeLabels] /
+// [jsonExpressionMergeLabels]) all return a `mapConcat(prev, …)` shape —
+// so the predicate captures every flavour without enumerating them.
 func hasParserMergedLabels(labelsExpr chplan.Expr, s schema.Logs) bool {
 	col, ok := labelsExpr.(*chplan.ColumnRef)
 	if !ok {
@@ -847,8 +850,9 @@ func hasParserMergedLabels(labelsExpr chplan.Expr, s schema.Logs) bool {
 // the label, so `without` has nothing to inject and a `by` clause
 // naming the level family groups on the empty string — the same
 // collapse reference Loki produces once the projection has deleted the
-// label from its LabelsBuilder. `by (detected_level, level)` names the
-// family twice, so the value is built per entry rather than aliased.
+// label from its LabelsBuilder. The value is a column reference
+// ([projectedLevelColumn]), so every entry that names the family reads
+// the same column.
 func rangeAggregationGroupBy(e *syntax.RangeAggregationExpr, s schema.Logs, identityBase chplan.Expr, newLevelValue func() chplan.Expr) (chplan.Expr, error) {
 	if e.Grouping == nil {
 		return nil, nil
@@ -924,9 +928,11 @@ func rangeFuncName(op string) (string, error) {
 	return "", fmt.Errorf("logql: range op %s is not yet supported", op)
 }
 
-// mergedLabelsColumn returns the pipeline's parser-merged labels column
-// when the range aggregation reads that map as a whole, or nil when
-// nothing does and every read stays on the raw columns.
+// mergedLabelsColumn returns the labels column the pipeline produced —
+// the map its parser stages merged, with any `__error__` marks its
+// filters and its unwrap stamped — when the range aggregation reads that
+// map as a whole, or nil when nothing does or the pipeline left the raw
+// ResourceAttributes column, and every read stays on the raw columns.
 //
 // The row stage defines every labels map a pipeline stage produces as a
 // column of its own ([rowLayers]), so labelsExpr is already a plain
@@ -969,23 +975,18 @@ func mergedLabelsColumn(labelsExpr chplan.Expr, s schema.Logs, lc lowerCtx, hasU
 // whose seeded payload carries a varying `request_id` / `status` /
 // `user_agent` per minute.
 //
-// `mergedCol` is the parser-merged labels column, or nil when the
-// pipeline has no parser stage to merge. In the nil case the unwrap
-// target is a stream label that already lives in ResourceAttributes —
-// CH strips it from a plain column reference natively — and there is no
-// error bypass to build.
+// labelsExpr is the row stage's labels column once the unwrap stage has
+// stamped its marks ([applyUnwrapRowSemantics]); a column, so the strip's
+// `mapFilter` reads a plain column reference (see [mergedLabelsColumn]).
+// When marks were stamped it is also the error bypass: an error sample
+// keeps its full label set.
 func unwrapSeriesIdentity(
 	e *syntax.RangeAggregationExpr,
 	labelsExpr chplan.Expr,
-	mergedCol chplan.Expr,
 	unwrapHasErrorMarks bool,
 ) (identity, errorBypass chplan.Expr) {
-	stripped := []string{e.Left.Unwrap.Identifier}
-	if mergedCol == nil {
-		return &chplan.MapWithoutKeys{Map: labelsExpr, Keys: stripped}, nil
-	}
 	if unwrapHasErrorMarks {
-		errorBypass = mergedCol
+		errorBypass = labelsExpr
 	}
-	return &chplan.MapWithoutKeys{Map: mergedCol, Keys: stripped}, errorBypass
+	return &chplan.MapWithoutKeys{Map: labelsExpr, Keys: []string{e.Left.Unwrap.Identifier}}, errorBypass
 }

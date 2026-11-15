@@ -200,10 +200,9 @@ func levelAwareGroupKey(label string, s schema.Logs) chplan.Expr {
 
 // levelAwareRangeGroupKey is the inner-range-aggregation companion of
 // [levelAwareGroupKey]: it resolves the `detected_level` family
-// (`detected_level` and its `level` alias) to the
-// SeverityText-derived `multiIf(...)` expression directly, because the
-// inner Project still has `SeverityText` in scope (the Project rides
-// directly above the per-row Scan/Filter). The outer
+// (`detected_level` and its `level` alias) to the row stage's level
+// column ([projectedLevelColumn]) directly, because the inner Project
+// sits on the per-row stage where that column is in scope. The outer
 // vector-aggregation reads from the post-RangeWindow scope where
 // SeverityText is no longer visible, so it has to reach through the
 // augmented map's `detected_level` key instead.
