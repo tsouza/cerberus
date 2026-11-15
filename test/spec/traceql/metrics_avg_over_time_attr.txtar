@@ -19,7 +19,7 @@ INSERT INTO otel_traces (SpanAttributes, TraceId, SpanId) VALUES
 [1] bool = true
 [2] string = "latency_ms"
 -- chplan --
-MetricsAggregate op=avg_over_time attr=FnToFloat64OrNull(SpanAttributes["latency_ms"]) valueAlias=Value
+MetricsAggregate op=avg_over_time attr=FnToFloat64OrNull(SpanAttributes["latency_ms"]) valueAlias=Value perTraceLookback=1h0m0s
   Filter predicate=FnIsNotNull(FnToFloat64OrNull(SpanAttributes["latency_ms"]))
     Filter predicate=true
       Scan(otel_traces)
