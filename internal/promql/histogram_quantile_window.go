@@ -967,8 +967,9 @@ func counterIncreaseFold(values, order, temporality, resets chplan.Expr) chplan.
 // counterWindowFn reports whether windowFn reduces its window as a
 // COUNTER — the range-vector functions whose fold applies
 // Prometheus's counter-reset rule, through counterIncreaseFold. Every
-// other windowFn ("sum_over_time" and the #1692 bare-selector ""
-// sentinel) reads its samples as plain values, so neither the
+// other windowFn (sum_over_time, avg_over_time, max_over_time,
+// min_over_time, last_over_time and the #1692 bare-selector "" sentinel)
+// reads its samples as plain values, so neither the
 // temporality signal nor the counter-reset mask has anything to say
 // about it.
 func counterWindowFn(windowFn string) bool {

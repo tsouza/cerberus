@@ -736,6 +736,8 @@ func TestClassicBucketRuns_WindowMatchesHasFilterReference(t *testing.T) {
 		sumOverTimeWindowFn:     histogramWindowFold(sumOverTimeWindowFn, in),
 		avgOverTimeWindowFn:     histogramWindowFold(avgOverTimeWindowFn, in),
 		lastOverTimeWindowFn:    histogramWindowFold(lastOverTimeWindowFn, in),
+		maxOverTimeWindowFn:     histogramWindowFold(maxOverTimeWindowFn, in),
+		minOverTimeWindowFn:     histogramWindowFold(minOverTimeWindowFn, in),
 		firstOverTimeWindowFn:   histogramWindowFold(firstOverTimeWindowFn, in),
 		countOverTimeWindowFn:   histogramWindowFold(countOverTimeWindowFn, in),
 		presentOverTimeWindowFn: histogramWindowFold(presentOverTimeWindowFn, in),

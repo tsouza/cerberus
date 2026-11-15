@@ -782,7 +782,7 @@ type histogramAggShape struct {
 	selector *parser.VectorSelector
 	// windowRange is the window the shape reduces over, and every shape
 	// matchHistogramAggIdiom yields carries a STRICTLY POSITIVE one: the
-	// `[range]` of the wrapping rate / increase / sum_over_time, which the
+	// `[range]` of the wrapping range-vector function, which the
 	// PromQL grammar's positive_duration_expr refuses to parse as anything
 	// else, or instantLookback (5m) for the #1692 no-range-wrapper shape.
 	// lowerHistogramQuantileAgg and lowerHistogramQuantileNativeAgg bind the
@@ -826,8 +826,9 @@ type histogramAggShape struct {
 // histogramWindowMinSamples maps a matched range-vector function to the
 // number of samples reference PromQL needs inside `[range]` before it emits
 // at an anchor. rate / increase span a delta between two points and emit
-// nothing with fewer; sum_over_time folds whatever is there, so one sample
-// is a valid window.
+// nothing with fewer; sum_over_time, avg_over_time, max_over_time,
+// min_over_time and last_over_time fold whatever is there, so one sample is
+// a valid window.
 func histogramWindowMinSamples(fn string) int {
 	switch fn {
 	case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn:
@@ -1225,7 +1226,7 @@ func matchHistogramAggIdiom(e parser.Expr, s schema.Metrics) (histogramAggShape,
 		// lastFirstOverExpHistogram), and Prometheus drops histogram
 		// samples under max_over_time / min_over_time.
 		classicOnly = true
-	case "rate", "increase", "sum_over_time":
+	case rateWindowFn, increaseWindowFn, sumOverTimeWindowFn:
 		// Supported range-vector functions on the histogram-array path.
 		// `histogram_quantile` is SCALE-INVARIANT — it interpolates the
 		// ratio of cumulative bucket counts, so it yields the identical
@@ -1251,7 +1252,7 @@ func matchHistogramAggIdiom(e parser.Expr, s schema.Metrics) (histogramAggShape,
 	if !ok {
 		return histogramAggShape{}, false
 	}
-	if classicOnly && (s.IsExpHistogramMetric(vs.Name) || s.IsExpHistogramMetric(metricNameFromMatchers(vs.LabelMatchers))) {
+	if classicOnly && s.IsExpHistogramMetric(metricNameFromMatchers(vs.LabelMatchers)) {
 		return histogramAggShape{}, false
 	}
 	return histogramAggShape{

@@ -1,0 +1,30 @@
+-- query.promql --
+histogram_quantile(0.5, max_over_time(http_server_duration_exp_hist[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 0, 0, [1, 2, 3], 0, []);
+-- expected_rows --
+[]
+-- description --
+histogram_quantile over max_over_time of an exponential histogram answers an empty
+vector, as Prometheus does: max_over_time drops histogram samples. The classic-bucket
+idiom accepts max_over_time for classic buckets only, so an exponential histogram
+keeps its own lowering and never reaches the classic per-rung fold, which
+would answer a quantile.

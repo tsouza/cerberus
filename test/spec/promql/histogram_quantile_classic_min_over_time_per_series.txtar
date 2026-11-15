@@ -1,5 +1,5 @@
 -- query.promql --
-histogram_quantile(0.8, min_over_time(request_latency_bucket[5m]))
+histogram_quantile(0.5, min_over_time(request_latency_bucket[5m]))
 -- parity --
 oracle: prometheus
 endpoint: /api/v1/query
@@ -22,17 +22,17 @@ INSERT INTO otel_metrics_histogram VALUES
     ('request_latency', map('lb','a'), map(), toDateTime64('2025-12-31 23:58:00', 9), 4, 6.0,  [1,1,1,1], [1.0,2.0,4.0]),
     ('request_latency', map('lb','a'), map(), toDateTime64('2025-12-31 23:59:00', 9), 8, 12.0, [4,2,1,1], [1.0,2.0,4.0]),
     ('request_latency', map('lb','a'), map(), toDateTime64('2026-01-01 00:00:00', 9), 8, 16.0, [1,3,2,2], [1.0,2.0,4.0]),
-    ('request_latency', map('lb','b'), map(), toDateTime64('2025-12-31 23:58:00', 9), 6, 9.0,  [2,2,1,1], [1.0,2.0,4.0]),
-    ('request_latency', map('lb','b'), map(), toDateTime64('2025-12-31 23:59:00', 9), 9, 20.0, [1,1,5,2], [1.0,2.0,4.0]),
-    ('request_latency', map('lb','b'), map(), toDateTime64('2026-01-01 00:00:00', 9), 5, 7.0,  [3,1,0,1], [1.0,2.0,4.0]);
+    ('request_latency', map('lb','b'), map(), toDateTime64('2025-12-31 23:59:00', 9), 5, 7.0,  [3,1,0,1], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','b'), map(), toDateTime64('2026-01-01 00:00:00', 9), 9, 20.0, [1,1,5,2], [1.0,2.0,3.0]);
 -- expected_rows --
 []
 -- description --
 histogram_quantile over min_over_time of a classic bucket selector, with no aggregation, one quantile per series.
 Prometheus reads each `le` rung of a classic histogram as an ordinary float
 series, so min_over_time reduces every rung to the smallest cumulative count in the window
-before the quantile interpolates the ladder. The three samples of each series
-carry different ladders, so each over-time function lands on a different
-quantile. The matcher once accepted only rate, increase and sum_over_time, and
-this shape fell through to the non-bucket fallback, which answers an empty
-vector.
+before the quantile interpolates the ladder. Series `a` carries three samples
+of one layout; series `b` carries two, the newer with its top finite bound
+moved from 4 to 3, so its `le="4"` and `le="3"` rungs each hold one sample.
+The unequal sample counts and the layout change make avg_over_time,
+max_over_time, min_over_time, last_over_time and sum_over_time answer five
+different quantiles, aggregated and per series.
