@@ -2102,6 +2102,23 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
     `PR_NUMBER` (all required); `GITHUB_API_URL` (optional).
   - Exit: non-zero when an API call fails or a required input is unset.
   - Tests: `merge-queue-requeue.test.mjs` (run in `merge-queue-requeue.yml`).
+- **`merge-queue-requeue-dequeued.mjs`** — `merge-queue-requeue.yml`, the
+  `requeue-dequeued` job, when the `dequeued` or the `queue` label is added
+  (`pull_request_target` `labeled`). Reads the queue status from the payload of
+  Mergify's newest status comment and posts `@mergifyio queue` for an entry
+  dequeued at an unchanged head: on `dequeued`, only for `CHECKS_INTERRUPTED`
+  and at most `MAX_INTERRUPTED_REQUEUES_PER_HEAD` times per head commit, each
+  attempt recorded first as a `merge-queue-requeue` commit status on the head;
+  on `queue`, for `CHECKS_INTERRUPTED`, `PR_DEQUEUED` or `PR_MANUALLY_DEQUEUED`.
+  Every other dequeue reason, `CHECKS_FAILED` included, is left alone.
+  - Env: `GITHUB_REPOSITORY`, `GITHUB_TOKEN` (needs `pull-requests: write` and
+    `statuses: write`), `PR_NUMBER`, `TRIGGER_LABEL` (all required);
+    `GITHUB_API_URL` (optional).
+  - Exit: non-zero when an API call fails, a status payload is unreadable, the
+    trigger label is neither `dequeued` nor `queue`, or a required input is
+    unset.
+  - Tests: `merge-queue-requeue-dequeued.test.mjs` (run in
+    `merge-queue-requeue.yml`).
 - **`coverage-aggregate.mjs`** — `coverage.yml`, the `coverage` aggregator job.
   `coverage` used to be one job running `just coverage` (the default-tag AND
   chdb-tagged lanes, serially) on a single runner, and it repeatedly hit or
