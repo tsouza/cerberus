@@ -1,0 +1,18 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:unwrapConversion#bbe4735f",
+      "message": "logql: unsupported unwrap conversion %q",
+      "class": "",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch u.Operation over [case \"\"; case syntax.OpConvDuration, syntax.OpConvDurationSeconds; case syntax.OpConvBytes]"
+        ],
+        "callers": [
+          "applyUnwrapRowSemantics"
+        ]
+      }
+    }
+  ]
+}

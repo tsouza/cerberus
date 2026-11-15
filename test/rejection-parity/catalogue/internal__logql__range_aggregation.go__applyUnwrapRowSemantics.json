@@ -1,0 +1,20 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:applyUnwrapRowSemantics#ad5af60c",
+      "message": "logql: `| unwrap` has empty identifier",
+      "class": "",
+      "evidence": {
+        "guard": [
+          "past returning if e.Left.Unwrap == nil",
+          "if e.Left.Unwrap.Identifier == \"\""
+        ],
+        "callers": [
+          "lowerAbsentOverTime",
+          "lowerRangeAggregation"
+        ]
+      }
+    }
+  ]
+}

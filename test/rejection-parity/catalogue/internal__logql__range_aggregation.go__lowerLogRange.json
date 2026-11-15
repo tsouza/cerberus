@@ -4,11 +4,10 @@
       "head": "logql",
       "site": "internal/logql/range_aggregation.go:lowerLogRange#b8257b72",
       "message": "logql: range-aggregation inner is %T (not MatchersExpr or PipelineExpr)",
-      "class": "internal",
-      "rationale": "the pinned parser yields only MatchersExpr / PipelineExpr as log-range inners",
+      "class": "",
       "evidence": {
         "guard": [
-          "past exhaustive switch left := lr.Left.(type) over [case *syntax.MatchersExpr; case *syntax.PipelineExpr]"
+          "default of switch left := lr.Left.(type) over [case *syntax.MatchersExpr; case *syntax.PipelineExpr; default]"
         ],
         "callers": [
           "lowerAbsentOverTime",
