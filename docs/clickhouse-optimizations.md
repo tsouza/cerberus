@@ -864,13 +864,18 @@ only the ones the last probe reached:
 - A probe that reaches no server falls back to the supported floor; what is
   remembered is kept for the next probe that answers.
 
+Every [capability canary](#capability-canaries-across-servers) verdict is
+remembered the same way, with the server that gave it.
+
 During a rolling rollback behind one load-balanced address, the first probe
 that lands on the rolled-back replica lowers the resolution to that replica's
 build, and the resolution stays there while the replica serves on it: probes
 that land on the other replicas do not raise it. The defect gates, the
-condition-cache override and the analyzer decision follow the remembered
-servers the same way. While cerberus remembers a build no server the last
-probe reached runs, the [re-probe](#re-probe) runs every 10 seconds. A replica
+condition-cache override, the analyzer decision and the capability canary
+verdicts follow the remembered servers the same way. While cerberus remembers
+a build no server the last probe reached runs, or a canary verdict in force
+that no server the last probe ran a canary on holds, the [re-probe](#re-probe)
+runs every 10 seconds. A replica
 that leaves the fleet keeps counting for 40 complete probes per remembered
 server, under seven minutes per server at that cadence, and one that rolls
 forward lifts the version on the first probe that lands on it.
@@ -885,6 +890,65 @@ Memory starts empty at boot, and behind a load balancer the fleet is learned
 one probe at a time. Naming every address, or the cluster, reads the whole
 fleet on every probe. `fleet_versions` in the boot log lists every remembered
 build.
+
+### Capability canaries across servers
+
+The capability canaries — the
+[experimental ts_grid setting](#capability-probe-experimental-ts_grid-setting),
+the `result_cache` settings, the
+[query-log union](#capability-probe-query-log-union) table when the selection
+lists `query_log_union`, and `CERBERUS_CH_QUERY_WORKLOAD` when it is set — run
+inside the version probe, on every server it reads through a configured
+address, and each verdict is attributed to the server that gave it:
+
+- The ts_grid, `result_cache` and workload canaries stamp their settings on
+  the identity read itself (`SELECT toString(serverUUID()), version()`), so
+  an accepted canary names the server that accepted it.
+- A refused canary, and the query-log union canary, are attributed to the
+  server the identity read just before it on the same client named. A refusal
+  closes the connection, so the identity is read again before the next
+  canary. A canary whose statement fails on a broken connection is not
+  retried: its verdict is **unreachable**, and the identity is read again
+  before the next canary as after a refusal.
+- On each server, the canaries run in the order of how long ago a probe last
+  ran them there: a canary never run on that server first, then the one run
+  there longest ago. A probe that lands on a replica refusing its first
+  canary therefore runs another canary first on that replica the next time
+  one lands there.
+- A server a probe ran a canary on takes the verdict it gave, except that an
+  **unreachable** verdict leaves the verdict remembered for it in place, and
+  a server read twice in one probe takes a real verdict over an
+  **unreachable** one; a canary the probe did not run on it keeps the verdict
+  remembered for it.
+- The verdict in force for each canary is the most conservative one across
+  the remembered servers: **forbidden** if any server refused, else
+  **unreachable** if any server's canary failed, else **available**.
+- A replica read only through the `CERBERUS_SCHEMA_CLUSTER` replica list runs
+  no canary and adds no verdict.
+- When no remembered server gave a verdict on a canary, its verdict is
+  **unreachable**.
+
+Behind one load-balanced address whose replicas disagree — a `CREATE WORKLOAD`
+defined on one replica only, or a profile that forbids the experimental
+setting on one replica only — the first probe that lands on the refusing
+replica turns the feature off, and it stays off while that replica serves:
+probes that land on the other replicas do not turn it back on. The `forbidden`
+verdict clears on the first probe that lands on that replica and gets
+**available**, or once the replica is forgotten. While no server the last
+probe ran a canary on holds the verdict in force on a canary — read by that
+probe or remembered for it — the [re-probe](#re-probe) runs every 10 seconds.
+A server read only through the cluster replica list, or one whose identity
+read failed before any canary, does not count. The boot log reports each
+canary's verdict in force (`server_ts_grid_capability`,
+`server_result_cache_capability`, `server_query_log_union_capability`,
+`server_query_workload_capability`).
+
+Attributing a refusal, or a query-log union verdict, needs the canary and the
+identity read before it to reach the same server. Over the native protocol
+they share one connection. Over `CERBERUS_CH_PROTOCOL=http` they are separate
+requests, and a balancer that routes each request on its own can attribute
+the verdict to another server, so a disagreeing replica's refusal can come
+and go there ([#4148](https://github.com/tsouza/cerberus/issues/4148)).
 
 ## Capability probe (experimental ts_grid setting)
 
@@ -902,7 +966,9 @@ So auto-selection of the native family is gated on **two** axes, not just the
 version floor: alongside `SELECT version()`, cerberus runs a cheap
 **capability canary** that stamps the experimental setting on a trivial query
 over the always-present `default` database (independent of whether the
-configured database exists yet). The verdict is tri-state:
+configured database exists yet), on every server the version probe reads
+([Capability canaries across servers](#capability-canaries-across-servers)).
+The verdict is tri-state:
 
 - **available** — the server accepted the setting; the native family resolves
   per its version floor.
@@ -910,8 +976,10 @@ configured database exists yet). The verdict is tri-state:
   readonly profile); a *definitive* "no". The native family is **dropped to the
   fan-out path**.
 - **unreachable** — the canary got no server verdict (a transport failure); an
-  *inconclusive* result. Native stays off until a later re-probe gets a verdict,
-  matching the version probe's connectivity fallback.
+  *inconclusive* result. On a server with no remembered verdict, native stays
+  off until a later re-probe gets a verdict, matching the version probe's
+  connectivity fallback; a server with a remembered verdict keeps it (see
+  [Capability canaries across servers](#capability-canaries-across-servers)).
 
 A verdict is therefore either **definitive** (`available` permits, `forbidden`
 refuses) or **inconclusive** (`unreachable`, or `unknown` when the probe never
@@ -956,8 +1024,9 @@ re-probe.
 [`solver.md`](solver.md#query-log-source)). It is gated on a probe, never on
 the version, and only when the selection lists it: cerberus runs the
 reconciler's own record-selection query against `system.all_query_log` for an
-empty page, over the bootstrap connection, at boot and on every
-[re-probe](#re-probe).
+empty page, on every server the version probe reads
+([Capability canaries across servers](#capability-canaries-across-servers)),
+at boot and on every [re-probe](#re-probe).
 
 - **available** — the table exists, every union member has the selected
   columns, and cerberus's user may `SELECT` it: the feature resolves in.
@@ -982,7 +1051,7 @@ resolution is re-run every **5 minutes** for the life of the process, and a
 changed answer is swapped into the query path in place.
 
 Each pass repeats exactly the boot resolution — probe each node's identity
-and `version()`, run the capability canary, resolve the *same* configured selection against both — so a
+and `version()`, run the capability canaries, resolve the *same* configured selection against both — so a
 running process can never reach a posture boot could not have produced. The
 selection itself is fixed for the life of the process, which is what makes the
 loop safe to run unattended: a re-resolve cannot introduce an unknown feature id
@@ -994,8 +1063,8 @@ kept.
 Only a genuine transition is acted on. A pass whose resolved set, server
 version and workload verdict all match the current ones swaps nothing and logs
 nothing; it only records on the resolution in force whether it fell back to the
-floor, reached every node, and rests on a remembered build it did not reach,
-which `/readyz` and the re-probe cadence read. The steady state is silent, and
+floor, reached every node, and rests on a remembered build or canary verdict
+it did not reach, which `/readyz` and the re-probe cadence read. The steady state is silent, and
 the log carries one line per real capability change:
 
 ```text
