@@ -94,7 +94,7 @@ func TestRouteBExecCtx_SettingsMatchRouteAAtK1(t *testing.T) {
 			// TestRouteBExecCtx_SpillThresholdsSizedFromTheShardCap; what this
 			// test pins is which KEYS each seam stamps, and with what value.
 			e := &Engine{Settings: rules}
-			routeACtx, _, _ := e.execContext(context.Background(), p.plan, "promql", decision)
+			routeACtx, _ := e.execContext(context.Background(), p.plan, "promql", decision)
 			routeA := chclient.QuerySettingsFromContext(routeACtx)
 
 			routeBCtx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix,
@@ -128,7 +128,7 @@ func TestRouteBExecCtx_ParityTableCoversEveryStampedKey(t *testing.T) {
 	e := &Engine{Settings: rules}
 	seen := map[string]bool{}
 	for _, p := range compositionPlans() {
-		ctx, _, _ := e.execContext(context.Background(), p.plan, "promql", &solver.Decision{K: 1})
+		ctx, _ := e.execContext(context.Background(), p.plan, "promql", &solver.Decision{K: 1})
 		for k := range chclient.QuerySettingsFromContext(ctx) {
 			seen[k] = true
 		}
@@ -179,7 +179,7 @@ func TestRouteBExecCtx_ExpHistogramTwoLevelStampedOnBothRoutes(t *testing.T) {
 	plan := expHistogramWindowPlan()
 
 	e := &Engine{Settings: rules}
-	routeACtx, _, _ := e.execContext(context.Background(), plan, "promql", &solver.Decision{K: 1})
+	routeACtx, _ := e.execContext(context.Background(), plan, "promql", &solver.Decision{K: 1})
 	routeBCtx := routeBExecCtx(context.Background(), "promql", chclient.ResponseShapeMatrix, &solver.Decision{K: 1},
 		plan, memCap, rules, 0, false, ResourceBoundOverrides{}, 1, 0, 0, nil)
 

@@ -352,13 +352,7 @@ func ProbeQuerySettings(plan chplan.Node, rules SettingsRules, memCap int64, str
 // (the diagnostics / spec-golden read-out), so a stamp added to one cannot
 // silently drop out of the other.
 func routeAQuerySettings(ctx context.Context, plan chplan.Node, memCap int64, rules SettingsRules) context.Context {
-	return routeAQuerySettingsOf(ctx, inspectPlanShape(plan, rules.Traces.TraceIDColumn), memCap, rules)
-}
-
-// routeAQuerySettingsOf is routeAQuerySettings over facts the caller already
-// inspected, so execContext can read further facts off the same single
-// inspection.
-func routeAQuerySettingsOf(ctx context.Context, f planShapeFacts, memCap int64, rules SettingsRules) context.Context {
+	f := inspectPlanShape(plan, rules.Traces.TraceIDColumn)
 	if f.tsGridNative {
 		ctx = chclient.WithTSGridSetting(ctx)
 	}
@@ -395,20 +389,12 @@ func routeAQuerySettingsOf(ctx context.Context, f planShapeFacts, memCap int64, 
 // count of the EMITTED statement (chsql.EmitCounted), which only exists
 // once emitForHead has rendered the SQL, so every dispatch site stamps it
 // onto the ctx this function returns, right after the emit.
-//
-// The third result is the plan's classicHistogramQuantile fact, read off the
-// same inspection the settings come from, for the dispatch site to classify
-// a memory-limit abort with (wrapClassicHistogramMemoryLimit).
-func (e *Engine) execContext(
-	ctx context.Context, plan chplan.Node, language string, decision *solver.Decision,
-) (context.Context, string, bool) {
+func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language string, decision *solver.Decision) (context.Context, string) {
 	// Every per-query setting a route-A statement carries, sized from this
 	// statement's own memory cap. The plan-shape-gated part is shared
 	// verbatim with route B's seam (routeBExecCtx) so the two can never
 	// drift — see applySharedQuerySettings' own doc.
-	rules := e.settings()
-	f := inspectPlanShape(plan, rules.Traces.TraceIDColumn)
-	ctx = routeAQuerySettingsOf(ctx, f, e.queryMemoryCap(), rules)
+	ctx = routeAQuerySettings(ctx, plan, e.queryMemoryCap(), e.settings())
 	// Issue #2789: tag this route-A dispatch for actuals capture — see
 	// applyActualsCapture's own doc. No-op (ctx unchanged) whenever Actuals
 	// is nil or decision carries no ShapeID (either because Actuals was nil
@@ -426,7 +412,7 @@ func (e *Engine) execContext(
 	// Return the queryID so the caller can later stamp a cerberus-side terminal
 	// outcome (e.g. the sample-budget 422 surfacing through this dispatch) onto
 	// the same corpus record via observeOutcomeForErr.
-	return ctx, queryID, f.classicHistogramQuantile
+	return ctx, queryID
 }
 
 // applySharedQuerySettings layers every plan-shape-gated per-query ClickHouse
@@ -1577,7 +1563,7 @@ func (e *Engine) runGuards(ctx context.Context, lang Lang, meta Meta) error {
 		if err := requireSubquerySampleBudget(plan, e.MaxQuerySamples); err != nil {
 			return err
 		}
-		guardCtx, _, _ := e.execContext(ctx, plan, lang.Name(), nil)
+		guardCtx, _ := e.execContext(ctx, plan, lang.Name(), nil)
 		sql, args, physicalScans, err := emitForHead(guardCtx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.routeAResourceBounds(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
 		if err != nil {
 			return fmt.Errorf("engine: emit: guard %s: %w", g.Name, err)
@@ -1814,8 +1800,9 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	// their per-head labels.
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
-	execCtx, queryID, classicHistogramQuantile := e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision)
+	execCtx, queryID := e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision)
 	execCtx = chclient.WithDataShardFanoutMultiplier(execCtx, physicalScans)
+	classicHistogramQuantile := planHasClassicHistogramQuantile(plan)
 	samples, err := e.Client.Query(execCtx, sql, args...)
 	chMillis := time.Since(start).Milliseconds()
 	execT.Done(ctx)
@@ -2592,8 +2579,9 @@ func (e *Engine) dispatchRouteACursor(
 	}
 
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
-	execCtx, queryID, classicHistogramQuantile := e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision)
+	execCtx, queryID := e.execContext(chclient.WithProgressFor(ctx, lang.Name()), plan, lang.Name(), decision)
 	execCtx = chclient.WithDataShardFanoutMultiplier(execCtx, physicalScans)
+	classicHistogramQuantile := planHasClassicHistogramQuantile(plan)
 	// Thread the adapter's declared response shape onto the execute ctx so
 	// chclient's columnar matrix decode can confirm (defense-in-depth, on top
 	// of its own structural name/type check) that this query really is the

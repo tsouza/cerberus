@@ -56,11 +56,10 @@ func wrapClassicHistogramMemoryLimit(err error, classicHistogramQuantile bool) e
 	return &ClassicHistogramMemoryLimitError{Limit: memLimit.Limit, Err: err}
 }
 
-// planHasClassicHistogramQuantile reports the classicHistogramQuantile fact for a
-// plan the route-B dispatch sites hold. Route A reads the fact off the
-// inspection its settings composition already runs (routeAQuerySettings);
-// route B's own inspection runs inside routeBExecCtx, which returns only a
-// context, so these sites inspect the plan themselves, as
+// planHasClassicHistogramQuantile reports the classicHistogramQuantile fact
+// for the plan a dispatch site holds. The settings compositions
+// (routeAQuerySettings, routeBExecCtx) run their own inspection and return
+// only a context, so each site inspects the plan itself, as
 // planHasTSGridNative does for the ts-grid gate.
 func planHasClassicHistogramQuantile(plan chplan.Node) bool {
 	return inspectPlanShape(plan, "").classicHistogramQuantile
