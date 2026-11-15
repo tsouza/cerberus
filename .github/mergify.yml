@@ -28,3 +28,18 @@ merge_queue:
 # so the `queue` label is what queues it.
 merge_protections_settings:
   auto_merge_conditions: true
+
+# `@mergifyio queue` needs write permission by default, and GitHub reports
+# `none` for `github-actions[bot]`, the account the workflow token writes as.
+# merge-queue-requeue.yml's `requeue-dequeued` job posts the command under
+# that account, to put back an entry dequeued for an interrupted check or one
+# whose `queue` label was re-applied. That account may queue only a pull
+# request that carries the `queue` label, the script's own precondition.
+commands_restrictions:
+  queue:
+    conditions:
+      - or:
+          - sender-permission >= write
+          - and:
+              - sender = github-actions[bot]
+              - label=queue

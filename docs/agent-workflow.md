@@ -68,10 +68,14 @@ together, on a draft PR holding `main` plus the batch, one batch at a time. Once
 main ruleset requires passes there, it squash-merges each PR in the batch and deletes its branch. A
 failed batch gets one split-and-recheck round, and the PRs still failing after it leave the queue. A
 push to a queued PR takes it out of the queue; `merge-queue-requeue.yml` re-applies the label, and
-the PR re-enters the queue once the new head's checks pass. Never merge around the queue, and never
-`gh pr merge --admin`. The ruleset's single bypass actor is the `admin` RepositoryRole in `always`
-mode, which makes this policy discipline rather than a mechanical block — honour it regardless. A
-red required check is fixed at the code or at the workflow, never bypassed.
+the PR re-enters the queue once the new head's checks pass. At an unchanged head, re-applying the
+label does not requeue a dequeued PR; `@mergifyio queue` does. The same workflow posts it for a PR
+dequeued for an interrupted check, a bounded number of times per head, and when the `queue` label is
+re-applied to a PR that left the queue for an interruption or because it was taken out. A PR
+dequeued for a failed check waits for a push or a hand-posted `@mergifyio queue`. Never merge around
+the queue, and never `gh pr merge --admin`. The ruleset's single bypass actor is the `admin`
+RepositoryRole in `always` mode, which makes this policy discipline rather than a mechanical block —
+honour it regardless. A red required check is fixed at the code or at the workflow, never bypassed.
 
 A one-commit PR squashes the **commit** subject, not the PR title, so a `chore:` commit under a
 `feat:` PR title lands in the changelog as a chore.
