@@ -1,7 +1,7 @@
 // ch-server-safety-shards.test.mjs — node:test guard for the ch-server-safety
 // shard plan: the shards cover every test of test/chserver, each cancellation
-// shard selects exactly its build, and neither a shard that runs nothing nor a
-// failed or skipped shard job can pass.
+// shard selects exactly its build, each family shard exactly its family, and
+// neither a shard that runs nothing nor a failed or skipped shard job can pass.
 
 import { test } from 'node:test';
 import process from 'node:process';
@@ -10,7 +10,9 @@ import { readFileSync } from 'node:fs';
 
 import {
   CANCELLATION_TEST,
+  FAMILY_SHARDS,
   KIND_CANCELLATION,
+  KIND_FAMILY,
   KIND_REST,
   SHARD_ALL,
   SHARD_REST,
@@ -19,6 +21,9 @@ import {
   cancellationImages,
   cancellationShardId,
   exactNamePattern,
+  familyImages,
+  familyPattern,
+  familyTests,
   namedImages,
   plan,
   readPackage,
@@ -48,10 +53,13 @@ func TestCancellation_CPUBoundEmittedShapesAcrossBuilds(t *testing.T) {
 `;
 const a = 'clickhouse/clickhouse-server:26.6.1.1193-alpine';
 const b = 'clickhouse/clickhouse-server:26.8.10.6-alpine';
-const tests = ['TestConditionCache_X', CANCELLATION_TEST];
+const [family] = FAMILY_SHARDS;
+const familyA = `${family.prefix}_A`;
+const familyB = `${family.prefix}_B`;
+const tests = [familyA, familyB, 'TestConditionCache_X', CANCELLATION_TEST];
 const floor = 'clickhouse/clickhouse-server:25.3.14.14-alpine';
 const pinned = [floor, a, b];
-const pkg = { cancellation: [a, b], tests, rest: [a, floor] };
+const pkg = { cancellation: [a, b], tests, rest: [a, floor], families: { [family.id]: [b] } };
 
 // A condition-cache source naming the floor and a build the cancellation table
 // also names, plus a commented-out image that names nothing.
@@ -89,12 +97,38 @@ test('an exact name pattern anchors every level, including the levels of an imag
   );
 });
 
-test('the plan is one shard per cancellation build plus rest', () => {
+test('the plan is one shard per cancellation build, one per family, plus rest', () => {
   assert.deepEqual(plan([a, b]).include, [
     { id: 'cancellation-26.6.1.1193-alpine', name: 'cancellation 26.6.1.1193-alpine', kind: KIND_CANCELLATION },
     { id: 'cancellation-26.8.10.6-alpine', name: 'cancellation 26.8.10.6-alpine', kind: KIND_CANCELLATION },
+    ...FAMILY_SHARDS.map((f) => ({ id: f.id, name: f.id, kind: KIND_FAMILY })),
     { id: SHARD_REST, name: SHARD_REST, kind: KIND_REST },
   ]);
+});
+
+test('a family shard runs and owns exactly the tests its prefix names and pulls its sources\' images', () => {
+  const sel = selection(family.id, pkg);
+  assert.equal(sel.run, familyPattern(family));
+  assert.equal(sel.skip, '');
+  assert.deepEqual(sel.expect, [familyA, familyB]);
+  assert.deepEqual(shardImages(sel, pinned), [b]);
+  // The pattern anchors the prefix at the start of the top-level name only.
+  const re = new RegExp(familyPattern(family));
+  assert.ok(re.test(familyA));
+  assert.ok(!re.test(`TestX${family.prefix}`));
+  assert.deepEqual(familyTests(family, ['TestX', familyB, familyA]), [familyB, familyA]);
+});
+
+test("a family's images are the ones its defining sources name, and no other source's", () => {
+  const familySource = `func ${familyA}(t *testing.T) {\n\t_ = "${b}"\n}\n`;
+  assert.deepEqual(familyImages([familySource, conditionCacheFixture])[family.id], [b]);
+});
+
+test('a family no test belongs to is an error, never an empty shard', () => {
+  assert.throws(
+    () => selection(SHARD_REST, { ...pkg, tests: ['TestConditionCache_X', CANCELLATION_TEST] }),
+    /FAMILY_SHARDS is stale/,
+  );
 });
 
 test('a cancellation shard runs and owns exactly its build and pulls only its image', () => {
@@ -117,16 +151,17 @@ test('rest boots the images named outside the cancellation table, and only those
   assert.throws(() => restImages([fixture], fixture), /rest would boot none/);
 });
 
-test('rest skips exactly the sharded cancellation builds and owns every top-level test', () => {
+test('rest skips exactly the sharded builds and families and owns every other top-level test', () => {
   const sel = selection(SHARD_REST, pkg);
   assert.equal(sel.run, '');
-  // Each alternative is anchored on the cancellation test, so a condition-cache
-  // subtest of the same build is never skipped.
+  // Each cancellation alternative is anchored on the cancellation test, so a
+  // condition-cache subtest of the same build is never skipped.
   assert.deepEqual(sel.skip.split('|'), [
     exactNamePattern(`${CANCELLATION_TEST}/${a}`),
     exactNamePattern(`${CANCELLATION_TEST}/${b}`),
+    ...FAMILY_SHARDS.map(familyPattern),
   ]);
-  assert.deepEqual(sel.expect, tests);
+  assert.deepEqual(sel.expect, ['TestConditionCache_X', CANCELLATION_TEST]);
   assert.deepEqual(shardImages(sel, pinned), [floor, a]);
 });
 
@@ -140,7 +175,7 @@ test('an unknown shard, an unpinned build, or a renamed cancellation test is an 
   assert.throws(() => selection('cancellation-1.2.3', pkg), /unknown shard/);
   assert.throws(() => shardImages(selection(cancellationShardId(a), pkg), [b]), /not among the pinned images/);
   assert.throws(() => shardImages(selection(SHARD_REST, pkg), [a, b]), /not among the pinned images/);
-  assert.throws(() => selection(SHARD_REST, { ...pkg, tests: ['TestConditionCache_X'] }), /shard table is stale/);
+  assert.throws(() => selection(SHARD_REST, { ...pkg, tests: [familyA, 'TestConditionCache_X'] }), /shard table is stale/);
 });
 
 test('the selection flags always ask for -json and carry -run / -skip only when set', () => {
@@ -212,6 +247,12 @@ test('live tree: every planned shard resolves against test/chserver and the pinn
     assert.ok(sel.expect.length > 0, `${shard.id} owns no test`);
     assert.ok(shardImages(sel, pinned).length > 0, `${shard.id} boots no image`);
   }
+  // Every top-level test is owned by exactly one shard other than the
+  // cancellation builds' (whose parent test rest owns).
+  const owners = plan(live.cancellation)
+    .include.filter((shard) => shard.kind !== KIND_CANCELLATION)
+    .flatMap((shard) => selection(shard.id, live).expect);
+  assert.deepEqual([...owners].sort(), [...live.tests].sort());
   // Every pinned image is booted by some shard, and rest boots fewer than all.
   const booted = new Set(
     plan(live.cancellation).include.flatMap((shard) => shardImages(selection(shard.id, live), pinned)),
