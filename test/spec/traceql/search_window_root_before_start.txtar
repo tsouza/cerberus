@@ -1,0 +1,104 @@
+# A search comparing rootName with a span operand returns the span rows
+# inside the request window, [00:00:00, 00:10:00], and reads each trace's root
+# from that window widened by the maximum trace duration (1h) on both sides,
+# [23:00:00, 01:10:00]. A trace whose root span starts before the window but
+# within the setting resolves the rootName reference /api/search resolves,
+# which reads the whole trace of every trace that overlaps the window.
+#
+#   trace ...01  rootName 'checkout', root 30m before the window
+#     0001 root  'checkout' 23:30:00 +45m   outside the window
+#     0002       'checkout' 00:02:00 +1s    no match
+#     0003       'pay'      00:03:00 +1s    matches
+#   trace ...02  rootName 'api', root inside the window
+#     0010 root  'api'      00:01:00 +2s    no match
+#     0011       'db'       00:01:00 +1s    matches
+#
+# Matches 0003 and 0011. Read inside the request window alone, trace ...01
+# would have no root, read an empty rootName, and 0002 would match too.
+-- search_limit --
+20
+-- search_window --
+1767225600 1767226200
+-- query.traceql --
+{ rootName != name }
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = MergeTree ORDER BY (Timestamp, SpanId);
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, SpanName) VALUES
+    ('b0000000000000000000000000000001', '0000000000000001', '',                 toDateTime64('2025-12-31 23:30:00', 9), 2700000000000, 'checkout'),
+    ('b0000000000000000000000000000001', '0000000000000002', '0000000000000001', toDateTime64('2026-01-01 00:02:00', 9), 1000000000,    'checkout'),
+    ('b0000000000000000000000000000001', '0000000000000003', '0000000000000001', toDateTime64('2026-01-01 00:03:00', 9), 1000000000,    'pay'),
+    ('b0000000000000000000000000000002', '0000000000000010', '',                 toDateTime64('2026-01-01 00:01:00', 9), 2000000000,    'api'),
+    ('b0000000000000000000000000000002', '0000000000000011', '0000000000000010', toDateTime64('2026-01-01 00:01:00', 9), 1000000000,    'db');
+-- expected_rows --
+[
+  ["db", {"__cerberus_parentSpanID": "0000000000000010", "__cerberus_spanID": "0000000000000011", "__cerberus_traceID": "b0000000000000000000000000000002"}, "2026-01-01T00:01:00Z", 1000000000],
+  ["pay", {"__cerberus_parentSpanID": "0000000000000001", "__cerberus_spanID": "0000000000000003", "__cerberus_traceID": "b0000000000000000000000000000001"}, "2026-01-01T00:03:00Z", 1000000000]
+]
+-- parity --
+oracle: tempo
+endpoint: /api/search
+scope: full
+-- args --
+[0] int64 = 1767225600000000000
+[1] int64 = 1767226200000000000
+[2] string = ""
+[3] int64 = 1767222000000000000
+[4] int64 = 1767229800000000000
+[5] string = ""
+[6] int64 = 1767225600000000000
+[7] int64 = 1767226200000000000
+[8] string = ""
+[9] int64 = 1767222000000000000
+[10] int64 = 1767229800000000000
+[11] string = ""
+-- args_optimized --
+[0] string = "__cerberus_traceID"
+[1] string = "__cerberus_parentSpanID"
+[2] string = "__cerberus_spanID"
+[3] int64 = 1767225600000000000
+[4] int64 = 1767226200000000000
+[5] int64 = 1767222000000000000
+[6] int64 = 1767229800000000000
+[7] string = ""
+[8] string = ""
+[9] int64 = 1767225600000000000
+[10] int64 = 1767226200000000000
+[11] int64 = 1767222000000000000
+[12] int64 = 1767229800000000000
+[13] string = ""
+[14] string = ""
+-- chplan --
+SearchTraceLimit traceLimit=20
+  TraceLookupFilter lookups=1 predicate=(FnIfNull(_cerb_root_name, "") != SpanName)
+    Filter predicate=((Timestamp >= FnFromUnixNanos(1767225600000000000)) AND (Timestamp <= FnFromUnixNanos(1767226200000000000)))
+      Scan(otel_traces, columns=[Duration, ParentSpanId, ResourceAttributes, SpanId, SpanName, Timestamp, TraceId])
+    Aggregate groupBy=[TraceId AS _cerb_lookup_trace_id] funcs=[FnArgMin(SpanName, Timestamp) AS _cerb_root_name]
+      Filter predicate=((ParentSpanId = "") AND ((Timestamp >= FnFromUnixNanos(1767222000000000000)) AND (Timestamp <= FnFromUnixNanos(1767229800000000000))))
+        Scan(otel_traces)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;agg=1;join
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_join=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT s.* FROM (SELECT `m`.* FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) AS m LEFT JOIN (SELECT `TraceId` AS `_cerb_lookup_trace_id`, argMin(`SpanName`, `Timestamp`) AS `_cerb_root_name` FROM (SELECT * FROM `otel_traces` PREWHERE (`ParentSpanId` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `_cerb_lookup_trace_id`) AS l0 ON m.`TraceId` = l0.`_cerb_lookup_trace_id` WHERE (ifNull(`_cerb_root_name`, ?) != `SpanName`)) AS s WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT `m`.* FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) AS m LEFT JOIN (SELECT `TraceId` AS `_cerb_lookup_trace_id`, argMin(`SpanName`, `Timestamp`) AS `_cerb_root_name` FROM (SELECT * FROM `otel_traces` PREWHERE (`ParentSpanId` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `_cerb_lookup_trace_id`) AS l0 ON m.`TraceId` = l0.`_cerb_lookup_trace_id` WHERE (ifNull(`_cerb_root_name`, ?) != `SpanName`)) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 20)
+-- sql_optimized --
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT s.* FROM (SELECT `m`.* FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) AS m LEFT JOIN (SELECT `TraceId` AS `_cerb_lookup_trace_id`, argMin(`SpanName`, `Timestamp`) AS `_cerb_root_name` FROM (SELECT `ParentSpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (`ParentSpanId` = ?)) GROUP BY `_cerb_lookup_trace_id`) AS l0 ON m.`TraceId` = l0.`_cerb_lookup_trace_id` WHERE (ifNull(`_cerb_root_name`, ?) != `SpanName`)) AS s WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT `m`.* FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) AS m LEFT JOIN (SELECT `TraceId` AS `_cerb_lookup_trace_id`, argMin(`SpanName`, `Timestamp`) AS `_cerb_root_name` FROM (SELECT `ParentSpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND (`ParentSpanId` = ?)) GROUP BY `_cerb_lookup_trace_id`) AS l0 ON m.`TraceId` = l0.`_cerb_lookup_trace_id` WHERE (ifNull(`_cerb_root_name`, ?) != `SpanName`)) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 20))

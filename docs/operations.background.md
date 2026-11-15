@@ -491,6 +491,43 @@ temporality-aware routing path (see `renderAddTemporalityIndex`'s doc
 comment), so statistics there would only tax writes for a column no read
 path filters.
 
+## Why the per-trace lookback is bounded, and why it defaults to one hour
+
+A per-trace value — the root span's name and service, the trace's duration —
+is a property of the whole trace, and reference Tempo computes it from the
+whole trace: vparquet4's fetch layer selects every trace whose stored time
+range overlaps the request window (`createTraceIterator`, the trace-level
+`StartTimeUnixNano <= end` and `EndTimeUnixNano >= start` predicate) and reads
+the stored `RootSpanName`, `RootServiceName` and duration of that trace, which
+the compactor assembled from every part of it. Cerberus stores spans, not
+assembled traces, so it reproduces a per-trace value by reading the trace's
+spans.
+
+Reading them across full retention would make every per-trace lookup an
+unbounded scan, which the spans-scan bound forbids. Reading them inside the
+query window alone clips every trace that crosses a window edge, which is the
+common case for a short window: a request trace whose root started a minute
+before the window reads an empty `rootName`. A bounded lookback keeps the scan
+bounded and answers every trace no longer than the bound exactly as Tempo
+answers it; only a trace longer than the bound is clipped.
+
+The window is widened on both sides because a trace can cross either edge: a
+root before `start` decides `rootName`, and a span after `end` decides
+`traceDuration`. Widening only the lower edge would still clip every trace
+still running at `end`.
+
+The default, one hour, is Tempo's own `compaction_window` default
+(`tempodb/config.go`, "Maximum time window across which to compact blocks").
+The compactor groups blocks by that window and only combines the parts of one
+trace that fall inside it, so one hour is the span over which Tempo itself
+assembles a trace whole by default — the stored root identity and duration of
+a longer trace already depend on how its parts were compacted. The other
+duration settings Tempo carries were rejected as the analog: the live-store
+`max_trace_live` (30s) and `max_trace_idle` (5s) bound how long a trace is held
+in memory before it is flushed, not how long a trace may be, and the WAL's
+`ingestion_time_range_slack` (2m) bounds clock skew on ingest. Each would clip
+ordinary request traces that Tempo answers whole.
+
 ## Why the TraceId lookup projection covers logs as well as traces
 
 **Both tables carry it, not traces alone.** The issue's own motivation names

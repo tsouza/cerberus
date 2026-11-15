@@ -22,7 +22,7 @@ INSERT INTO otel_traces (StatusCode, ResourceAttributes, TraceId, SpanId) VALUES
 [1] int64 = 1
 [2] string = "Error"
 -- chplan --
-MetricsAggregate op=rate groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name] valueAlias=Value
+MetricsAggregate op=rate groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name] valueAlias=Value perTraceLookback=1h0m0s
   Filter predicate=(StatusCode = "Error")
     Scan(otel_traces)
 -- sql --

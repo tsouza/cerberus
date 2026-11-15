@@ -1,8 +1,8 @@
 {
   "fixture": "traceql/metrics_window_trace_duration_literal",
-  "fan_factor": 1.3333333333333333,
-  "scan_rows": 3,
-  "peak_intermediate": 4,
+  "fan_factor": 1.25,
+  "scan_rows": 4,
+  "peak_intermediate": 5,
   "has_cross_join": false,
   "has_array_join": true,
   "has_recursive_cte": false,
