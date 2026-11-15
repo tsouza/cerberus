@@ -247,6 +247,9 @@ func scalarFilterOp(k tokenKind) Operator {
 
 func (c *cursor) parseRoot() *RootExpr {
 	first := c.parsePipelineStage()
+	if c.kind() == tokPipe && carriesWrappedPipeline(first) {
+		c.fail("syntax error: unexpected %s, expecting %s", tokPipe, tokWith)
+	}
 	elems := []PipelineElement{first}
 
 	var m1 FirstStageElement
@@ -415,11 +418,24 @@ func (c *cursor) parseSpansetPrimary() SpansetExpression {
 
 // parseParenPipeline parses the contents of a parenthesised spanset, which may
 // itself be a `|`-chained pipeline or a spanset operator expression.
+//
+// Only a spanset expression proper — spanset filters and the operators over
+// them — comes back unwrapped. Any other single stage (a scalar filter, a
+// `by(...)`, a `select(...)`) is a one-stage pipeline in parentheses and comes
+// back as a Pipeline, the same as a `|`-chained one, so carriesWrappedPipeline
+// sees `(count() > 1) | rate()` exactly as it sees `({ } | count() > 1) |
+// rate()`. ScalarFilter has to be named: it is a SpansetExpression too, so the
+// type assertion alone would unwrap it.
 func (c *cursor) parseParenPipeline() SpansetExpression {
 	first := c.parsePipelineStage()
+	if c.kind() == tokPipe && carriesWrappedPipeline(first) {
+		c.fail("syntax error: unexpected %s", tokPipe)
+	}
 	if c.kind() != tokPipe {
-		if se, ok := first.(SpansetExpression); ok {
-			return se
+		if _, scalar := first.(ScalarFilter); !scalar {
+			if se, ok := first.(SpansetExpression); ok {
+				return se
+			}
 		}
 		return asPipeline(first)
 	}
@@ -429,6 +445,27 @@ func (c *cursor) parseParenPipeline() SpansetExpression {
 		elems = append(elems, c.parsePipelineStage())
 	}
 	return Pipeline{Elements: elems}
+}
+
+// carriesWrappedPipeline reports whether a pipeline's first stage is, or
+// holds as a spanset-operation operand at any depth, a parenthesised
+// pipeline — the only parse that yields a Pipeline inside a stage
+// (parseParenPipeline). The grammar begins a `|`-chained pipeline with a
+// spanset expression (spanset filters and the operators over them, however
+// parenthesised) or with a bare scalar filter, `by(...)` or `select(...)`; a
+// parenthesised pipeline belongs to the separate wrapped form, which no
+// production lets a `|` follow. `({ } | count() > 1) | rate()` and
+// `({ } | count() > 1) && ({ } | count() > 1) | rate()` are therefore syntax
+// errors, while `({ } && { }) | rate()`, whose parentheses hold no pipeline,
+// is not.
+func carriesWrappedPipeline(e PipelineElement) bool {
+	switch v := e.(type) {
+	case Pipeline:
+		return true
+	case SpansetOperation:
+		return carriesWrappedPipeline(v.LHS) || carriesWrappedPipeline(v.RHS)
+	}
+	return false
 }
 
 func (c *cursor) parseSpansetFilter() *SpansetFilter {

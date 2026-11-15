@@ -101,10 +101,9 @@ func TestParseAcceptsCompatibleOperands(t *testing.T) {
 		`{ } | avg(duration) > 1s`,
 		`{ } | max(duration) + 1 > 2`,
 		`{ } | 1 + max(duration) > 2`,
-		// A parenthesised pipeline, both as a spanset operand and as a
-		// stage of an outer pipeline.
+		// A parenthesised pipeline as a spanset operand. One followed by
+		// `|` is a syntax error (TestParseRejectsPipeAfterWrappedPipeline).
 		`({ .a = 1 } | count() > 1) >> { .b = 2 }`,
-		`({ .a = 1 } | count() > 1) | count() > 1`,
 		// Metrics pipelines.
 		`{ duration > 1s } | rate() by (resource.service.name)`,
 		`{ } | compare({ status = error })`,
