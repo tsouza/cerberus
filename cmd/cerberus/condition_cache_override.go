@@ -65,28 +65,35 @@ func fleetVersionStrings(fv chclient.FleetVersions) []string {
 }
 
 // fleetPassProber runs one pass of the fleet probe and reports what it read.
-type fleetPassProber func(ctx context.Context) chclient.FleetPass
+// order orders the capability canaries still pending on the server the next
+// one runs on (chclient.CanaryOrder).
+type fleetPassProber func(ctx context.Context, order chclient.CanaryOrder) chclient.FleetPass
 
 // rememberingFleetProber is the fleetProber over probe: every pass is folded
 // into one chclient.FleetMemory, and the fleet the memory then describes is
-// what feature resolution, the defect gates and the analyzer decision read. A
-// replica a pass through a load-balanced address did not land on therefore
-// still counts in each of them until it reports another build or is
-// forgotten. Boot and the re-probe loop share the returned prober, so they
-// share the memory.
+// what feature resolution, the capability canary verdicts, the defect gates
+// and the analyzer decision read. A replica a pass through a load-balanced
+// address did not land on therefore still counts in each of them until it
+// reports another build or verdict, or is forgotten. Each pass orders its
+// canaries by that memory (chclient.FleetMemory.CanaryOrder): on each server,
+// the canary run there longest ago runs first. Boot and the re-probe loop
+// share the returned prober, so they share the memory.
 func rememberingFleetProber(probe fleetPassProber) fleetProber {
 	memory := chclient.NewFleetMemory()
 	return func(ctx context.Context) chclient.FleetVersions {
-		return memory.Observe(probe(ctx))
+		return memory.Observe(probe(ctx, memory.CanaryOrder))
 	}
 }
 
 // liveFleetProber probes the deployment's real fleet over short-lived
 // bootstrap connections: every configured ClickHouse address and — when
 // CERBERUS_SCHEMA_CLUSTER names a cluster — every replica of that cluster
-// (chclient.ProbeFleet). A node behind a load balancer that neither list
-// names is read only when a probe lands on it, and the memory holds it
-// between those passes (rememberingFleetProber).
+// (chclient.ProbeFleet), running the capability canaries (fleetCanaries) on
+// every server it reads through an address. A node behind a load balancer
+// that neither list names is read only when a probe lands on it, and the
+// memory holds it, with its canary verdicts, between those passes
+// (rememberingFleetProber). cfg.CHQueryWorkload is the operator-configured
+// workload, read before boot resolves it.
 //
 // The connections bind to ClickHouse's always-present `default` database, not
 // the configured one: the probe runs at boot before setupSchema creates that
@@ -94,8 +101,9 @@ func rememberingFleetProber(probe fleetPassProber) fleetProber {
 // a session whose default database is absent (code 81, UNKNOWN_DATABASE),
 // which would mask a reachable server as a failed probe pinned to the floor.
 func liveFleetProber(cfg config.Config) fleetProber {
-	return rememberingFleetProber(func(ctx context.Context) chclient.FleetPass {
-		return chclient.ProbeFleet(ctx, bootstrapClickHouseConfig(cfg.ClickHouse, versionProbePool), cfg.SchemaProvisioning.Cluster)
+	canaries := fleetCanaries(cfg.CHOptimizations, cfg.CHQueryWorkload)
+	return rememberingFleetProber(func(ctx context.Context, order chclient.CanaryOrder) chclient.FleetPass {
+		return chclient.ProbeFleet(ctx, bootstrapClickHouseConfig(cfg.ClickHouse, versionProbePool), cfg.SchemaProvisioning.Cluster, order, canaries...)
 	})
 }
 

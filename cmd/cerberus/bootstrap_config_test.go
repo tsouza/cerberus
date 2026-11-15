@@ -38,8 +38,6 @@ func TestBootstrapPoolNamesAreDistinct(t *testing.T) {
 	seen := map[string]string{}
 	for name, pool := range map[string]string{
 		"version probe":      versionProbePool,
-		"ts-grid probe":      tsGridProbePool,
-		"result-cache probe": resultCacheProbePool,
 		"schema apply":       schemaApplyPool,
 		"serving (chclient)": chclient.DefaultPoolName,
 	} {

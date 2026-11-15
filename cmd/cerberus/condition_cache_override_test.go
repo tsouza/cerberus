@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -252,5 +253,31 @@ func TestReprobe_ResolvesAgainstTheOldestNode(t *testing.T) {
 	<-done
 	if got := live.get(); got.Set.Has(chopt.FeatureJoinSpill) || got.VersionFallback {
 		t.Fatalf("resolved against %s but enabled=%v fallback=%v; want join_spill off", got.ResolvedVersion, got.Set.IDs(), got.VersionFallback)
+	}
+}
+
+// TestRememberingFleetProber_OrdersCanariesByTheSharedMemory: the order each
+// pass hands the probe is the memory's — a canary a server ran on an earlier
+// pass goes after the ones it has not run — so a replica that refuses one
+// canary and closes the connection still gets every other canary on later
+// passes that land on it.
+func TestRememberingFleetProber_OrdersCanariesByTheSharedMemory(t *testing.T) {
+	t.Parallel()
+	const server = "replica-b"
+	canaries := []chclient.FleetCanary{{Name: chclient.CanaryTSGrid}, {Name: chclient.CanaryResultCache}}
+	var firsts []string
+	prober := rememberingFleetProber(func(_ context.Context, order chclient.CanaryOrder) chclient.FleetPass {
+		first := order(server, canaries)[0].Name
+		firsts = append(firsts, first)
+		return chclient.FleetPass{Nodes: []chclient.FleetNode{{
+			ID: server, Version: fleetNewBuild, Verdicts: map[string]chopt.Capability{first: chopt.CapabilityForbidden},
+		}}, Complete: true}
+	})
+	for range 3 {
+		prober(context.Background())
+	}
+	want := []string{chclient.CanaryTSGrid, chclient.CanaryResultCache, chclient.CanaryTSGrid}
+	if !slices.Equal(firsts, want) {
+		t.Fatalf("canary run first per pass %v; want %v", firsts, want)
 	}
 }

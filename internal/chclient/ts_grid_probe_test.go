@@ -16,12 +16,12 @@ import (
 // so the test pins the exact mapping (these codes -> Forbidden).
 const chCodeReadonly = 164
 
-// TestClassifyTSGridCapability_AllStates pins the tri-state error mapping the
-// boot capability canary relies on:
+// TestClassifyCapabilityFromProbeErr_AllStates pins the tri-state error
+// mapping every capability canary relies on:
 //   - nil                      -> Available
 //   - typed server rejection   -> Forbidden (the setting was refused)
 //   - transport failure        -> Unreachable (no server verdict; conservative)
-func TestClassifyTSGridCapability_AllStates(t *testing.T) {
+func TestClassifyCapabilityFromProbeErr_AllStates(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -81,8 +81,8 @@ func TestClassifyTSGridCapability_AllStates(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := classifyTSGridCapability(tc.err); got != tc.want {
-				t.Errorf("classifyTSGridCapability(%v) = %v; want %v", tc.err, got, tc.want)
+			if got := classifyCapabilityFromProbeErr(tc.err); got != tc.want {
+				t.Errorf("classifyCapabilityFromProbeErr(%v) = %v; want %v", tc.err, got, tc.want)
 			}
 		})
 	}

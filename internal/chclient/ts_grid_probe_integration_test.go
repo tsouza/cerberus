@@ -19,15 +19,15 @@ import (
 // Client.QueryStrings (ProbeVersion's proven path), which scans each row into a
 // Go string. A bare `SELECT 1` returns a UInt8 column, and clickhouse-go's
 // strict scanner rejects `converting UInt8 to *string is unsupported`
-// CLIENT-SIDE. That scan error is not a *clickhouse.Exception, so
-// classifyTSGridCapability mapped a capable, unconstrained server to
-// CapabilityUnreachable -- and the resolver then dropped the native aggregates
-// to fan-out. The fix projects a String column (`SELECT '1'`) that QueryStrings
+// CLIENT-SIDE. That scan error is not a *clickhouse.Exception, so the canary
+// mapped a capable, unconstrained server to CapabilityUnreachable -- and the
+// resolver then dropped the native aggregates to fan-out. The canary body now
+// projects String columns only (capabilityCanarySQL), which the scanner
 // decodes cleanly, so a healthy server reads as the Available verdict it is.
 //
 // This stands up a real, unconstrained ClickHouse (which has the experimental
 // setting) and asserts the verdict is Available -- the assertion that fails on
-// the pre-fix `SELECT 1` body. Gated by the `integration` build tag (requires
+// a numeric-projection body. Gated by the `integration` build tag (requires
 // Docker); the E2E workflow runs it, regular CI doesn't.
 func TestProbeTSGridCapability_HealthyServerIsAvailable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)

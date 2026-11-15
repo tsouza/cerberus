@@ -9,37 +9,47 @@ import (
 	"github.com/tsouza/cerberus/internal/chopt"
 )
 
-// tsGridCapabilityProbeSQL is the canary body. It is deliberately a trivial
-// constant SELECT and NOT a call to a native timeSeries*ToGrid aggregate: the
-// canary only needs to learn whether the server will ACCEPT the experimental
-// setting cerberus stamps on native queries, and that verdict is decided when
-// ClickHouse applies the per-query settings map (constraint / readonly
-// enforcement), BEFORE the query body is analysed. Stamping the setting over a
-// trivial SELECT therefore isolates exactly the FORBIDDEN signal with zero
-// dependence on getting an aggregate's argument types right -- a type slip in a
-// real-aggregate canary would misclassify a permitting server as not-capable
-// and silently lose the optimization. The setting itself is added via
-// WithTSGridSetting, the SAME production carrier the engine uses, so the probe
-// rides the identical settings-map path a real native query does.
+// capabilityCanarySQL is the body of every settings canary (ts_grid,
+// result_cache, workload): the identity read itself (nodeSQL), with the
+// canary's settings stamped on it. It is deliberately a trivial constant
+// SELECT and NOT a call to a native timeSeries*ToGrid aggregate: the canary
+// only needs to learn whether the server will ACCEPT the setting cerberus
+// stamps, and that verdict is decided when ClickHouse applies the per-query
+// settings map (constraint / readonly enforcement), BEFORE the query body is
+// analysed. Stamping the setting over a trivial SELECT therefore isolates
+// exactly the FORBIDDEN signal with zero dependence on getting an aggregate's
+// argument types right -- a type slip in a real-aggregate canary would
+// misclassify a permitting server as not-capable and silently lose the
+// optimization. The setting itself is added via the SAME production carrier
+// the engine uses (WithTSGridSetting and its siblings), so the probe rides the
+// identical settings-map path a real query does.
 //
-// The projected value MUST be a STRING column (`'1'`, not `1`). The probe runs
-// over ProbeVersion's proven path -- Client.QueryStrings -- which decodes a
-// single String-typed column by scanning each row into a Go string. A bare
-// `SELECT 1` yields a UInt8 column, and clickhouse-go's strict scanner rejects
-// `converting UInt8 to *string is unsupported` CLIENT-SIDE. That scan error is
-// not a *clickhouse.Exception, so classifyTSGridCapability would map a perfectly
-// healthy, capable server to CapabilityUnreachable -- silently disabling the
-// native aggregates on every server (the bug this constant fixes). `SELECT '1'`
-// returns a String column QueryStrings decodes cleanly, exactly like
-// `SELECT version()`, so a success is read as the Available verdict it is while
-// a forbidden setting still surfaces as the typed exception -> Forbidden.
-const tsGridCapabilityProbeSQL = "SELECT '1'"
+// Reading the identity in the canary statement means an accepted canary names
+// the server that accepted it in its own row (probeNodes), however a load
+// balancer routes the statement. Both projected values are String columns,
+// which the strict scanner decodes; a numeric projection scanned into a Go
+// string fails CLIENT-SIDE (`converting UInt8 to *string is unsupported`),
+// which is not a *clickhouse.Exception and would read a capable server as
+// CapabilityUnreachable.
+const capabilityCanarySQL = nodeSQL
+
+// probeCanaryNode runs capabilityCanarySQL under ctx's canary settings and
+// returns the server that accepted them, or the verdict the refusal implies
+// (classifyCapabilityFromProbeErr) with ok=false.
+func (c *Client) probeCanaryNode(ctx context.Context) (node FleetNode, verdict chopt.Capability, ok bool) {
+	nodes, err := c.probeNodes(withCapabilityCanary(ctx), capabilityCanarySQL)
+	if err != nil {
+		return FleetNode{}, classifyCapabilityFromProbeErr(err), false
+	}
+	return nodes[0], chopt.CapabilityAvailable, true
+}
 
 // ProbeTSGridCapability runs the boot-time capability canary once and classifies
 // whether the connected ClickHouse server will run the experimental
-// timeSeries*ToGrid aggregate family. It mirrors ProbeVersion: cmd/cerberus
-// calls it over the bootstrap/default-DB connection after building the client,
-// then hands the verdict straight to chopt.Resolve as Config.Capability.
+// timeSeries*ToGrid aggregate family: the ts_grid canary (TSGridCanary) run
+// on its own. cmd/cerberus runs TSGridCanary through ProbeFleet on every
+// server the fleet probe reads over its bootstrap/default-DB connection, then
+// hands the fleet's verdict to chopt.Resolve as Config.Capability.
 //
 // The probe stamps WithTSGridSetting's settings —
 // allow_experimental_time_series_aggregate_functions=1 and the
@@ -60,33 +70,22 @@ const tsGridCapabilityProbeSQL = "SELECT '1'"
 // means per selection mode (auto silently falls back, an explicit list errors
 // under enforcing).
 func (c *Client) ProbeTSGridCapability(ctx context.Context) chopt.Capability {
-	ctx = WithTSGridSetting(withCapabilityCanary(ctx))
-	_, err := c.QueryStrings(ctx, tsGridCapabilityProbeSQL)
-	return classifyTSGridCapability(err)
-}
-
-// classifyTSGridCapability maps the ts-grid canary's error into the
-// tri-state verdict. It is a thin, name-pinned wrapper over
-// classifyCapabilityFromProbeErr (shared with ProbeResultCacheCapability's
-// own classifier) — kept as its own function so
-// TestClassifyTSGridCapability_AllStates keeps pinning the exact TSGrid
-// entry point regardless of how the shared logic is factored.
-func classifyTSGridCapability(err error) chopt.Capability {
-	return classifyCapabilityFromProbeErr(err)
+	return TSGridCanary().probe(ctx, c).verdict
 }
 
 // classifyCapabilityFromProbeErr maps ANY boot capability canary's error into
 // the tri-state chopt.Capability verdict shared by every probe in this
-// package (ProbeTSGridCapability, ProbeResultCacheCapability): a nil error is
+// package (probeCanaryNode, ProbeQueryLogUnionCapability): a nil error is
 // Available. A typed *clickhouse.Exception means the server ANSWERED with a
-// rejection -- since every canary body is a trivial `SELECT '1'` that cannot
+// rejection -- since every settings canary body is a trivial constant SELECT
+// (capabilityCanarySQL) that cannot
 // fail on its own, a server-side exception means it refused the stamped
 // setting, so it is Forbidden (the ts-grid canary's constraint 452 / readonly
 // 164 codes are the expected shapes, and any other typed answer is treated
 // the same: the server will not run the setting). Anything else is a
-// transport failure with no server verdict -- Unreachable, the conservative
-// state that leaves the gated feature off until a later re-probe gets a
-// verdict.
+// transport failure with no server verdict -- Unreachable, which keeps the
+// verdict the fleet memory remembers for the server and, when it remembers
+// none, leaves the gated feature off until a later re-probe gets a verdict.
 func classifyCapabilityFromProbeErr(err error) chopt.Capability {
 	if err == nil {
 		return chopt.CapabilityAvailable

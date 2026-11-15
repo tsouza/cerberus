@@ -312,9 +312,9 @@ against `cerberus_ch_conn_dials_total` is the driver's own age eviction.
 
 The `pool` attribute exists because the connection gauges are
 process-wide while the pools are not: alongside the long-lived `serving`
-pool, startup opens five short-lived bootstrap pools — `version-probe`,
-`tsgrid-probe`, `result-cache-probe`, `query-workload-probe` and
-`schema-apply`. The gauges are
+pool, cerberus opens short-lived bootstrap pools under two names —
+`version-probe`, at boot and on every re-probe, which also carries the
+capability canaries, and `schema-apply`. The gauges are
 observable instruments keyed by attribute set, so without the label
 those pools would collapse onto one series with a single registration
 silently winning — `cerberus_ch_conn_open{pool="serving"}` is the one to
