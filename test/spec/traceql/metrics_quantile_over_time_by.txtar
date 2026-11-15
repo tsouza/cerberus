@@ -24,7 +24,7 @@ INSERT INTO otel_traces (Duration, ResourceAttributes, TraceId, SpanId) VALUES
 [2] float64 = 1e+09
 [3] bool = true
 -- chplan --
-MetricsAggregate op=quantile_over_time attr=(Duration / 1e+09) groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name] quantiles=[0.95] duration=true valueAlias=Value
+MetricsAggregate op=quantile_over_time attr=(Duration / 1e+09) groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name] quantiles=[0.95] duration=true valueAlias=Value perTraceLookback=1h0m0s
   Filter predicate=true
     Scan(otel_traces)
 -- sql --

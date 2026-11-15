@@ -24,7 +24,6 @@ package traceqlwrap
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -106,24 +105,15 @@ func ReconstructSearchWrapPlan(c *spec.Case) (plan chplan.Node, ok bool, err err
 	}
 
 	ctx := context.Background()
-	if v, hasLimit := c.Section("search_limit"); hasLimit {
-		n, perr := strconv.Atoi(strings.TrimSpace(v))
-		if perr != nil {
-			return nil, false, fmt.Errorf("bad search_limit %q: %w", v, perr)
-		}
+	if n, hasLimit, err := c.SearchLimit(); err != nil {
+		return nil, false, err
+	} else if hasLimit {
 		ctx = traceqllower.WithSearchTraceLimit(ctx, n)
 	}
-	if v, hasWindow := c.Section("search_window"); hasWindow {
-		fields := strings.Fields(v)
-		if len(fields) != 2 {
-			return nil, false, fmt.Errorf("search_window wants two Unix-second bounds, got %q", v)
-		}
-		startSec, err1 := strconv.ParseInt(fields[0], 10, 64)
-		endSec, err2 := strconv.ParseInt(fields[1], 10, 64)
-		if err1 != nil || err2 != nil {
-			return nil, false, fmt.Errorf("bad search_window %q", v)
-		}
-		ctx = traceqllower.WithSearchWindow(ctx, time.Unix(startSec, 0).UTC(), time.Unix(endSec, 0).UTC())
+	if start, end, hasWindow, err := c.SearchWindow(); err != nil {
+		return nil, false, err
+	} else if hasWindow {
+		ctx = traceqllower.WithSearchWindow(ctx, start, end)
 	}
 
 	lang := tempo.NewExplainLang(schema.DefaultOTelTraces(), explainStep)

@@ -351,9 +351,10 @@ func emitCompareInRangeWindow(t *testing.T, start, end time.Time, spansScoped bo
 
 // TestEmitCompareRootLookupWindowed pins the compare() root-lookup window
 // push: the per-trace root aggregate's own scan gains a `TraceId IN
-// (<bounded cohort>)` seed (below its GROUP BY, where CH can
-// partition-prune it), whose own bound renders as two direct
-// `fromUnixTimestamp64Nano(...)` Timestamp calls. windowRootLookupTraceIDSeed
+// (<bounded cohort>)` seed (below its GROUP BY), whose own bound renders as two
+// direct `fromUnixTimestamp64Nano(...)` Timestamp calls, and a direct bound of
+// its own — the seed's window widened by the maximum trace duration, where CH
+// can partition-prune it — two more. windowRootLookupTraceIDSeed
 // derives the spans table straight from RootLookup's own Scan
 // (rootLookupSpansTable), not from the emit context, so this push fires
 // identically whether or not the context threads WithSpansTable — unlike
@@ -374,10 +375,11 @@ func TestEmitCompareRootLookupWindowed(t *testing.T) {
 	}
 
 	// The base compare window renders its bounds as positional `?` args, so
-	// the only `fromUnixTimestamp64Nano` calls come from the root-lookup
-	// seed's own bound: two (lo + hi), present identically with or without
-	// the spans scope threaded on the context.
-	const wantRootSeedBoundCalls = 2
+	// the only `fromUnixTimestamp64Nano` calls come from the root lookup: the
+	// seed's own bound and the root scan's widened bound, two (lo + hi) each,
+	// present identically with or without the spans scope threaded on the
+	// context.
+	const wantRootSeedBoundCalls = 4
 	countWith := strings.Count(withScope, fromUnixNanoCall)
 	countWithout := strings.Count(withoutScope, fromUnixNanoCall)
 	if countWith != wantRootSeedBoundCalls {
@@ -412,6 +414,13 @@ func TestEmitCompareRootLookupWindowed(t *testing.T) {
 		}
 		if containsInt64Arg(tc.args, scanWindowEmitStartNano) {
 			t.Errorf("%s: seed lower bound must be Start-range, not raw Start (found raw Start=%d in args %v)", tc.name, scanWindowEmitStartNano, tc.args)
+		}
+		lookback := schema.DefaultOTelTraces().MaxTraceDuration.Nanoseconds()
+		if !containsInt64Arg(tc.args, wantSeedLoNano-lookback) {
+			t.Errorf("%s: root scan lower bound arg %d (Start - range - lookback) not found in emitted args %v", tc.name, wantSeedLoNano-lookback, tc.args)
+		}
+		if !containsInt64Arg(tc.args, wantSeedHiNano+lookback) {
+			t.Errorf("%s: root scan upper bound arg %d (End + lookback) not found in emitted args %v", tc.name, wantSeedHiNano+lookback, tc.args)
 		}
 	}
 

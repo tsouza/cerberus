@@ -348,6 +348,15 @@ const (
 	nonRootWindowRange = time.Minute
 )
 
+// nonRootSeedLookback is the maximum trace duration the root-lookup leg is
+// emitted with. A non-root selection reads its traces' roots within the
+// window widened by that duration on both sides, so the lookback alone
+// decides which partitions the leg without the trace_id_ts envelope reads.
+// Five years reaches back past every noise partition the seed writes
+// (2022–2024) and past the selected trace's May-1 root, so the leg without
+// the envelope reads them all and the envelope's narrowing is observable.
+const nonRootSeedLookback = 5 * 365 * 24 * time.Hour
+
 // compareNonRootRootLookupSQL builds the REAL chplan.MetricsCompare +
 // chplan.RangeWindow tree for the non-root-selection root-lookup shape
 // (matching TraceIDColumn "TraceId", ParentSpanId-rooted RootLookup over
@@ -374,7 +383,8 @@ func compareNonRootRootLookupSQL(t *testing.T, spansTable, lookupTable string, w
 		Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "SpanName"}, Right: &chplan.LitString{V: "matching-child"},
 	}
 	m := &chplan.MetricsCompare{
-		Selection: matchingChild,
+		Selection:        matchingChild,
+		PerTraceLookback: nonRootSeedLookback,
 		Pairs: &chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{
 			&chplan.FuncCall{Fn: chplan.FnTuple, Args: []chplan.Expr{
 				&chplan.LitString{V: "name"}, &chplan.ColumnRef{Name: "ServiceName"},
@@ -483,8 +493,9 @@ func TestCompareNonRootRootLookupTraceIDTsEnvelope(t *testing.T) {
 		t.Fatalf("optimize spans: %v", err)
 	}
 
-	// before / after are the REAL chsql-emitted root-lookup subquery for the
-	// #1214 unbounded-but-lossless shape vs. the trace_id_ts-envelope shape —
+	// before / after are the REAL chsql-emitted root-lookup subquery bounded
+	// by the trace-duration lookback alone vs. narrowed further by the
+	// trace_id_ts envelope —
 	// captured from the actual emitter (see compareNonRootRootLookupSQL), not
 	// hand-typed SQL text.
 	before, beforeArgs := compareNonRootRootLookupSQL(t, spans, lookup, winLo, winHi, false)
@@ -509,10 +520,10 @@ func TestCompareNonRootRootLookupTraceIDTsEnvelope(t *testing.T) {
 	}
 	beforeRows, afterRows := rows(before, beforeArgs...), rows(after, afterArgs...)
 	if len(beforeRows) != 1 || beforeRows[0] != "selected|checkout-root|checkout" {
-		t.Fatalf("unbounded root lookup = %v, want Tempo root enrichment for selected child", beforeRows)
+		t.Fatalf("lookback-bounded root lookup = %v, want Tempo root enrichment for selected child", beforeRows)
 	}
 	if len(afterRows) != len(beforeRows) || afterRows[0] != beforeRows[0] {
-		t.Fatalf("Tempo parity violation: unbounded=%v trace_id_ts envelope=%v", beforeRows, afterRows)
+		t.Fatalf("Tempo parity violation: lookback-bounded=%v trace_id_ts envelope=%v", beforeRows, afterRows)
 	}
 
 	beforeParts, beforeTotal := cmpScanPartPrune(t, db, before, beforeArgs...)
