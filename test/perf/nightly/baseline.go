@@ -69,7 +69,8 @@ var nightlyCapCeilingBytes = uint64(math.Round(float64(perfNightlyMemoryCapBytes
 
 // committedCeilingBytes derives one sentinel's PRONG (b) ceiling — the number
 // written into nightly-baseline.json — from its calibration-time max-of-N
-// measurement and its own per-sentinel headroom multiplier.
+// measurement (the highest of calibratedBound's rounds) and its own
+// per-sentinel headroom multiplier.
 //
 // The min() is the load-bearing part: for a sentinel already close to the
 // absolute ceiling (pod_status_reason_gauge measured 76.6% against a 1.5x
@@ -106,12 +107,12 @@ func exceedsCommittedCeiling(maxBytes uint64, bound nightlyBound) bool {
 const nightlyBaselinePath = "../nightly-baseline.json"
 
 // nightlyBound is one sentinel's committed bound: the calibration-time
-// max-of-N measurement (kept for the diff/failure message), the
-// headroom-multiplied, cap-clamped ceiling the gate actually asserts against,
-// and the HTTP status the sentinel was calibrated to expect (PRONG (b) itself
-// re-checks this against the sentinel's CURRENT ExpectedStatus, catching a
-// baseline gone stale relative to sentinels.go rather than silently
-// comparing memory across two different outcome classes).
+// max-of-N measurement (the highest of the calibration rounds, kept for the
+// diff/failure message), the headroom-multiplied, cap-clamped ceiling the gate
+// actually asserts against, and the HTTP status the sentinel was calibrated to
+// expect (PRONG (b) itself re-checks this against the sentinel's CURRENT
+// ExpectedStatus, catching a baseline gone stale relative to sentinels.go
+// rather than silently comparing memory across two different outcome classes).
 type nightlyBound struct {
 	Name           string `json:"name"`
 	ExpectedStatus int    `json:"expected_status"`
@@ -185,28 +186,32 @@ func releaseLine(v chopt.Version) string {
 // the parse error separately from any test plumbing so both the integration
 // harness and the unit lane can consume the same loader.
 func readNightlyBaseline() (nightlyBaseline, error) {
-	buf, err := os.ReadFile(nightlyBaselinePath)
+	return readNightlyBaselineFile(nightlyBaselinePath)
+}
+
+// readNightlyBaselineFile parses the bound file at path.
+func readNightlyBaselineFile(path string) (nightlyBaseline, error) {
+	buf, err := os.ReadFile(path) //nolint:gosec // the committed bound file, or a calibration's -baseline flag
 	if err != nil {
-		return nightlyBaseline{}, fmt.Errorf("read baseline %s: %w", nightlyBaselinePath, err)
+		return nightlyBaseline{}, fmt.Errorf("read baseline %s: %w", path, err)
 	}
 	var b nightlyBaseline
 	if err := json.Unmarshal(buf, &b); err != nil {
-		return nightlyBaseline{}, fmt.Errorf("parse baseline %s: %w", nightlyBaselinePath, err)
+		return nightlyBaseline{}, fmt.Errorf("parse baseline %s: %w", path, err)
 	}
 	return b, nil
 }
 
-// writeNightlyBaselineFile serialises b as pretty JSON with a trailing
+// writeNightlyBaselineFile serialises b to path as pretty JSON with a trailing
 // newline, so the committed file diffs cleanly and is never hand-edited
-// (invariant 9). Its only caller is the UPDATE_NIGHTLY_PERF_BASELINE=1
-// calibration path.
-func writeNightlyBaselineFile(b nightlyBaseline) error {
+// (invariant 9). Its only caller is CombineCalibrationFiles.
+func writeNightlyBaselineFile(path string, b nightlyBaseline) error {
 	buf, err := json.MarshalIndent(b, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal baseline: %w", err)
 	}
 	buf = append(buf, '\n')
-	if err := os.WriteFile(nightlyBaselinePath, buf, 0o600); err != nil {
+	if err := os.WriteFile(path, buf, 0o600); err != nil {
 		return fmt.Errorf("write baseline: %w", err)
 	}
 	return nil

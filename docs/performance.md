@@ -272,6 +272,33 @@ every PR) to *broad* (corpus-wide, nightly).
    dispatched statement, minimum of three samples interleaved with the
    peer's, must take at most `maxPlanningPeerRatio` (4x) the peer's minimum.
 
+   A gating run makes one pass over the nightly corpus and asserts one
+   max-of-5 round per sentinel. A calibration is a `perf-nightly.yml` dispatch
+   with `calibrate` (and, to recalibrate only some sentinels,
+   `calibrate_sentinels`). In place of the gating legs it runs
+   `perf-nightly-calibrate`, `nightlyCalibrationRunners` (4) legs per server,
+   each on its own runner; each leg makes `nightlyCalibrationRounds`
+   (5) such passes over one sample load (`just calibrate-nightly-perf-rounds
+   <image> <rounds.json> [sentinel...]`) and uploads the round maxima of
+   every sentinel it calibrates as `nightly-rounds-<clickhouse>-<runner>`.
+   The `perf-nightly` job combines every leg's rounds and uploads the result
+   as `nightly-baseline`, failing on any leg whose rounds are missing: each
+   listed sentinel commits the highest round of any runner of its server as
+   `max_of_n_bytes`, with the ceiling derived from it. `just
+   update-nightly-perf-baseline <rounds.json>...` runs the same combine over
+   local rounds files; each file names its runner, and the combine refuses
+   one runner named twice, but rounds measured one after another on one host
+   are not the independent runners the runner count assumes. Every pass still runs the whole corpus. A sentinel whose rounds, across
+   all of its runners, span more bytes than the margin its ceiling leaves
+   above that highest round, or that fewer than four runners measured in five
+   full passes each, is refused: it keeps its committed bound, the
+   calibration fails naming it, and every other sentinel's new bound is still
+   written and uploaded. A refused sentinel with no committed bound to keep
+   fails the calibration without writing anything. A spread refusal means
+   the sentinel's headroom (`Sentinel.BaselineHeadroom`) does not cover its
+   run-to-run noise; it is resolved in the headroom, not by calibrating
+   again.
+
 The static fan-out lint is the per-PR gate (in the required `check` job); the
 scaling harness and cardinality ratchet are release-gate checks that no-op on
 an ordinary PR and run for real through the `perf-guards` chDB lane on

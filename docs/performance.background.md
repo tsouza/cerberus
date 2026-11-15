@@ -32,6 +32,100 @@ server. That is why layer 5 seeds each sentinel at the scale #2364's own
 root-cause mechanisms need in order to engage, and reads peak per-query memory
 back from a real server's `system.query_log`.
 
+## Why a nightly calibration takes several rounds on several runners
+
+A nightly ceiling used to be the max-of-5 of a single calibration run times the
+sentinel's headroom. On ClickHouse 26.9, `label_values_matcher_stock_key_renamed`
+calibrated at 24,632,333 bytes (ceiling 29,558,799), and the next two gating
+runs measured 30,693,646 and 30,301,384. A second calibration landed at
+26,550,752 (ceiling 31,860,902), and a later gating run measured 32,643,773.
+Across fifteen gating runs of unchanged code its max-of-5 spanned 25.9M-32.6M
+bytes, a 1.26x range; a 1.20x headroom covers rounds whose highest is at most
+1/(2-1.20) = 1.25x their lowest. Its twin
+`label_values_matcher_stock_key`, measured seconds apart on the same server
+over the same data, did not move with it.
+
+Locally the spread is per query. On a local 26.9 server limited to four CPUs, five
+fresh containers gave round maxima of 22.4M-26.2M, and the five repeats inside
+one container ranged as widely as 22.5M-26.2M over the same part. The statement
+runs on five threads (`peak_threads_usage`), and its peak `memory_usage` is the
+sum of whichever per-stream buffers are live at the same moment, so it depends
+on how the threads interleave. Under `max_threads=1` the same statement
+measured 10.7M-10.9M on most repeats and 12.2M-13.0M on the rest. The part
+layout of the freshly loaded tables — the first candidate, since a background
+merge racing the measurement would differ between runs — was the same in every
+container and every copy measured: one active part, 112-113 selected marks, no
+merge in flight. Precise memory accounting (`max_untracked_memory=1`) raised
+the readings by about 4M and left the spread in place, so the per-thread
+tracking granularity is not the source either. The single-thread outliers
+were not traced further.
+
+On CI the spread is wider than locally (1.26x across gating runs against about
+1.17x across local containers), and both calibration runs that set this
+sentinel's bounds sat at the bottom of the gating distribution — one of them
+calibrated every sentinel, so it ran the same corpus order a gating run does.
+Part of the CI spread comes with the runner or the run rather than the query:
+five passes on one local 26.9 server over the whole corpus measured this
+sentinel at 28.1M-29.5M, a 1.05x range, where separate CI runs spread 1.26x.
+Rounds taken inside one run do not sample that part, so a calibration takes
+its rounds on several runners. The rounds still sample the per-query part,
+the 22.5M-26.2M a sentinel's repeats spread over on one server, so a runner's
+highest round is less likely to sit low than a single max-of-5. Each round
+is a whole pass over the corpus, so a sentinel's rounds run in the corpus
+order its gating runs do; passes after the first run on a server the earlier
+passes have warmed, which a gating run never measures.
+
+The runner count, `nightlyCalibrationRunners`, is four. A runner is in the low
+tail when a ceiling anchored on its highest round is one an ordinary run of
+the same code crosses: for this sentinel, a max-of-5 below the highest
+measured run (32,643,773) divided by its 1.20 headroom, about 27.2M. Five of
+the seventeen 26.9 runs measured — the two calibrations and three of the
+fifteen gating runs — landed there, a rate of 5/17, about 0.29. The committed
+max-of-N is the highest round of any runner, so it is set by the low tail only
+when every runner lands there: on independent runners that is 0.29 for one,
+0.087 for two, 0.025 for three and 0.0075 for four, the first count under one
+calibration in a hundred. The rate is an upper estimate for a runner's
+highest round, which is the highest of five passes rather than one, and a
+rough one from seventeen draws. A fifth runner would take that to 0.002 for
+a quarter more legs on every server of the matrix, each about an hour of
+runner time.
+
+The arithmetic assumes the runners land independently, and the legs of one
+dispatch are not fully independent: they run the same commit within the same
+minutes, on the same runner image and under the same time-of-day load. Both
+single-run calibrations landed low while three of fifteen gating runs did,
+which a factor shared by one dispatch would explain as well as chance (0.087).
+Whatever part of the low tail is shared by a dispatch, its legs do not
+sample, and four runners guard against it less than the figures above say.
+The spread check is what limits the damage in that case: a dispatch whose
+legs all land low commits a ceiling the next ordinary run can cross, but it
+does so only when the rounds' own spread fits inside the margin. More runners
+also widen the measured spread, which raises the chance the check refuses;
+for `label_values_matcher_stock_key_renamed` on 26.9 the spread already
+measured across gating runs exceeds the 1.20x margin, so a calibration is
+more likely to refuse it than to commit a low ceiling (#4151).
+
+A max-of-5 is one draw from that distribution, and a ceiling anchored on one
+draw is anchored on wherever that draw landed. The highest of several rounds
+cannot be set by a low-tail round, the highest across several runners cannot
+be set by a low-tail runner, and the spread between all of the rounds is a
+measurement of the noise the headroom has to cover — including the run-to-run
+part no single runner sees. Measuring with one thread
+would narrow the spread without removing it, measure a pipeline no deployment
+runs, and move every committed bound at once.
+
+The spread check refuses rather than widens. Widening a ceiling to absorb the
+measured noise would keep the calibration green while the sentinel loses the
+regression its headroom was chosen to catch; refusing puts that choice back on
+the headroom constant, where the regression size it guards is recorded. The
+check is a rule, not a statistical bound: twenty rounds do not bound how far
+the next run lands above the highest of them. Near the boundary its outcome is
+itself random, which is why a refusal is resolved in the headroom: dispatching
+calibrations until one passes would select the rounds that understate the
+noise. A refusal leaves the sentinel's committed bound in place and still
+writes every other sentinel's new bound, so it does not cost the rest of the
+server's calibration.
+
 ## Why `fan_factor` is nullable
 
 Before issue #1519, the stages the profiler's per-subquery `count()`
