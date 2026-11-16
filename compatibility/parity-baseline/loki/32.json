@@ -5,7 +5,6 @@
   "cases": [
     "cerberus/metadata-endpoints | index_volume | range | n/a | {cluster=~\"cluster-.+\"} | index volume parity (label sets): aggregateBy=labels limit=1000 selector={cluster=~\"cluster-.+\"}",
     "upstream:9268ab84d37f65fc",
-    "upstream:c5a1739151bcfca9",
-    "upstream:ea1fa5f78e67ab6e"
+    "upstream:c5a1739151bcfca9"
   ]
 }

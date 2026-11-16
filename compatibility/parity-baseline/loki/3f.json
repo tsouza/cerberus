@@ -9,6 +9,7 @@
     "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-2\", region=\"us-east-1\", service=\"cache\", service_name=\"cache\"} | detected_field values parity: service=cache field=error",
     "detected-fields | detected_fields | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-5\", region=\"us-east-1\", service=\"prometheus\", service_name=\"prometheus\"} | detected_fields parity: service=prometheus",
     "regression/structured-metadata-generic.yaml | log | range | BACKWARD | {service_name=\"metadata-probe\"} | request_id=\"\" | generic structured-metadata label filter - absent resolves to empty string",
-    "upstream:433dde6f8e95f5ed"
+    "upstream:433dde6f8e95f5ed",
+    "upstream:afab4e1f87cceffc"
   ]
 }
