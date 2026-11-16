@@ -22,8 +22,9 @@
 //     Prints the images the shard boots, out of <image>..., every image the
 //     package pins (the recipe passes them from just/common.just): a
 //     cancellation shard's own build; for a family shard, the images the
-//     sources defining its tests name; for `rest`, the images the package's
-//     sources name outside the cancellation table; every image for `all`.
+//     sources defining its tests name, directly or through a single-line
+//     image constant; for `rest`, the images the package's sources name
+//     outside the cancellation table; every image for `all`.
 //
 //   go test <args>...
 //     Runs that go test command with the selection of the shard named by
@@ -287,12 +288,13 @@ export function builtUnderIntegration(source) {
   return constraint === null || constraint[1].trim() === 'integration';
 }
 
-// imageConstants — every Go constant across sources whose value is an image
-// literal, `name = "clickhouse/clickhouse-server:<tag>"`, by name.
+// imageConstants — every single-line Go constant across sources whose value
+// is an image literal, `const name = "clickhouse/clickhouse-server:<tag>"`,
+// by name.
 export function imageConstants(sources) {
   const constants = new Map();
   for (const source of sources) {
-    for (const m of source.matchAll(/^(?:const\s+|\t)(\w+)\s*=\s*"(clickhouse\/clickhouse-server:[^"]+)"/gm)) {
+    for (const m of source.matchAll(/^const\s+(\w+)\s*=\s*"(clickhouse\/clickhouse-server:[^"]+)"/gm)) {
       constants.set(m[1], m[2]);
     }
   }
@@ -300,9 +302,10 @@ export function imageConstants(sources) {
 }
 
 // familyImages — for each family of FAMILY_SHARDS, the images the sources
-// that define one of its tests name: as a literal, or through an image
-// constant another source of the package defines. A family whose tests name
-// none would boot an image its shard never pulled, so it is an error.
+// that define one of its tests name, as a literal or through a single-line
+// image constant (imageConstants) any source of the package defines. It
+// resolves no other indirection, so a family boots only images named one of
+// those two ways. A family whose tests name no image at all is an error.
 export function familyImages(sources) {
   const constants = imageConstants(sources);
   const images = {};
@@ -321,7 +324,9 @@ export function familyImages(sources) {
         if (new RegExp(`\\b${name}\\b`).test(code)) named.add(image);
       }
     }
-    if (defined && named.size === 0) throw new Error(`${PACKAGE_DIR}: family ${family.id} names no image; its shard would pull none`);
+    if (defined && named.size === 0) {
+      throw new Error(`${PACKAGE_DIR}: family ${family.id} names no image; its shard would pull none`);
+    }
     images[family.id] = [...named];
   }
   return images;

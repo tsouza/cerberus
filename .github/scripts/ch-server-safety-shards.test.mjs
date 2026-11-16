@@ -149,13 +149,20 @@ test("a family's images are the ones its defining sources name, and no other sou
 
 test("a family's images include an image constant its source uses and another source defines", () => {
   const familySource = `func ${familyA}(t *testing.T) {\n\tstart(t, sharedImage)\n}\n`;
-  const definingSource = `const sharedImage = "${b}"\n\nconst (\n\tunusedImage = "${a}"\n)\n`;
+  const definingSource = `const sharedImage = "${b}"\n\nconst unusedImage = "${a}"\n`;
   assert.deepEqual(familyImages([familySource, definingSource])[family.id], [b]);
 });
 
-test("a family's image constant named only in a comment is not one it boots", () => {
-  const familySource = `func ${familyA}(t *testing.T) {\n\t// was sharedImage\n\t_ = "${a}"\n}\n`;
+test("a family's image constant named only in a comment, or inside a longer name, is not one it boots", () => {
+  const familySource =
+    `func ${familyA}(t *testing.T) {\n\t// was sharedImage\n\tstart(t, sharedImageOld)\n\t_ = "${a}"\n}\n`;
   const definingSource = `const sharedImage = "${b}"\n`;
+  assert.deepEqual(familyImages([familySource, definingSource])[family.id], [a]);
+});
+
+test('only a single-line const declares an image constant, never a var or an assignment', () => {
+  const familySource = `func ${familyA}(t *testing.T) {\n\tstart(t, varImage, assigned)\n\t_ = "${a}"\n}\n`;
+  const definingSource = `var varImage = "${b}"\n\nfunc f() {\n\tassigned = "${b}"\n}\n`;
   assert.deepEqual(familyImages([familySource, definingSource])[family.id], [a]);
 });
 
@@ -215,7 +222,10 @@ test('an unknown shard, an unpinned build, or a renamed cancellation test is an 
   assert.throws(() => selection('cancellation-1.2.3', pkg), /unknown shard/);
   assert.throws(() => shardImages(selection(cancellationShardId(a), pkg), [b]), /not among the pinned images/);
   assert.throws(() => shardImages(selection(SHARD_REST, pkg), [a, b]), /not among the pinned images/);
-  assert.throws(() => selection(SHARD_REST, { ...pkg, tests: [familyA, ...otherFamilyTests, 'TestConditionCache_X'] }), /shard table is stale/);
+  assert.throws(
+    () => selection(SHARD_REST, { ...pkg, tests: [familyA, ...otherFamilyTests, 'TestConditionCache_X'] }),
+    /shard table is stale/,
+  );
 });
 
 test('the selection flags always ask for -json and carry -run / -skip only when set', () => {

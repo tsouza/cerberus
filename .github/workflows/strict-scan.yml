@@ -632,9 +632,10 @@ jobs:
   # The cancellation builds run one after another inside their test, and
   # dominate the package's run time, so each build is its own parallel shard.
   # Each test family the planner's FAMILY_SHARDS names (the classic-histogram
-  # ceiling tests, the DISTINCT spill harm probe) is a shard of its own too, and a `rest` shard runs
-  # every other test as the complement of those selections. The shard plan is derived from
-  # test/chserver's own build table and test names by
+  # ceiling tests, the DISTINCT spill harm probe) is a shard of its own too,
+  # and a `rest` shard runs every other test as the complement of those
+  # selections. The shard plan is derived from test/chserver's own build
+  # table and test names by
   # .github/scripts/ch-server-safety-shards.mjs, so a new test or build is
   # never left unselected. `ch-server-safety` is the one status context; it
   # aggregates the shards.
