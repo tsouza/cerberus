@@ -261,16 +261,112 @@ func TestExpand_SameSeedSameCases(t *testing.T) {
 // from seed 42's.
 const seedsThatMustDiffer = 8
 
-func TestIntersectSorted(t *testing.T) {
+func TestIntersect(t *testing.T) {
 	t.Parallel()
-	got := intersectSorted([]string{"a", "c", "d", "f"}, []string{"b", "c", "f", "g"})
-	if !slices.Equal(got, []string{"c", "f"}) {
-		t.Fatalf("intersectSorted = %v", got)
-	}
-	if got := intersectSorted(nil, []string{"a"}); len(got) != 0 {
-		t.Fatalf("intersectSorted(nil, …) = %v", got)
+	for _, tc := range []struct {
+		a, b, want []string
+	}{
+		{[]string{"a", "c", "d", "f"}, []string{"b", "c", "f", "g"}, []string{"c", "f"}},
+		{[]string{"f", "a", "d", "c"}, []string{"g", "c", "b", "f"}, []string{"f", "c"}},
+		{[]string{"c", "a", "b"}, []string{"b", "a", "c"}, []string{"c", "a", "b"}},
+		{nil, []string{"a"}, []string{}},
+		{[]string{"a"}, nil, []string{}},
+	} {
+		if got := Intersect(tc.a, tc.b); !slices.Equal(got, tc.want) {
+			t.Errorf("Intersect(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
 	}
 }
+
+// TestCandidates_UnsortedIndexesKeepEveryEligibleStream narrows a dataset
+// whose selector list and indexes are all out of order and requires the
+// candidate set to be exactly the streams that satisfy every requirement,
+// computed one stream at a time by membership. An intersection that walks
+// the lists in lockstep drops common elements on this input.
+func TestCandidates_UnsortedIndexesKeepEveryEligibleStream(t *testing.T) {
+	t.Parallel()
+	const (
+		s1 = `{app="s1"}`
+		s2 = `{app="s2"}`
+		s3 = `{app="s3"}`
+		s4 = `{app="s4"}`
+		s5 = `{app="s5"}`
+	)
+	md := &Metadata{
+		AllSelectors:         []string{s4, s1, s5, s3, s2},
+		ByFormat:             map[LogFormat][]string{LogFormatJSON: {s5, s2, s4, s1}, LogFormatLogfmt: {s3}},
+		ByLabelKey:           map[string][]string{"app": {s2, s5, s1, s3, s4}, "team": {s1, s4, s2}},
+		ByStructuredMetadata: map[string][]string{"detected_level": {s5, s4, s2, s3, s1}},
+		RangesBySelector: map[string]*StreamRanges{
+			s1: {MinRange: time.Minute}, s2: {MinRange: time.Minute}, s3: {MinRange: time.Minute},
+			s4: {MinRange: time.Minute}, s5: {MinRange: time.Minute},
+		},
+		TimeRange: Window{Start: testSpanStart, End: testSpanStart.Add(24 * time.Hour)},
+		Version:   MetadataVersion,
+	}
+	for _, req := range []Requirements{
+		{},
+		{Labels: []string{"app"}},
+		{Labels: []string{"app", "team"}},
+		{StructuredMetadata: []string{"detected_level"}},
+		{LogFormat: string(LogFormatJSON), Labels: []string{"team"}, StructuredMetadata: []string{"detected_level"}},
+	} {
+		var want []string
+		for _, sel := range md.AllSelectors {
+			ok := req.LogFormat == "" || slices.Contains(md.ByFormat[LogFormat(req.LogFormat)], sel)
+			for _, l := range req.Labels {
+				ok = ok && slices.Contains(md.ByLabelKey[l], sel)
+			}
+			for _, k := range req.StructuredMetadata {
+				ok = ok && slices.Contains(md.ByStructuredMetadata[k], sel)
+			}
+			if ok {
+				want = append(want, sel)
+			}
+		}
+		got, err := NewResolver(md, 1).candidates(req, true, false)
+		if err != nil {
+			t.Fatalf("candidates(%+v): %v", req, err)
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("candidates(%+v) = %v, want every eligible stream %v", req, got, want)
+		}
+	}
+}
+
+// TestExpand_DrawsEveryLabelledCommittedStream expands one label-requiring
+// definition under many seeds over the committed metadata and requires
+// the draws to cover every stream that carries the label.
+func TestExpand_DrawsEveryLabelledCommittedStream(t *testing.T) {
+	t.Parallel()
+	md, err := LoadMetadata(committedMetadataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const label = "service_name"
+	def := Definition{Query: "${SELECTOR}", Kind: KindLog, Directions: DirectionsForward, Requires: Requirements{Labels: []string{label}}, TimeRange: TimeRange{Length: "1h"}}
+	drawn := map[string]bool{}
+	for seed := range int64(drawSeeds) {
+		cases, err := NewResolver(md, seed).Expand(def, false)
+		if err != nil {
+			t.Fatalf("Expand(seed %d): %v", seed, err)
+		}
+		drawn[cases[0].Query] = true
+	}
+	for _, sel := range md.ByLabelKey[label] {
+		if !drawn[sel] {
+			t.Errorf("no seed in 0..%d drew %s, which carries label %q", drawSeeds-1, sel, label)
+		}
+	}
+	if len(md.ByLabelKey[label]) != len(md.AllSelectors) {
+		t.Fatalf("label %q indexes %d of %d streams; every seeded stream carries it", label, len(md.ByLabelKey[label]), len(md.AllSelectors))
+	}
+}
+
+// drawSeeds is how many seeds TestExpand_DrawsEveryLabelledCommittedStream tries; at
+// 13 equally likely streams, 512 draws miss one with probability below
+// 13·(12/13)^512 ≈ 2e-17, and the draws are deterministic per seed.
+const drawSeeds = 512
 
 func TestQueryKindAndInferKind(t *testing.T) {
 	t.Parallel()

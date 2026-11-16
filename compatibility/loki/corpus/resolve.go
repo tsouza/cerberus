@@ -173,16 +173,25 @@ type requirementIndex struct {
 	index  map[string][]string
 }
 
-// pickSelector narrows the dataset's selectors to the streams that satisfy
-// every requirement and draws one. With needsRange, a stream without a
-// positive range bound for the lane is not eligible, since `${RANGE}`
-// could not then be resolved for it.
+// pickSelector draws one of the streams [Resolver.candidates] returns.
 func (r *Resolver) pickSelector(req Requirements, needsRange, instant bool) (string, error) {
+	candidates, err := r.candidates(req, needsRange, instant)
+	if err != nil {
+		return "", err
+	}
+	return candidates[r.rnd.Intn(len(candidates))], nil
+}
+
+// candidates narrows the dataset's selectors to the streams that satisfy
+// every requirement, in `all_selectors` order. With needsRange, a stream
+// without a positive range bound for the lane is not eligible, since
+// `${RANGE}` could not then be resolved for it.
+func (r *Resolver) candidates(req Requirements, needsRange, instant bool) ([]string, error) {
 	candidates := r.md.AllSelectors
 	if req.LogFormat != "" {
-		candidates = intersectSorted(candidates, r.md.ByFormat[LogFormat(req.LogFormat)])
+		candidates = Intersect(candidates, r.md.ByFormat[LogFormat(req.LogFormat)])
 		if len(candidates) == 0 {
-			return "", fmt.Errorf("no stream has log format %q", req.LogFormat)
+			return nil, fmt.Errorf("no stream has log format %q", req.LogFormat)
 		}
 	}
 	for _, dim := range []requirementIndex{
@@ -193,14 +202,14 @@ func (r *Resolver) pickSelector(req Requirements, needsRange, instant bool) (str
 		{"keyword", req.Keywords, r.md.ByKeyword},
 	} {
 		for _, v := range dim.values {
-			candidates = intersectSorted(candidates, dim.index[v])
+			candidates = Intersect(candidates, dim.index[v])
 			if len(candidates) == 0 {
-				return "", fmt.Errorf("no stream has %s %q", dim.what, v)
+				return nil, fmt.Errorf("no stream has %s %q", dim.what, v)
 			}
 		}
 	}
 	if len(candidates) == 0 {
-		return "", errors.New("the dataset has no streams")
+		return nil, errors.New("the dataset has no streams")
 	}
 
 	if needsRange {
@@ -211,11 +220,11 @@ func (r *Resolver) pickSelector(req Requirements, needsRange, instant bool) (str
 			}
 		}
 		if len(eligible) == 0 {
-			return "", fmt.Errorf("no candidate stream has a positive %s range bound", laneName(instant))
+			return nil, fmt.Errorf("no candidate stream has a positive %s range bound", laneName(instant))
 		}
 		candidates = eligible
 	}
-	return candidates[r.rnd.Intn(len(candidates))], nil
+	return candidates, nil
 }
 
 // pickLabel draws one equality matcher of selector as the `${LABEL_NAME}` /
@@ -314,24 +323,17 @@ func logqlDuration(d time.Duration) string {
 	return s
 }
 
-// intersectSorted returns the elements common to a and b by walking both
-// in lockstep, which is correct when both are ascending sets — the shape
-// every metadata index is specified to have. On an input that is not
-// sorted the walk can step past a common element, and the dataset
-// metadata cerberus commits does carry unsorted lists; issue #4126 tracks
-// sorting them, which changes which streams some definitions draw.
-func intersectSorted(a, b []string) []string {
+// Intersect returns the elements of a that b also carries, in a's order.
+// It tests membership, so neither list needs to be sorted.
+func Intersect(a, b []string) []string {
+	inB := make(map[string]struct{}, len(b))
+	for _, s := range b {
+		inB[s] = struct{}{}
+	}
 	out := make([]string, 0, min(len(a), len(b)))
-	for i, j := 0, 0; i < len(a) && j < len(b); {
-		switch {
-		case a[i] == b[j]:
-			out = append(out, a[i])
-			i++
-			j++
-		case a[i] < b[j]:
-			i++
-		default:
-			j++
+	for _, s := range a {
+		if _, ok := inB[s]; ok {
+			out = append(out, s)
 		}
 	}
 	return out

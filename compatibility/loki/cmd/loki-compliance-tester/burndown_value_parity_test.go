@@ -37,40 +37,6 @@ func burndownMetadata() *corpus.Metadata {
 	}
 }
 
-// TestIntersectSorted pins the deterministic selector pick. The metadata
-// maps carry generator-ordered slices, so an unsorted intersection would
-// make the burndown query set depend on the fixture's serialisation
-// order — the diff would move between runs.
-func TestIntersectSorted(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name string
-		a, b []string
-		want []string
-	}{
-		{"overlap-is-sorted", []string{"c", "a", "b"}, []string{"b", "c"}, []string{"b", "c"}},
-		{"disjoint", []string{"a"}, []string{"b"}, nil},
-		{"empty-left", nil, []string{"a"}, nil},
-		{"empty-right", []string{"a"}, nil, nil},
-		{"duplicates-in-a-are-kept", []string{"a", "a"}, []string{"a"}, []string{"a", "a"}},
-		{"b-order-does-not-leak", []string{"a", "b"}, []string{"b", "a"}, []string{"a", "b"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := intersectSorted(tc.a, tc.b)
-			if len(got) != len(tc.want) {
-				t.Fatalf("intersectSorted(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
-			}
-			for i := range tc.want {
-				if got[i] != tc.want[i] {
-					t.Fatalf("entry %d = %q, want %q (full: %v)", i, got[i], tc.want[i], got)
-				}
-			}
-		})
-	}
-}
-
 // TestBurndownCases_Shape pins the case list's structure: the selector
 // picks, the metric/log window split, the direction and the step. Each
 // of these is a precondition for the value diff meaning what it claims.
@@ -162,9 +128,8 @@ func TestBurndownCases_CoversEveryBurnedDownOperator(t *testing.T) {
 }
 
 // TestBurndownCases_UsesTheSortedDurationSelector — the logfmt/duration
-// selector is chosen through intersectSorted, so it must be the
-// lexicographically-first member of the intersection rather than the
-// first entry of either input slice.
+// selector is the lexicographically-first member of the intersection
+// rather than the first entry of either input slice.
 func TestBurndownCases_UsesTheSortedDurationSelector(t *testing.T) {
 	t.Parallel()
 	cases, err := burndownCases(burndownMetadata())

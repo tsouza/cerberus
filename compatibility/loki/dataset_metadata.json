@@ -3,7 +3,7 @@
   "all_selectors": [
     "{cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"}",
     "{cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-1\", region=\"us-east-1\", service=\"database\", service_name=\"database\"}",
-    "{cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-10\", region=\"us-east-1\", service=\"nginx\", service_name=\"nginx\"}",
+    "{cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-10\", region=\"us-east-1\", service=\"nginx\", service_name=\"nginx\"}",
     "{cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-11\", region=\"us-east-1\", service=\"kubernetes\", service_name=\"kubernetes\"}",
     "{cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-2\", region=\"us-east-1\", service=\"cache\", service_name=\"cache\"}",
     "{cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-3\", region=\"us-east-1\", service=\"auth-service\", service_name=\"auth-service\"}",
@@ -164,7 +164,7 @@
     "detected_level": [
       "{cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"}",
       "{cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-1\", region=\"us-east-1\", service=\"database\", service_name=\"database\"}",
-      "{cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-10\", region=\"us-east-1\", service=\"nginx\", service_name=\"nginx\"}",
+      "{cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-10\", region=\"us-east-1\", service=\"nginx\", service_name=\"nginx\"}",
       "{cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-11\", region=\"us-east-1\", service=\"kubernetes\", service_name=\"kubernetes\"}",
       "{cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-2\", region=\"us-east-1\", service=\"cache\", service_name=\"cache\"}",
       "{cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-3\", region=\"us-east-1\", service=\"auth-service\", service_name=\"auth-service\"}",
