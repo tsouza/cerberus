@@ -25,7 +25,7 @@ require (
 	github.com/moby/moby/client v0.6.2
 	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter v0.152.0
 	github.com/prometheus/client_golang v1.25.0
-	github.com/prometheus/common v0.73.1
+	github.com/prometheus/common v0.74.0
 	github.com/prometheus/prometheus v0.315.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.1.0
@@ -241,7 +241,7 @@ require (
 	github.com/opentracing-contrib/go-grpc v0.1.2 // indirect
 	github.com/opentracing-contrib/go-stdlib v1.1.1 // indirect
 	github.com/opentracing/opentracing-go v1.2.1-0.20220228012449-10b1cf09e00b // indirect
-	github.com/pandatix/go-abnf v0.5.3 // indirect
+	github.com/pandatix/go-abnf v0.5.5 // indirect
 	github.com/parquet-go/bitpack v1.0.0 // indirect
 	github.com/parquet-go/jsonlite v1.0.0 // indirect
 	github.com/parquet-go/parquet-go v0.30.1 // indirect
@@ -319,7 +319,7 @@ require (
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.28.0 // indirect
-	go.yaml.in/yaml/v2 v2.4.4 // indirect
+	go.yaml.in/yaml/v2 v2.4.5 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.6 // indirect
 	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
@@ -327,7 +327,7 @@ require (
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
 	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
-	golang.org/x/oauth2 v0.37.0 // indirect
+	golang.org/x/oauth2 v0.38.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/telemetry v0.0.0-20261009151841-97e8ea77aa2a // indirect
 	golang.org/x/term v0.47.0 // indirect
