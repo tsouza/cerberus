@@ -1,0 +1,271 @@
+-- query.promql --
+histogram_quantile(0.5, sum by (le) (last_over_time(request_latency_bucket[5m])))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9), Count UInt64, Sum Float64,
+    BucketCounts Array(UInt64), ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_sum (
+    MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9), Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_gauge (
+    MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9), Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('request_latency', map('lb','a'), map(), toDateTime64('2025-12-31 23:58:00', 9), 4, 6.0,  [1,1,1,1], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','a'), map(), toDateTime64('2025-12-31 23:59:00', 9), 8, 12.0, [4,2,1,1], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','a'), map(), toDateTime64('2026-01-01 00:00:00', 9), 8, 16.0, [1,3,2,2], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','b'), map(), toDateTime64('2025-12-31 23:59:00', 9), 5, 7.0,  [3,1,0,1], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','b'), map(), toDateTime64('2026-01-01 00:00:00', 9), 9, 20.0, [1,1,5,2], [1.0,2.0,3.0]);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:01Z", 3.5]
+]
+-- description --
+histogram_quantile over last_over_time of a classic bucket selector, summed across both series by `le`.
+Prometheus reads each `le` rung of a classic histogram as an ordinary float
+series, so last_over_time reduces every rung to the newest cumulative count in the window
+before the quantile interpolates the ladder. Series `a` carries three samples
+of one layout; series `b` carries two, the newer with its top finite bound
+moved from 4 to 3, so its `le="4"` and `le="3"` rungs each hold one sample.
+The unequal sample counts and the layout change make avg_over_time,
+max_over_time, min_over_time, last_over_time and sum_over_time answer five
+different quantiles, aggregated and per series.
+-- args --
+[0] string = ""
+[1] int64 = 9
+[2] int64 = 0
+[3] int64 = 0
+[4] int64 = 1
+[5] int64 = 0
+[6] int64 = 0
+[7] int64 = 1
+[8] int64 = 2
+[9] int64 = 1
+[10] int64 = 1
+[11] string = "Map(String,String)"
+[12] int64 = 1
+[13] int64 = 1
+[14] int64 = 0
+[15] int64 = 1
+[16] int64 = 1
+[17] int64 = 2
+[18] int64 = 1
+[19] int64 = 1
+[20] int64 = 1
+[21] int64 = 1
+[22] int64 = 1
+[23] int64 = 0
+[24] int64 = 1
+[25] int64 = 1
+[26] int64 = 1
+[27] int64 = 1
+[28] int64 = 1
+[29] int64 = 1
+[30] int64 = 1
+[31] int64 = 1
+[32] int64 = 2982616
+[33] int64 = 1
+[34] int64 = 1
+[35] int64 = 2982616
+[36] int64 = 2
+[37] int64 = 1
+[38] int64 = 1
+[39] int64 = 2
+[40] int64 = 1
+[41] int64 = 1
+[42] int64 = 1
+[43] int64 = 0
+[44] int64 = 1
+[45] int64 = 1
+[46] int64 = 3
+[47] int64 = 1
+[48] int64 = 2
+[49] int64 = 1
+[50] int64 = 1
+[51] int64 = 1
+[52] int64 = 1
+[53] int64 = 1
+[54] int64 = 0
+[55] int64 = 1
+[56] int64 = 1
+[57] int64 = 1
+[58] int64 = 1
+[59] int64 = 1
+[60] int64 = 1
+[61] string = "service_name"
+[62] string = "service.name"
+[63] string = "service_name"
+[64] string = "service.name"
+[65] string = "service_name"
+[66] string = ""
+[67] string = "service_name"
+[68] int64 = 1
+[69] string = "request_latency"
+[70] string = "request.latency"
+[71] string = "request/latency"
+[72] string = "2026-01-01 00:00:01.000000000Z"
+[73] int64 = 9
+[74] string = "2026-01-01 00:00:01.000000000Z"
+[75] int64 = 9
+[76] int64 = 300000000000
+[77] int64 = 1
+[78] int64 = 0
+[79] int64 = 160
+[80] int64 = 40
+[81] int64 = 1
+[82] int64 = 12
+[83] int64 = 1
+[84] int64 = 0
+[85] int64 = 880
+[86] int64 = 1
+[87] int64 = 1
+[88] string = "request_latency"
+[89] string = "request.latency"
+[90] string = "request/latency"
+[91] string = "2026-01-01 00:00:01.000000000Z"
+[92] int64 = 9
+[93] string = "2026-01-01 00:00:01.000000000Z"
+[94] int64 = 9
+[95] int64 = 300000000000
+[96] int64 = 1
+[97] int64 = 0
+[98] int64 = 805306368
+[99] int64 = 0
+[100] int64 = 152520
+[101] int64 = 0
+-- args_optimized --
+[0] string = ""
+[1] int64 = 9
+[2] int64 = 0
+[3] int64 = 0
+[4] int64 = 1
+[5] int64 = 0
+[6] int64 = 0
+[7] int64 = 1
+[8] int64 = 2
+[9] int64 = 1
+[10] int64 = 1
+[11] string = "Map(String,String)"
+[12] int64 = 1
+[13] int64 = 1
+[14] int64 = 0
+[15] int64 = 1
+[16] int64 = 1
+[17] int64 = 2
+[18] int64 = 1
+[19] int64 = 1
+[20] int64 = 1
+[21] int64 = 1
+[22] int64 = 1
+[23] int64 = 0
+[24] int64 = 1
+[25] int64 = 1
+[26] int64 = 1
+[27] int64 = 1
+[28] int64 = 1
+[29] int64 = 1
+[30] int64 = 1
+[31] int64 = 1
+[32] int64 = 2982616
+[33] int64 = 1
+[34] int64 = 1
+[35] int64 = 2982616
+[36] int64 = 2
+[37] int64 = 1
+[38] int64 = 1
+[39] int64 = 2
+[40] int64 = 1
+[41] int64 = 1
+[42] int64 = 1
+[43] int64 = 0
+[44] int64 = 1
+[45] int64 = 1
+[46] int64 = 3
+[47] int64 = 1
+[48] int64 = 2
+[49] int64 = 1
+[50] int64 = 1
+[51] int64 = 1
+[52] int64 = 1
+[53] int64 = 1
+[54] int64 = 0
+[55] int64 = 1
+[56] int64 = 1
+[57] int64 = 1
+[58] int64 = 1
+[59] int64 = 1
+[60] int64 = 1
+[61] string = "service_name"
+[62] string = "service.name"
+[63] string = "service_name"
+[64] string = "service.name"
+[65] string = "service_name"
+[66] string = ""
+[67] string = "service_name"
+[68] int64 = 1
+[69] string = "request_latency"
+[70] string = "request.latency"
+[71] string = "request/latency"
+[72] string = "2026-01-01 00:00:01.000000000Z"
+[73] int64 = 9
+[74] string = "2026-01-01 00:00:01.000000000Z"
+[75] int64 = 9
+[76] int64 = 300000000000
+[77] int64 = 1
+[78] int64 = 0
+[79] int64 = 160
+[80] int64 = 40
+[81] int64 = 1
+[82] int64 = 12
+[83] int64 = 1
+[84] int64 = 0
+[85] int64 = 880
+[86] int64 = 1
+[87] int64 = 1
+[88] string = "request_latency"
+[89] string = "request.latency"
+[90] string = "request/latency"
+[91] string = "2026-01-01 00:00:01.000000000Z"
+[92] int64 = 9
+[93] string = "2026-01-01 00:00:01.000000000Z"
+[94] int64 = 9
+[95] int64 = 300000000000
+[96] int64 = 1
+[97] int64 = 0
+[98] int64 = 805306368
+[99] int64 = 0
+[100] int64 = 152520
+[101] int64 = 0
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, FnNow64(9) AS TimeUnix, Value AS Value]
+  HistogramQuantile phi=0.5 cumulative groupBy=[Attributes AS Attributes]
+    Project [Attributes AS Attributes, FnArrayMap(kpl -> FnArrayMap(kpr -> FnArrayMap(kpm -> FnArrayFill((kpv, kpk) -> kpk, kpl, FnArrayMap((kpa, kpb) -> ((kpa > 0) AND (kpa = kpb)), kpr, kpm)), FnArray(FnArrayMap((kpa, kpb) -> (kpa + kpb), kpr, FnArrayCumSumNonNegative(FnArrayMap(kpd -> (0 - kpd), FnArrayDifference(kpr))))))[1], FnArray(FnArrayMap((kpa, kpv) -> FnIf(FnIsNaN(kpv), 0, FnToInt64(kpa)), FnArraySort((kpk, kpp) -> kpp, FnArrayEnumerate(kpl), FnArraySort((kpi, kpv) -> FnTuple(kpv, (0 - kpi)), FnArrayEnumerate(kpl), kpl)), kpl)))[1], FnArray(FnTupleElement(_hq_merged, 2)))[1] AS BucketCounts, FnTupleElement(_hq_merged, 1) AS ExplicitBounds]
+      Project [FnCast(FnMap(), "Map(String,String)") AS Attributes, FnArrayMap(kme -> FnArrayMap(kmeb -> FnArrayMap(kmev -> FnArrayMap(kmb -> FnArrayMap(kms -> FnArrayMap(kmu -> FnTuple(kmu, FnArrayConcat(FnArrayMap(kmr -> FnArraySum(kmr), FnArraySplit((kmx, kmf) -> kmf, FnArraySort((kmx, kmk, kmi) -> FnTuple(kmk, kmi), kmev, kmeb, FnArrayEnumerate(kmeb)), kms)), FnArray(FnArraySum(FnArrayMap(cs -> FnToFloat64(FnArraySum(cs)), _hq_counts_list))))), FnArray(FnArrayFilter((kmx, kmf) -> kmf, kmb, kms)))[1], FnArray(FnArrayMap((kmd, kmi) -> ((kmi = 1) OR (kmd != 0)), FnArrayDifference(kmb), FnArrayEnumerate(kmb))))[1], FnArray(FnArraySort((kmx, kmk, kmi) -> FnTuple(kmk, kmi), kmeb, kmeb, FnArrayEnumerate(kmeb))))[1], FnArray(FnArrayFlatten(FnArrayMap(kmx -> FnTupleElement(kmx, 2), kme))))[1], FnArray(FnArrayFlatten(FnArrayMap(kmx -> FnTupleElement(kmx, 1), kme))))[1], FnArray(FnArrayMap((bs, cs) -> FnArrayMap(kreb -> FnArrayMap(krev -> FnArrayMap(krb -> FnArrayMap(krs -> FnArrayMap(kru -> FnTuple(kru, FnArrayCumSum(FnArrayMap(krr -> FnArraySum(krr), FnArraySplit((krx, krf) -> krf, FnArraySort((krx, krk, kri) -> FnTuple(krk, kri), krev, kreb, FnArrayEnumerate(kreb)), krs)))), FnArray(FnArrayFilter((krx, krf) -> krf, krb, krs)))[1], FnArray(FnArrayMap((krd, kri) -> ((kri = 1) OR (krd != 0)), FnArrayDifference(krb), FnArrayEnumerate(krb))))[1], FnArray(FnArraySort((krx, krk, kri) -> FnTuple(krk, kri), kreb, kreb, FnArrayEnumerate(kreb))))[1], FnArray(FnArrayFilter((krrc, krrb) -> FnNot((FnIsNaN(krrb) OR FnIsInfinite(krrb))), FnArrayMap(krrc -> FnToFloat64(krrc), FnArraySlice(cs, 1, FnLength(bs))), bs)))[1], FnArray(FnArrayFilter(krx -> FnNot((FnIsNaN(krx) OR FnIsInfinite(krx))), bs)))[1], _hq_bounds_list, _hq_counts_list)))[1] AS _hq_merged]
+        Aggregate groupBy=[] funcs=[FnGroupArray(ExplicitBounds) AS _hq_bounds_list, FnGroupArray(BucketCounts) AS _hq_counts_list] dropEmptyOnNoGroup
+          Project * REPLACE [FnArraySlice(ExplicitBounds, 1, (FnLength(ExplicitBounds) + FnThrowIf((FnSum((FnLength(ExplicitBounds) + 1)) OVER (PARTITION BY []) > 2982616), "classic-histogram bucket merge exceeds the merged-bucket-entry resource bound"))) AS ExplicitBounds, FnArraySlice(BucketCounts, 1, (FnLength(BucketCounts) + FnThrowIf((FnSum((FnLength(ExplicitBounds) + 1)) OVER (PARTITION BY []) > 2982616), "classic-histogram bucket merge exceeds the merged-bucket-entry resource bound"))) AS BucketCounts]
+            Project [Attributes AS Attributes, FnArrayConcat(FnArraySlice(FnTupleElement(_hq_window_ladder, 2), 1, 1), FnArrayPopFront(FnArrayDifference(FnTupleElement(_hq_window_ladder, 2)))) AS BucketCounts, FnTupleElement(_hq_window_ladder, 1) AS ExplicitBounds]
+              Project [Attributes AS Attributes, FnArrayMap(kwe -> FnArrayMap(kweb -> FnArrayMap(kwev -> FnArrayMap(kwet -> FnArrayMap(kwb -> FnArrayMap(kws -> FnArrayMap(kwu -> FnTuple(kwu, FnArrayConcat(FnArrayMap((kwr, kwo) -> FnArraySort((c, t) -> t, kwr, kwo)[FnLength(FnArraySort((c, t) -> t, kwr, kwo))], FnArraySplit((kwx, kwf) -> kwf, FnArraySort((kwx, kwk, kwi) -> FnTuple(kwk, kwi), kwev, kweb, FnArrayEnumerate(kweb)), kws), FnArraySplit((kwx, kwf) -> kwf, FnArraySort((kwx, kwk, kwi) -> FnTuple(kwk, kwi), kwet, kweb, FnArrayEnumerate(kweb)), kws)), FnArray(FnArraySort((c, t) -> t, FnArrayMap(cs -> FnToFloat64(FnArraySum(cs)), _hq_counts_list), _hq_ts_list)[FnLength(FnArraySort((c, t) -> t, FnArrayMap(cs -> FnToFloat64(FnArraySum(cs)), _hq_counts_list), _hq_ts_list))]))), FnArray(FnArrayFilter((kwx, kwf) -> kwf, kwb, kws)))[1], FnArray(FnArrayMap((kwd, kwi) -> ((kwi = 1) OR (kwd != 0)), FnArrayDifference(kwb), FnArrayEnumerate(kwb))))[1], FnArray(FnArraySort((kwx, kwk, kwi) -> FnTuple(kwk, kwi), kweb, kweb, FnArrayEnumerate(kweb))))[1], FnArray(FnArrayFlatten(FnArrayMap(kwx -> FnTupleElement(kwx, 3), kwe))))[1], FnArray(FnArrayFlatten(FnArrayMap(kwx -> FnTupleElement(kwx, 2), kwe))))[1], FnArray(FnArrayFlatten(FnArrayMap(kwx -> FnTupleElement(kwx, 1), kwe))))[1], FnArray(FnArrayMap((bs, cs, kwrt) -> FnArrayMap(kreb -> FnArrayMap(krev -> FnArrayMap(krb -> FnArrayMap(krs -> FnArrayMap(kru -> FnTuple(kru, FnArrayCumSum(FnArrayMap(krr -> FnArraySum(krr), FnArraySplit((krx, krf) -> krf, FnArraySort((krx, krk, kri) -> FnTuple(krk, kri), krev, kreb, FnArrayEnumerate(kreb)), krs))), FnArrayWithConstant(FnLength(kru), kwrt)), FnArray(FnArrayFilter((krx, krf) -> krf, krb, krs)))[1], FnArray(FnArrayMap((krd, kri) -> ((kri = 1) OR (krd != 0)), FnArrayDifference(krb), FnArrayEnumerate(krb))))[1], FnArray(FnArraySort((krx, krk, kri) -> FnTuple(krk, kri), kreb, kreb, FnArrayEnumerate(kreb))))[1], FnArray(FnArrayFilter((krrc, krrb) -> FnNot((FnIsNaN(krrb) OR FnIsInfinite(krrb))), FnArrayMap(krrc -> FnToFloat64(krrc), FnArraySlice(cs, 1, FnLength(bs))), bs)))[1], FnArray(FnArrayFilter(krx -> FnNot((FnIsNaN(krx) OR FnIsInfinite(krx))), bs)))[1], _hq_bounds_list, _hq_counts_list, _hq_ts_list)))[1] AS _hq_window_ladder]
+                Filter predicate=(FnThrowIf((_hq_window_series_entries > 152520), "classic-histogram window exceeds the bucket-entries-per-series resource bound") = 0)
+                  Aggregate groupBy=[FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes] funcs=[FnGroupArray(ExplicitBounds) AS _hq_bounds_list, FnGroupArray(BucketCounts) AS _hq_counts_list, FnGroupArray(TimeUnix) AS _hq_ts_list, FnUniqExact(TimeUnix) AS _hq_samples, FnSum((FnLength(ExplicitBounds) + 1)) AS _hq_window_series_entries] dropEmptyOnNoGroup
+                    Filter predicate=(FnThrowIf((scalarSubquery{Project [(((160 * _hq_window_scan_series) + (40 * ((_hq_window_scan_series * _hq_window_scan_entries) / FnGreatest(_hq_window_scan_rows, 1)))) + ((12 * FnGreatest((_hq_window_scan_entries - ((_hq_window_scan_series * _hq_window_scan_entries) / FnGreatest(_hq_window_scan_rows, 1))), 0)) + (880 * (_hq_window_scan_entries / FnGreatest(_hq_window_scan_series, 1))))) AS _hq_window_scan_cost] ; Aggregate groupBy=[] funcs=[FnSum((FnLength(ExplicitBounds) + 1)) AS _hq_window_scan_entries, FnCount() AS _hq_window_scan_rows, FnUniqCombined64(Attributes, ResourceAttributes, ServiceName) AS _hq_window_scan_series] ; Filter predicate=((((MetricName IN ("request_latency", "request.latency", "request/latency")) AND (TimeUnix <= FnParseDateTime64BestEffort("2026-01-01 00:00:01.000000000Z", 9))) AND (TimeUnix > (FnParseDateTime64BestEffort("2026-01-01 00:00:01.000000000Z", 9) - FnToIntervalNanosecond(300000000000)))) AND FnNot((FnBitAnd(Flags, 1) != 0))) ; Scan(otel_metrics_histogram)} > 805306368), "classic-histogram window exceeds the estimated-memory resource bound") = 0)
+                      Filter predicate=((((MetricName IN ("request_latency", "request.latency", "request/latency")) AND (TimeUnix <= FnParseDateTime64BestEffort("2026-01-01 00:00:01.000000000Z", 9))) AND (TimeUnix > (FnParseDateTime64BestEffort("2026-01-01 00:00:01.000000000Z", 9) - FnToIntervalNanosecond(300000000000)))) AND FnNot((FnBitAnd(Flags, 1) != 0)))
+                        Scan(otel_metrics_histogram)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;agg=0
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, if(length(`BucketCounts`) = 0, nan, if(`_cerb_hqc_observations` = 0, nan, if(0.5 < 0, -inf, if(0.5 > 1, inf, if(`_cerb_hqc_idx` = length(`_cerb_hqc_cum`) AND length(`_cerb_hqc_buckets`) != length(`ExplicitBounds`), if(length(`ExplicitBounds`) = 0, nan, `_cerb_hqc_bounds`[length(`_cerb_hqc_bounds`)]), if(`_cerb_hqc_idx` = 1 AND `_cerb_hqc_bounds`[1] <= 0, `_cerb_hqc_bounds`[1], (if(`_cerb_hqc_idx` = 1, 0.0, `_cerb_hqc_bounds`[`_cerb_hqc_idx` - 1]) + (`_cerb_hqc_bounds`[`_cerb_hqc_idx`] - if(`_cerb_hqc_idx` = 1, 0.0, `_cerb_hqc_bounds`[`_cerb_hqc_idx` - 1])) * (((0.5 * `_cerb_hqc_observations`) - if(`_cerb_hqc_idx` = 1, 0.0, `_cerb_hqc_cum`[`_cerb_hqc_idx` - 1])) / (`_cerb_hqc_cum`[`_cerb_hqc_idx`] - if(`_cerb_hqc_idx` = 1, 0.0, `_cerb_hqc_cum`[`_cerb_hqc_idx` - 1])))))))))) AS `Value` FROM (SELECT *, arrayFirstIndex(c -> c >= (0.5 * `_cerb_hqc_observations`), `_cerb_hqc_cum`) AS `_cerb_hqc_idx` FROM (SELECT *, `_cerb_hqc_cum`[length(`_cerb_hqc_cum`)] AS `_cerb_hqc_observations` FROM (SELECT *, arrayFilter((b, k) -> k, `ExplicitBounds`, `_cerb_hqc_kept_mask`) AS `_cerb_hqc_bounds`, arrayFilter((c, k) -> k, arrayResize(`_cerb_hqc_buckets`, greatest(length(`_cerb_hqc_buckets`), length(`ExplicitBounds`))), arrayConcat(`_cerb_hqc_kept_mask`, arrayWithConstant(greatest(length(`_cerb_hqc_buckets`) - length(`ExplicitBounds`), 0), 1))) AS `_cerb_hqc_cum` FROM (SELECT *, arrayMap((b, p) -> b != p, `ExplicitBounds`, arraySlice(arrayPushFront(`ExplicitBounds`, nan), 1, length(`ExplicitBounds`))) AS `_cerb_hqc_kept_mask`, arrayMap(x -> toFloat64(x), `BucketCounts`) AS `_cerb_hqc_buckets` FROM (SELECT `_cerb_histogram_input`.1 AS `Attributes`, `_cerb_histogram_input`.2 AS `BucketCounts`, `_cerb_histogram_input`.3 AS `ExplicitBounds` FROM (SELECT arrayJoin([(`Attributes`, `BucketCounts`, `ExplicitBounds`)]) AS `_cerb_histogram_input` FROM (SELECT `Attributes` AS `Attributes`, arrayMap(kpl -> arrayMap(kpr -> arrayMap(kpm -> arrayFill((kpv, kpk) -> kpk, kpl, arrayMap((kpa, kpb) -> ((kpa > ?) AND (kpa = kpb)), kpr, kpm)), array(arrayMap((kpa, kpb) -> (kpa + kpb), kpr, arrayCumSumNonNegative(arrayMap(kpd -> (? - kpd), arrayDifference(kpr))))))[?], array(arrayMap((kpa, kpv) -> if(isNaN(kpv), ?, toInt64(kpa)), arraySort((kpk, kpp) -> kpp, arrayEnumerate(kpl), arraySort((kpi, kpv) -> tuple(kpv, (? - kpi)), arrayEnumerate(kpl), kpl)), kpl)))[?], array(tupleElement(`_hq_merged`, ?)))[?] AS `BucketCounts`, tupleElement(`_hq_merged`, ?) AS `ExplicitBounds` FROM (SELECT CAST(map(), ?) AS `Attributes`, arrayMap(kme -> arrayMap(kmeb -> arrayMap(kmev -> arrayMap(kmb -> arrayMap(kms -> arrayMap(kmu -> tuple(kmu, arrayConcat(arrayMap(kmr -> arraySum(kmr), arraySplit((kmx, kmf) -> kmf, arraySort((kmx, kmk, kmi) -> tuple(kmk, kmi), kmev, kmeb, arrayEnumerate(kmeb)), kms)), array(arraySum(arrayMap(cs -> toFloat64(arraySum(cs)), `_hq_counts_list`))))), array(arrayFilter((kmx, kmf) -> kmf, kmb, kms)))[?], array(arrayMap((kmd, kmi) -> ((kmi = ?) OR (kmd != ?)), arrayDifference(kmb), arrayEnumerate(kmb))))[?], array(arraySort((kmx, kmk, kmi) -> tuple(kmk, kmi), kmeb, kmeb, arrayEnumerate(kmeb))))[?], array(arrayFlatten(arrayMap(kmx -> tupleElement(kmx, ?), kme))))[?], array(arrayFlatten(arrayMap(kmx -> tupleElement(kmx, ?), kme))))[?], array(arrayMap((bs, cs) -> arrayMap(kreb -> arrayMap(krev -> arrayMap(krb -> arrayMap(krs -> arrayMap(kru -> tuple(kru, arrayCumSum(arrayMap(krr -> arraySum(krr), arraySplit((krx, krf) -> krf, arraySort((krx, krk, kri) -> tuple(krk, kri), krev, kreb, arrayEnumerate(kreb)), krs)))), array(arrayFilter((krx, krf) -> krf, krb, krs)))[?], array(arrayMap((krd, kri) -> ((kri = ?) OR (krd != ?)), arrayDifference(krb), arrayEnumerate(krb))))[?], array(arraySort((krx, krk, kri) -> tuple(krk, kri), kreb, kreb, arrayEnumerate(kreb))))[?], array(arrayFilter((krrc, krrb) -> not((isNaN(krrb) OR isInfinite(krrb))), arrayMap(krrc -> toFloat64(krrc), arraySlice(cs, ?, length(bs))), bs)))[?], array(arrayFilter(krx -> not((isNaN(krx) OR isInfinite(krx))), bs)))[?], `_hq_bounds_list`, `_hq_counts_list`)))[?] AS `_hq_merged` FROM (SELECT `_hq_bounds_list`, `_hq_counts_list` FROM (SELECT groupArray(`ExplicitBounds`) AS `_hq_bounds_list`, groupArray(`BucketCounts`) AS `_hq_counts_list`, count() AS `_cerb_n` FROM (SELECT * REPLACE (arraySlice(`ExplicitBounds`, ?, (length(`ExplicitBounds`) + throwIf((sum((length(`ExplicitBounds`) + ?)) OVER () > ?), 'classic-histogram bucket merge exceeds the merged-bucket-entry resource bound'))) AS `ExplicitBounds`, arraySlice(`BucketCounts`, ?, (length(`BucketCounts`) + throwIf((sum((length(`ExplicitBounds`) + ?)) OVER () > ?), 'classic-histogram bucket merge exceeds the merged-bucket-entry resource bound'))) AS `BucketCounts`) FROM (SELECT `Attributes` AS `Attributes`, arrayConcat(arraySlice(tupleElement(`_hq_window_ladder`, ?), ?, ?), arrayPopFront(arrayDifference(tupleElement(`_hq_window_ladder`, ?)))) AS `BucketCounts`, tupleElement(`_hq_window_ladder`, ?) AS `ExplicitBounds` FROM (SELECT `Attributes` AS `Attributes`, arrayMap(kwe -> arrayMap(kweb -> arrayMap(kwev -> arrayMap(kwet -> arrayMap(kwb -> arrayMap(kws -> arrayMap(kwu -> tuple(kwu, arrayConcat(arrayMap((kwr, kwo) -> arraySort((c, t) -> t, kwr, kwo)[length(arraySort((c, t) -> t, kwr, kwo))], arraySplit((kwx, kwf) -> kwf, arraySort((kwx, kwk, kwi) -> tuple(kwk, kwi), kwev, kweb, arrayEnumerate(kweb)), kws), arraySplit((kwx, kwf) -> kwf, arraySort((kwx, kwk, kwi) -> tuple(kwk, kwi), kwet, kweb, arrayEnumerate(kweb)), kws)), array(arraySort((c, t) -> t, arrayMap(cs -> toFloat64(arraySum(cs)), `_hq_counts_list`), `_hq_ts_list`)[length(arraySort((c, t) -> t, arrayMap(cs -> toFloat64(arraySum(cs)), `_hq_counts_list`), `_hq_ts_list`))]))), array(arrayFilter((kwx, kwf) -> kwf, kwb, kws)))[?], array(arrayMap((kwd, kwi) -> ((kwi = ?) OR (kwd != ?)), arrayDifference(kwb), arrayEnumerate(kwb))))[?], array(arraySort((kwx, kwk, kwi) -> tuple(kwk, kwi), kweb, kweb, arrayEnumerate(kweb))))[?], array(arrayFlatten(arrayMap(kwx -> tupleElement(kwx, ?), kwe))))[?], array(arrayFlatten(arrayMap(kwx -> tupleElement(kwx, ?), kwe))))[?], array(arrayFlatten(arrayMap(kwx -> tupleElement(kwx, ?), kwe))))[?], array(arrayMap((bs, cs, kwrt) -> arrayMap(kreb -> arrayMap(krev -> arrayMap(krb -> arrayMap(krs -> arrayMap(kru -> tuple(kru, arrayCumSum(arrayMap(krr -> arraySum(krr), arraySplit((krx, krf) -> krf, arraySort((krx, krk, kri) -> tuple(krk, kri), krev, kreb, arrayEnumerate(kreb)), krs))), arrayWithConstant(length(kru), kwrt)), array(arrayFilter((krx, krf) -> krf, krb, krs)))[?], array(arrayMap((krd, kri) -> ((kri = ?) OR (krd != ?)), arrayDifference(krb), arrayEnumerate(krb))))[?], array(arraySort((krx, krk, kri) -> tuple(krk, kri), kreb, kreb, arrayEnumerate(kreb))))[?], array(arrayFilter((krrc, krrb) -> not((isNaN(krrb) OR isInfinite(krrb))), arrayMap(krrc -> toFloat64(krrc), arraySlice(cs, ?, length(bs))), bs)))[?], array(arrayFilter(krx -> not((isNaN(krx) OR isInfinite(krx))), bs)))[?], `_hq_bounds_list`, `_hq_counts_list`, `_hq_ts_list`)))[?] AS `_hq_window_ladder` FROM (SELECT * FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, groupArray(`ExplicitBounds`) AS `_hq_bounds_list`, groupArray(`BucketCounts`) AS `_hq_counts_list`, groupArray(`TimeUnix`) AS `_hq_ts_list`, uniqExact(`TimeUnix`) AS `_hq_samples`, sum((length(`ExplicitBounds`) + ?)) AS `_hq_window_series_entries` FROM (SELECT * FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (`TimeUnix` <= parseDateTime64BestEffort(?, ?)) AND (`TimeUnix` > (parseDateTime64BestEffort(?, ?) - toIntervalNanosecond(?))) AND not((bitAnd(`Flags`, ?) != ?))) WHERE (throwIf(((SELECT (((? * `_hq_window_scan_series`) + (? * ((`_hq_window_scan_series` * `_hq_window_scan_entries`) / greatest(`_hq_window_scan_rows`, ?)))) + ((? * greatest((`_hq_window_scan_entries` - ((`_hq_window_scan_series` * `_hq_window_scan_entries`) / greatest(`_hq_window_scan_rows`, ?))), ?)) + (? * (`_hq_window_scan_entries` / greatest(`_hq_window_scan_series`, ?))))) AS `_hq_window_scan_cost` FROM (SELECT sum((length(`ExplicitBounds`) + ?)) AS `_hq_window_scan_entries`, toFloat64(count()) AS `_hq_window_scan_rows`, uniqCombined64(`Attributes`, `ResourceAttributes`, `ServiceName`) AS `_hq_window_scan_series` FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (`TimeUnix` <= parseDateTime64BestEffort(?, ?)) AND (`TimeUnix` > (parseDateTime64BestEffort(?, ?) - toIntervalNanosecond(?))) AND not((bitAnd(`Flags`, ?) != ?))))) > ?), 'classic-histogram window exceeds the estimated-memory resource bound') = ?)) GROUP BY `Attributes`) WHERE (throwIf((`_hq_window_series_entries` > ?), 'classic-histogram window exceeds the bucket-entries-per-series resource bound') = ?)))))) WHERE `_cerb_n` > 0))))))))))
+-- sql_optimized --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, if(length(`BucketCounts`) = 0, nan, if(`_cerb_hqc_observations` = 0, nan, if(0.5 < 0, -inf, if(0.5 > 1, inf, if(`_cerb_hqc_idx` = length(`_cerb_hqc_cum`) AND length(`_cerb_hqc_buckets`) != length(`ExplicitBounds`), if(length(`ExplicitBounds`) = 0, nan, `_cerb_hqc_bounds`[length(`_cerb_hqc_bounds`)]), if(`_cerb_hqc_idx` = 1 AND `_cerb_hqc_bounds`[1] <= 0, `_cerb_hqc_bounds`[1], (if(`_cerb_hqc_idx` = 1, 0.0, `_cerb_hqc_bounds`[`_cerb_hqc_idx` - 1]) + (`_cerb_hqc_bounds`[`_cerb_hqc_idx`] - if(`_cerb_hqc_idx` = 1, 0.0, `_cerb_hqc_bounds`[`_cerb_hqc_idx` - 1])) * (((0.5 * `_cerb_hqc_observations`) - if(`_cerb_hqc_idx` = 1, 0.0, `_cerb_hqc_cum`[`_cerb_hqc_idx` - 1])) / (`_cerb_hqc_cum`[`_cerb_hqc_idx`] - if(`_cerb_hqc_idx` = 1, 0.0, `_cerb_hqc_cum`[`_cerb_hqc_idx` - 1])))))))))) AS `Value` FROM (SELECT *, arrayFirstIndex(c -> c >= (0.5 * `_cerb_hqc_observations`), `_cerb_hqc_cum`) AS `_cerb_hqc_idx` FROM (SELECT *, `_cerb_hqc_cum`[length(`_cerb_hqc_cum`)] AS `_cerb_hqc_observations` FROM (SELECT *, arrayFilter((b, k) -> k, `ExplicitBounds`, `_cerb_hqc_kept_mask`) AS `_cerb_hqc_bounds`, arrayFilter((c, k) -> k, arrayResize(`_cerb_hqc_buckets`, greatest(length(`_cerb_hqc_buckets`), length(`ExplicitBounds`))), arrayConcat(`_cerb_hqc_kept_mask`, arrayWithConstant(greatest(length(`_cerb_hqc_buckets`) - length(`ExplicitBounds`), 0), 1))) AS `_cerb_hqc_cum` FROM (SELECT *, arrayMap((b, p) -> b != p, `ExplicitBounds`, arraySlice(arrayPushFront(`ExplicitBounds`, nan), 1, length(`ExplicitBounds`))) AS `_cerb_hqc_kept_mask`, arrayMap(x -> toFloat64(x), `BucketCounts`) AS `_cerb_hqc_buckets` FROM (SELECT `_cerb_histogram_input`.1 AS `Attributes`, `_cerb_histogram_input`.2 AS `BucketCounts`, `_cerb_histogram_input`.3 AS `ExplicitBounds` FROM (SELECT arrayJoin([(`Attributes`, `BucketCounts`, `ExplicitBounds`)]) AS `_cerb_histogram_input` FROM (SELECT `Attributes` AS `Attributes`, arrayMap(kpl -> arrayMap(kpr -> arrayMap(kpm -> arrayFill((kpv, kpk) -> kpk, kpl, arrayMap((kpa, kpb) -> ((kpa > ?) AND (kpa = kpb)), kpr, kpm)), array(arrayMap((kpa, kpb) -> (kpa + kpb), kpr, arrayCumSumNonNegative(arrayMap(kpd -> (? - kpd), arrayDifference(kpr))))))[?], array(arrayMap((kpa, kpv) -> if(isNaN(kpv), ?, toInt64(kpa)), arraySort((kpk, kpp) -> kpp, arrayEnumerate(kpl), arraySort((kpi, kpv) -> tuple(kpv, (? - kpi)), arrayEnumerate(kpl), kpl)), kpl)))[?], array(tupleElement(`_hq_merged`, ?)))[?] AS `BucketCounts`, tupleElement(`_hq_merged`, ?) AS `ExplicitBounds` FROM (SELECT CAST(map(), ?) AS `Attributes`, arrayMap(kme -> arrayMap(kmeb -> arrayMap(kmev -> arrayMap(kmb -> arrayMap(kms -> arrayMap(kmu -> tuple(kmu, arrayConcat(arrayMap(kmr -> arraySum(kmr), arraySplit((kmx, kmf) -> kmf, arraySort((kmx, kmk, kmi) -> tuple(kmk, kmi), kmev, kmeb, arrayEnumerate(kmeb)), kms)), array(arraySum(arrayMap(cs -> toFloat64(arraySum(cs)), `_hq_counts_list`))))), array(arrayFilter((kmx, kmf) -> kmf, kmb, kms)))[?], array(arrayMap((kmd, kmi) -> ((kmi = ?) OR (kmd != ?)), arrayDifference(kmb), arrayEnumerate(kmb))))[?], array(arraySort((kmx, kmk, kmi) -> tuple(kmk, kmi), kmeb, kmeb, arrayEnumerate(kmeb))))[?], array(arrayFlatten(arrayMap(kmx -> tupleElement(kmx, ?), kme))))[?], array(arrayFlatten(arrayMap(kmx -> tupleElement(kmx, ?), kme))))[?], array(arrayMap((bs, cs) -> arrayMap(kreb -> arrayMap(krev -> arrayMap(krb -> arrayMap(krs -> arrayMap(kru -> tuple(kru, arrayCumSum(arrayMap(krr -> arraySum(krr), arraySplit((krx, krf) -> krf, arraySort((krx, krk, kri) -> tuple(krk, kri), krev, kreb, arrayEnumerate(kreb)), krs)))), array(arrayFilter((krx, krf) -> krf, krb, krs)))[?], array(arrayMap((krd, kri) -> ((kri = ?) OR (krd != ?)), arrayDifference(krb), arrayEnumerate(krb))))[?], array(arraySort((krx, krk, kri) -> tuple(krk, kri), kreb, kreb, arrayEnumerate(kreb))))[?], array(arrayFilter((krrc, krrb) -> not((isNaN(krrb) OR isInfinite(krrb))), arrayMap(krrc -> toFloat64(krrc), arraySlice(cs, ?, length(bs))), bs)))[?], array(arrayFilter(krx -> not((isNaN(krx) OR isInfinite(krx))), bs)))[?], `_hq_bounds_list`, `_hq_counts_list`)))[?] AS `_hq_merged` FROM (SELECT `_hq_bounds_list`, `_hq_counts_list` FROM (SELECT groupArray(`ExplicitBounds`) AS `_hq_bounds_list`, groupArray(`BucketCounts`) AS `_hq_counts_list`, count() AS `_cerb_n` FROM (SELECT * REPLACE (arraySlice(`ExplicitBounds`, ?, (length(`ExplicitBounds`) + throwIf((sum((length(`ExplicitBounds`) + ?)) OVER () > ?), 'classic-histogram bucket merge exceeds the merged-bucket-entry resource bound'))) AS `ExplicitBounds`, arraySlice(`BucketCounts`, ?, (length(`BucketCounts`) + throwIf((sum((length(`ExplicitBounds`) + ?)) OVER () > ?), 'classic-histogram bucket merge exceeds the merged-bucket-entry resource bound'))) AS `BucketCounts`) FROM (SELECT `Attributes` AS `Attributes`, arrayConcat(arraySlice(tupleElement(`_hq_window_ladder`, ?), ?, ?), arrayPopFront(arrayDifference(tupleElement(`_hq_window_ladder`, ?)))) AS `BucketCounts`, tupleElement(`_hq_window_ladder`, ?) AS `ExplicitBounds` FROM (SELECT `Attributes` AS `Attributes`, arrayMap(kwe -> arrayMap(kweb -> arrayMap(kwev -> arrayMap(kwet -> arrayMap(kwb -> arrayMap(kws -> arrayMap(kwu -> tuple(kwu, arrayConcat(arrayMap((kwr, kwo) -> arraySort((c, t) -> t, kwr, kwo)[length(arraySort((c, t) -> t, kwr, kwo))], arraySplit((kwx, kwf) -> kwf, arraySort((kwx, kwk, kwi) -> tuple(kwk, kwi), kwev, kweb, arrayEnumerate(kweb)), kws), arraySplit((kwx, kwf) -> kwf, arraySort((kwx, kwk, kwi) -> tuple(kwk, kwi), kwet, kweb, arrayEnumerate(kweb)), kws)), array(arraySort((c, t) -> t, arrayMap(cs -> toFloat64(arraySum(cs)), `_hq_counts_list`), `_hq_ts_list`)[length(arraySort((c, t) -> t, arrayMap(cs -> toFloat64(arraySum(cs)), `_hq_counts_list`), `_hq_ts_list`))]))), array(arrayFilter((kwx, kwf) -> kwf, kwb, kws)))[?], array(arrayMap((kwd, kwi) -> ((kwi = ?) OR (kwd != ?)), arrayDifference(kwb), arrayEnumerate(kwb))))[?], array(arraySort((kwx, kwk, kwi) -> tuple(kwk, kwi), kweb, kweb, arrayEnumerate(kweb))))[?], array(arrayFlatten(arrayMap(kwx -> tupleElement(kwx, ?), kwe))))[?], array(arrayFlatten(arrayMap(kwx -> tupleElement(kwx, ?), kwe))))[?], array(arrayFlatten(arrayMap(kwx -> tupleElement(kwx, ?), kwe))))[?], array(arrayMap((bs, cs, kwrt) -> arrayMap(kreb -> arrayMap(krev -> arrayMap(krb -> arrayMap(krs -> arrayMap(kru -> tuple(kru, arrayCumSum(arrayMap(krr -> arraySum(krr), arraySplit((krx, krf) -> krf, arraySort((krx, krk, kri) -> tuple(krk, kri), krev, kreb, arrayEnumerate(kreb)), krs))), arrayWithConstant(length(kru), kwrt)), array(arrayFilter((krx, krf) -> krf, krb, krs)))[?], array(arrayMap((krd, kri) -> ((kri = ?) OR (krd != ?)), arrayDifference(krb), arrayEnumerate(krb))))[?], array(arraySort((krx, krk, kri) -> tuple(krk, kri), kreb, kreb, arrayEnumerate(kreb))))[?], array(arrayFilter((krrc, krrb) -> not((isNaN(krrb) OR isInfinite(krrb))), arrayMap(krrc -> toFloat64(krrc), arraySlice(cs, ?, length(bs))), bs)))[?], array(arrayFilter(krx -> not((isNaN(krx) OR isInfinite(krx))), bs)))[?], `_hq_bounds_list`, `_hq_counts_list`, `_hq_ts_list`)))[?] AS `_hq_window_ladder` FROM (SELECT * FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, groupArray(`ExplicitBounds`) AS `_hq_bounds_list`, groupArray(`BucketCounts`) AS `_hq_counts_list`, groupArray(`TimeUnix`) AS `_hq_ts_list`, uniqExact(`TimeUnix`) AS `_hq_samples`, sum((length(`ExplicitBounds`) + ?)) AS `_hq_window_series_entries` FROM (SELECT `Attributes`, `BucketCounts`, `ExplicitBounds`, `Flags`, `MetricName`, `ResourceAttributes`, `ServiceName`, `TimeUnix` FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (`TimeUnix` <= parseDateTime64BestEffort(?, ?)) AND (`TimeUnix` > (parseDateTime64BestEffort(?, ?) - toIntervalNanosecond(?))) AND not((bitAnd(`Flags`, ?) != ?)) AND (throwIf(((SELECT (((? * `_hq_window_scan_series`) + (? * ((`_hq_window_scan_series` * `_hq_window_scan_entries`) / greatest(`_hq_window_scan_rows`, ?)))) + ((? * greatest((`_hq_window_scan_entries` - ((`_hq_window_scan_series` * `_hq_window_scan_entries`) / greatest(`_hq_window_scan_rows`, ?))), ?)) + (? * (`_hq_window_scan_entries` / greatest(`_hq_window_scan_series`, ?))))) AS `_hq_window_scan_cost` FROM (SELECT sum((length(`ExplicitBounds`) + ?)) AS `_hq_window_scan_entries`, toFloat64(count()) AS `_hq_window_scan_rows`, uniqCombined64(`Attributes`, `ResourceAttributes`, `ServiceName`) AS `_hq_window_scan_series` FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?)) WHERE (`TimeUnix` <= parseDateTime64BestEffort(?, ?)) AND (`TimeUnix` > (parseDateTime64BestEffort(?, ?) - toIntervalNanosecond(?))) AND not((bitAnd(`Flags`, ?) != ?))))) > ?), 'classic-histogram window exceeds the estimated-memory resource bound') = ?)) GROUP BY `Attributes`) WHERE (throwIf((`_hq_window_series_entries` > ?), 'classic-histogram window exceeds the bucket-entries-per-series resource bound') = ?)))))) WHERE `_cerb_n` > 0))))))))))

@@ -101,6 +101,13 @@
     # instant vector's own sample values ARE the bucket counts. This must
     # answer, not silently fold to empty.
     query: 'histogram_quantile(0.9, sum by (le) (demo_api_request_duration_seconds_bucket))'
+  - # Each `le` rung of a classic histogram is an ordinary float series, so an
+    # over-time reduction of the bucket series is a histogram_quantile input
+    # like any other, with or without an aggregation by `le`.
+    query: 'histogram_quantile(0.9, sum by (le) (avg_over_time(demo_api_request_duration_seconds_bucket[1m])))'
+  - query: 'histogram_quantile(0.9, sum by (le) (max_over_time(demo_api_request_duration_seconds_bucket[1m])))'
+  - query: 'histogram_quantile(0.9, min_over_time(demo_api_request_duration_seconds_bucket[1m]))'
+  - query: 'histogram_quantile(0.9, last_over_time(demo_api_request_duration_seconds_bucket[1m]))'
   - query: 'count_values("value", demo_api_request_duration_seconds_bucket)'
   - query: 'absent(demo_memory_usage_bytes)'
   - query: 'absent(nonexistent_metric_name)'

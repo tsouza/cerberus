@@ -9,6 +9,7 @@
     "delta(demo_cpu_usage_seconds_total[1m] offset 10m)",
     "demo_latency_exp_hist offset 5m",
     "demo_memory_usage_bytes offset -10m",
+    "histogram_quantile(0.9, sum by (le) (avg_over_time(demo_api_request_duration_seconds_bucket[1m])))",
     "histogram_quantile(0.9, sum(rate(demo_shifting_latency_exp_hist[1m])))",
     "histogram_quantile(0.90, rate(demo_shifting_latency_exp_hist[1m]))",
     "histogram_quantile(0.95, rate(demo_shifting_latency_exp_hist[1m]))",
