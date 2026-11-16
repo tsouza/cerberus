@@ -728,42 +728,73 @@ the 26.8 LTS. Flipping `AutoSelect` is tracked in
 the statements a spill was measured to harm, not a shape rule.
 `test/chserver`'s `TestDistinctSpill_WithheldShapesAnswer` drives each
 through the handler over 1M spans carrying unique 256-byte values on
-26.9.25.15, every statement on one thread. It takes the unspilled peak P as
-the largest of three runs under a 4 GiB cap, then forces the threshold to
-half a cap of 1.11 × P. It uses that cap only once the cap clears, by 1.10,
-the request's own peak under the cap's settings (the largest of three runs,
-memory limit lifted), and otherwise moves on to 1.2 × P. Three runs of the
-test measured:
+26.9.25.15. It measures on one thread. The unspilled peak P is the largest of
+three runs under a 4 GiB cap. For each cap in 1.11, 1.2, 1.4 and 1.6 × P,
+in order, the test first measures the request's own peak under that cap's
+settings (the largest of three runs, memory limit lifted) and passes over
+the cap unless it clears that peak by 1.10. It then forces the threshold to
+half the cap, on one thread, on the server's default thread count (two in
+the test container) and on 16 threads, and passes over the cap unless all
+three abort with code 241. The first cap that passes both is the one the
+request as dispatched must answer under. Three runs of the test measured:
 
-| Statement                                         | Unspilled peak P | Threshold forced at the cap | As dispatched: cap / its peak |
-| ------------------------------------------------- | ---------------- | --------------------------- | ----------------------------- |
-| intrinsic `name` values                           | 89.7–90.9 MiB    | code 241                    | 1.13–1.20, every value        |
-| intrinsic `kind` values                           | 90.9 MiB         | code 241                    | 1.15, every value             |
-| intrinsic `status` values                         | 89.7–90.9 MiB    | code 241                    | 1.11–1.15, every value        |
-| materialized span `rpc.method` values             | 89.8–91.0 MiB    | code 241                    | 1.10–1.15, every value        |
-| materialized resource `k8s.namespace.name` values | 91.0 MiB         | code 241                    | 1.13–1.15, every value        |
-| span tag names                                    | 152.2–153.5 MiB  | code 241                    | 1.11–1.14, every value        |
-| resource tag names                                | 152.2–153.5 MiB  | code 241                    | 1.10–1.14, every value        |
+| Statement                                         | Unspilled peak P | Cap chosen      | Threshold forced at the cap | As dispatched: cap / its peak |
+| ------------------------------------------------- | ---------------- | --------------- | --------------------------- | ----------------------------- |
+| intrinsic `name` values                           | 89.7–93.2 MiB    | 1.11 × P        | code 241                    | 1.13–1.18, every value        |
+| intrinsic `kind` values                           | 89.7–90.9 MiB    | 1.11 or 1.2 × P | code 241                    | 1.11–1.23, every value        |
+| intrinsic `status` values                         | 89.7–90.9 MiB    | 1.11 × P        | code 241                    | 1.10–1.15, every value        |
+| materialized span `rpc.method` values             | 91.0 MiB         | 1.11 × P        | code 241                    | 1.11–1.15, every value        |
+| materialized resource `k8s.namespace.name` values | 87.5–91.0 MiB    | 1.11 or 1.2 × P | code 241                    | 1.11–1.17, every value        |
+| span tag names                                    | 153.5 MiB        | 1.11 × P        | code 241                    | 1.12–1.14, every value        |
+| resource tag names                                | 152.2–153.5 MiB  | 1.11 × P        | code 241                    | 1.10–1.12, every value        |
 
-The cap was 1.11 × P in all but one cell; one run of the intrinsic `name`
-values found 1.11 × P short of its peak under the cap's settings and used
-1.2 × P.
+Before the test measured on one thread, it ran every statement on the
+container's default two threads, and two runs measured the same harm there:
 
-The statements run on one thread because a parallel `DISTINCT`'s peak
-depends on how its per-thread sets happen to merge. Forty parallel runs of
-the resource tag names peaked between 119.5 and 130.3 MiB, and one at
-170.5 MiB; over five green `main` runs of the earlier parallel test, the
-largest of three calibration runs of the tag names ranged from 122.9 to
-165.5 MiB. A cap 1.11 × the largest of three runs sat inside that spread:
-one strict-scan run aborted the resource tag names as dispatched under a
-138.7 MiB cap. On one thread, forty runs of each statement peaked at a few
-discrete values: the intrinsic `name` values at 87.5–94.4 MiB (a spread of
-7.9%), the intrinsic `kind` and materialized resource values at
-87.5–91.0 MiB (4.0%), and the span tag names at 150.2–153.5 MiB (2.2%). The
-1.10 headroom lies above the widest of these. The harm does not depend on
-the thread count: with the threshold forced at 1.11 × P on one thread and
-the memory limit lifted, the intrinsic `name` values statement completed at
-5.1–5.3 × the cap and the span tag names at 1.16–1.18 ×.
+| Statement                                         | Unspilled peak P | Threshold forced at 1.11 × P | As dispatched at 1.11 × P |
+| ------------------------------------------------- | ---------------- | ---------------------------- | ------------------------- |
+| intrinsic `name` values                           | 94.7–106.4 MiB   | code 241                     | answers every value       |
+| intrinsic `kind` values                           | 98.1–100.9 MiB   | code 241                     | answers every value       |
+| intrinsic `status` values                         | 94.5–102.9 MiB   | code 241                     | answers every value       |
+| materialized span `rpc.method` values             | 98.0–106.5 MiB   | code 241                     | answers every value       |
+| materialized resource `k8s.namespace.name` values | 99.9–107.7 MiB   | code 241                     | answers every value       |
+| span tag names                                    | 123.8–168.3 MiB  | code 241                     | answers every value       |
+| resource tag names                                | 123.8–125.3 MiB  | code 241                     | answers every value       |
+
+The peaks are measured on one thread because a parallel `DISTINCT`'s peak
+depends on how its per-thread sets happen to merge. Of forty runs of the
+resource tag names on two threads, thirty-nine peaked between 119.5 and
+130.3 MiB and one at 170.5 MiB. Over five green `main` runs of the
+two-thread test, the largest of three calibration runs of the tag names
+ranged from 122.9 to 165.5 MiB. A cap 1.11 × the largest of three runs sat
+inside that spread, and one strict-scan run aborted the resource tag names as
+dispatched under a 138.7 MiB cap.
+
+On one thread a statement's peak falls on a few discrete values. Under the
+calibration settings, forty runs each spread by 7.9% for the intrinsic
+`name` values (87.5–94.4 MiB), 4.0% for the intrinsic `kind` values
+(87.5–90.9 MiB) and the materialized resource values (87.5–91.0 MiB), and
+2.2% for the span tag names (150.2–153.5 MiB). Under a 1.11 × P cap's
+settings, thirty runs of each of the seven statements spread by at most
+4.0% for the five value statements and 2.3% for the two tag-name
+statements. The 1.10 headroom lies above all of these. With it, the
+tag-name statements' peak under a 1.2 × P cap's settings always clears the
+headroom, so their search stops at 1.2 × P at the latest.
+
+The harm the withholding rests on does not depend on the thread count. With
+the threshold forced at 1.11 × the one-thread P and the memory limit lifted:
+
+| Statement                              | One thread       | Two threads      |
+| -------------------------------------- | ---------------- | ---------------- |
+| intrinsic `name` values                | 5.34–5.51 × cap  | 4.33–4.66 × cap  |
+| materialized resource values           | 5.34–5.51 × cap  | 4.28–4.78 × cap  |
+| span tag names                         | 1.18–1.29 × cap  | 2.61–2.70 × cap  |
+
+Capped, the forced statement aborted with code 241 in every run on 1, 2, 4,
+8 and 16 threads, at both 1.11 and 1.2 × the one-thread P (the intrinsic
+`name` values and both tag-name statements, four runs each). At 1.4 × P the
+two-thread tag-name statements aborted only in some runs, which is why the
+search ending at 1.2 × P for them matters.
 
 An earlier replay of the captured handler SQL found the intrinsic `name`
 values, the materialized values and the span tag names harmed across a band
