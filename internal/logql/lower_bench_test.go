@@ -84,11 +84,14 @@ func TestAllocs_Lower(t *testing.T) {
 		// that fallback gained the OTLP severity-NUMBER arm reference
 		// Loki consults once no textual level is present (the
 		// seven-range multiIf severityNumberLevelExpr builds, ~28 nodes
-		// per lowering). Current observed value is 147; the 160 ceiling
-		// keeps ~9% slack.
+		// per lowering), then 160 → 180 when the metric path began
+		// computing the detected_level source and value once per row as
+		// columns of their own (two Project layers, each with its
+		// projection list and alias reference — see rowLayers). Current
+		// observed value is 165; the 180 ceiling keeps ~9% slack.
 		{"stream_matcher", `{job="api"}`, 45},
 		{"line_filter_chain", `{job="api"} |= "error" |~ "5[0-9]{2}"`, 70},
-		{"metric_form", `count_over_time({job="api"}[5m])`, 160},
+		{"metric_form", `count_over_time({job="api"}[5m])`, 180},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -14,9 +14,13 @@ name: merge-queue-requeue
 #   taken out of the queue (.github/scripts/merge-queue-requeue-dequeued.mjs).
 #
 # `pull_request_target` gives a token that can write labels, comments and
-# statuses on a pull request from a fork too. Each job checks out the BASE
-# commit's scripts without persisted credentials and never runs the pull
-# request's own code.
+# statuses on a pull request from a fork too. Each job checks out the scripts
+# of `github.sha`, the current tip of the base branch that this workflow file
+# itself is read from, without persisted credentials, and never runs the pull
+# request's own code. `github.event.pull_request.base.sha` is not that commit:
+# it is the base recorded when the pull request's head last moved, which can
+# predate a script this workflow runs
+# (test/regression/workflow_checkout_ref_test.go).
 #
 # Each job holds its own per-pull-request concurrency group. A workflow-level
 # group would put every `labeled` event of the pull request in one group, and
@@ -54,7 +58,7 @@ jobs:
       - id: checkout
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.sha }}
           sparse-checkout: .github/scripts
           persist-credentials: false
         timeout-minutes: 3
@@ -63,7 +67,7 @@ jobs:
         if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.sha }}
           sparse-checkout: .github/scripts
           persist-credentials: false
         timeout-minutes: 3
@@ -98,7 +102,7 @@ jobs:
       - id: checkout
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.sha }}
           sparse-checkout: .github/scripts
           persist-credentials: false
         timeout-minutes: 3
@@ -107,7 +111,7 @@ jobs:
         if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.sha }}
           sparse-checkout: .github/scripts
           persist-credentials: false
         timeout-minutes: 3

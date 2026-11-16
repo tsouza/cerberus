@@ -490,8 +490,8 @@ func withDetectedLevelAndColumns(s schema.Logs, baseLabels, levelValue chplan.Ex
 	// key a parser stage extracted (`sum by (category) (count_over_time(
 	// {...} | json [5m]))`) resolves from the extraction rather than from
 	// the two raw columns, which never carry it. It must be a plain
-	// column reference — the caller materialises the merge into an
-	// intermediate projection first — because the merge itself contains
+	// column reference — the row stage defines the merge as a column of
+	// its own ([mergedLabelsColumn]) — because the merge itself contains
 	// lambdas and ClickHouse rejects a lambda whose source map is built
 	// by another lambda. A nil value means the pipeline has no parser
 	// stage to consult, and the two raw columns are the whole story.
@@ -629,4 +629,46 @@ func detectedLevelIdentityExpr(s schema.Logs, expr syntax.Expr) chplan.Expr {
 	return projectSyntheticLabelValue(expr, detectedLevelLabel, func() chplan.Expr {
 		return detectedLevelExpr(s)
 	})
+}
+
+// Column aliases a range aggregation's row stage defines for the
+// synthesized level: the raw source [detectedLevelSourceExpr] resolves,
+// the normalised value, and the normalised value with the pipeline's
+// `| drop` / `| keep` projection applied.
+const (
+	levelSourceAlias    = "_logql_level_source"
+	detectedLevelAlias  = "_logql_detected_level"
+	projectedLevelAlias = "_logql_projected_level"
+)
+
+// defineDetectedLevel defines the synthesized `detected_level` value —
+// [detectedLevelExpr] — as columns of rows and returns a reference to
+// the normalised level.
+//
+// The source cascade is defined first and the normalisation reads it as
+// a column: [normaliseLevelExpr] compares the lowercased source against
+// every level variant and falls through to the source itself, so an
+// inline source would be repeated once per comparison. The normalised
+// value is defined in turn because a range aggregation reads it from
+// several positions — every `detected_level` label filter, the series
+// identity, both arms of the error bypass, one entry per `by (...)`
+// label. Both columns read only raw log columns, so the stage defines
+// them ahead of the pipeline and every stage can read them.
+func defineDetectedLevel(rows *rowLayers, s schema.Logs) chplan.Expr {
+	source := rows.define(levelSourceAlias, detectedLevelSourceExpr(s))
+	return rows.define(detectedLevelAlias, normaliseLevelExpr(source))
+}
+
+// projectedLevelColumn applies the pipeline's `| drop` / `| keep`
+// projection to level, the column [defineDetectedLevel] returned, and
+// returns a function yielding the value the series identity reads, or
+// nil when the pipeline removes the label on every row. A projection
+// that changes the value is defined as a column of rows of its own.
+func projectedLevelColumn(rows *rowLayers, level chplan.Expr, pipeline syntax.Expr) func() chplan.Expr {
+	value := projectSyntheticLabelValue(pipeline, detectedLevelLabel, func() chplan.Expr { return level })
+	if value == nil {
+		return func() chplan.Expr { return nil }
+	}
+	projected := rows.define(projectedLevelAlias, value)
+	return func() chplan.Expr { return projected }
 }
