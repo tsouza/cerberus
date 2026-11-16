@@ -24,6 +24,10 @@ func TestReferenceValidateRejectionsAre400(t *testing.T) {
 		{`{ } | count() * 2 > 1`, lhs},
 		{`{ } | 1 > count()`, lhs},
 		{`{ } | count() > 1 + 1`, rhs},
+		{`{ } | (1) = count()`, lhs},
+		{`{ } | (-1) < count()`, lhs},
+		{`{ } | (count() + 1) > 2`, lhs},
+		{`{ } | (2s) < avg(duration)`, lhs},
 		{`{ } | rate() | topk(0)`, limit},
 		{`{ } | rate() | bottomk(0)`, limit},
 	}

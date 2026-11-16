@@ -786,19 +786,17 @@ func TestParseLaterParenthesisedStage(t *testing.T) {
 		{`{ } | (min(duration)) > 1s`, `{ } | min(duration) > 1s`},
 		{`{ } | (sum(duration)) > 1s`, `{ } | sum(duration) > 1s`},
 	}
+	// The grammar's tree is compared, before validation: validation rejects
+	// a literal on a scalar filter's left and an aggregate on its right
+	// whether or not they are parenthesised
+	// (TestParseRejectsUnsupportedScalarFilterOperands).
 	for _, tc := range accepts {
 		t.Run(tc.query, func(t *testing.T) {
 			t.Parallel()
-			got, err := Parse(tc.query)
-			if err != nil {
-				t.Fatalf("Parse(%q): %v", tc.query, err)
-			}
-			want, err := Parse(tc.unwrapped)
-			if err != nil {
-				t.Fatalf("Parse(%q): %v", tc.unwrapped, err)
-			}
+			got := mustParseTree(t, tc.query)
+			want := mustParseTree(t, tc.unwrapped)
 			if !reflect.DeepEqual(got, want) {
-				t.Errorf("Parse(%q) = %#v, want the parse of %q, %#v", tc.query, got, tc.unwrapped, want)
+				t.Errorf("parseTree(%q) = %#v, want the tree of %q, %#v", tc.query, got, tc.unwrapped, want)
 			}
 		})
 	}

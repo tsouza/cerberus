@@ -32,6 +32,13 @@ var validateCorpus = []string{
 	`{ } | count() > count() + 1s`,
 	`{ } | max(duration) - min(duration) >= 0`,
 	`{ } | max(duration) > avg(duration)`,
+	// Parenthesised operands, which the grammar reads as the bare operand.
+	`{ } | (count()) > 1`,
+	`{ } | (1) = count()`,
+	`{ } | (-1) < count()`,
+	`{ } | (count() + 1) > 2`,
+	`{ } | (2s) < avg(duration)`,
+	`{ } | (count()) > (count())`,
 	// Each position a scalar filter takes.
 	`({ } | 1 > count()) && ({ } | count() > 1)`,
 	`({ } | count() > 1) >> ({ } | count() + 1 > 1)`,
@@ -56,20 +63,30 @@ var validateCorpus = []string{
 	`{ } | count() + 1 > 2 | rate() | topk(0)`,
 }
 
+// referenceFrontendError is the error text the reference's query frontend
+// answers q with, or "" when it accepts q: the parse error, or the
+// validation error behind its `invalid TraceQL query: ` prefix.
+func referenceFrontendError(q string) string {
+	ref, err := tempo.ParseNoOptimizations(q)
+	if err != nil {
+		return err.Error()
+	}
+	if verr := tempo.Validate(ref); verr != nil {
+		return "invalid TraceQL query: " + verr.Error()
+	}
+	return ""
+}
+
 // TestValidate_AB pins cerberus's verdict and message for each query in
 // validateCorpus to the reference frontend's: accepted by both, or rejected
 // by both with the same `invalid TraceQL query: ` message.
 func TestValidate_AB(t *testing.T) {
 	for _, q := range validateCorpus {
 		t.Run(q, func(t *testing.T) {
-			ref, err := tempo.ParseNoOptimizations(q)
-			if err != nil {
+			if _, err := tempo.ParseNoOptimizations(q); err != nil {
 				t.Fatalf("reference grammar rejects %q (%v): the corpus holds only queries both grammars accept", q, err)
 			}
-			want := ""
-			if verr := tempo.Validate(ref); verr != nil {
-				want = "invalid TraceQL query: " + verr.Error()
-			}
+			want := referenceFrontendError(q)
 			got := ""
 			if _, perr := ast.Parse(q); perr != nil {
 				got = perr.Error()

@@ -544,6 +544,11 @@ func TestParseRejectsUnsupportedScalarFilterOperands(t *testing.T) {
 		{`{ } | count() > (1 + 1)`, rhs},
 		{`{ } | count() > count()`, rhs},
 		{`{ } | max(duration) > avg(duration)`, rhs},
+		{`{ } | (1) = count()`, lhs},
+		{`{ } | (-1) < count()`, lhs},
+		{`{ } | (count() + 1) > 2`, lhs},
+		{`{ } | (2s) < avg(duration)`, lhs},
+		{`{ } | (count()) > (count())`, rhs},
 		{`({ } | 1 > count()) && ({ } | count() > 1)`, lhs},
 		{`({ } | count() > 1) >> ({ } | count() + 1 > 1)`, lhs},
 		{`{ } | count() > 1 | count() + 1 > 2`, lhs},
@@ -630,6 +635,7 @@ func TestParseAcceptsWhatReferenceAccepts(t *testing.T) {
 		// A scalar filter's literal may be negative or parenthesised.
 		{"scalar_filter_negative_literal", `{} | count() > -1`},
 		{"scalar_filter_parenthesised_literal", `{} | count() = (1)`},
+		{"scalar_filter_parenthesised_aggregate", `{} | (count()) > 1`},
 		// A limit of one is the smallest topk / bottomk accepts.
 		{"topk_one", `{} | rate() | topk(1)`},
 		{"bottomk_one", `{} | rate() | bottomk(1)`},
