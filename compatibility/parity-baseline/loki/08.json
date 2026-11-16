@@ -5,7 +5,6 @@
   "cases": [
     "detected-fields | detected_fields | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-1\", region=\"us-east-1\", service=\"database\", service_name=\"database\"} | detected_fields parity: service=database",
     "upstream:6adc1e09ae8fc7d6",
-    "upstream:facd9a330f7a3f9d",
-    "upstream:fe06945749c653da"
+    "upstream:facd9a330f7a3f9d"
   ]
 }

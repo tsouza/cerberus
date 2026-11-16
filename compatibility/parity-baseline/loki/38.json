@@ -3,6 +3,7 @@
   "head": "loki",
   "bucket": "38",
   "cases": [
-    "upstream:37a0b85f4ca385a7"
+    "upstream:37a0b85f4ca385a7",
+    "upstream:3f5065de1a6585e4"
   ]
 }
