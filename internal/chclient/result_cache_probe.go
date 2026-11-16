@@ -38,7 +38,7 @@ const resultCacheProbeTTLSeconds = 1
 // classifies whether the connected ClickHouse server will accept the
 // query-result-cache settings (use_query_cache, query_cache_ttl) cerberus
 // stamps on an eligible read path. It mirrors ProbeTSGridCapability exactly
-// — the same tri-state classification (classifyCapabilityFromProbeErr), the
+// — the same tri-state classification (canaryErrAnswer), the
 // same "never returns an error" contract — but probes a DIFFERENT setting:
 // the result-cache family is long-stable (unlike the ts-grid experimental
 // gate, no ClickHouse version floor above cerberus's own 24.8 floor is at

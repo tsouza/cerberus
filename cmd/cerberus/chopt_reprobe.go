@@ -155,11 +155,11 @@ func logCancellationGaps(logger *slog.Logger, server chopt.Version) {
 // ClickHouse server's capabilities. It is a compromise between two costs that
 // pull in opposite directions: a shorter interval spends the fleet probe — one
 // short-lived connection per configured address, its identity read, one
-// trivial statement per capability canary and an identity re-read after each
-// canary the server does not accept — more often against servers whose answer
-// almost never changes, and a longer one leaves a pod emitting the
-// fallback shape for longer after an upgrade has already made the native shape
-// available. Five minutes bounds the post-upgrade blind window to well under
+// trivial statement per capability canary and, over the native protocol, an
+// identity re-read after each canary the server does not accept — more often
+// against servers whose answer almost never changes, and a longer one leaves a
+// pod emitting the fallback shape for longer after an upgrade has already made
+// the native shape available. Five minutes bounds the post-upgrade blind window to well under
 // the time a rolling ClickHouse upgrade itself takes, at a probe rate that is
 // invisible next to query traffic.
 const chOptReprobeInterval = 5 * time.Minute
@@ -190,15 +190,17 @@ const chOptReprobeInterval = 5 * time.Minute
 // the loop runs at this cadence until one does.
 //
 // So is a fleet holding a build no server the pass reached runs, or a canary
-// verdict in force no server the pass ran a canary on holds (FleetHeld): a
-// replica behind a load balancer that a pass reached earlier and the fleet
-// memory still holds, whose build may be holding the version down or a defect
-// gate on, or whose verdict may be keeping a capability off. Each pass that lands on it refreshes its entry and is the
-// pass that sees it roll forward or change its verdict, and the memory
-// forgets a server after a count of passes that miss it
-// (chclient.FleetMemory), so this cadence keeps the roll-forward, the changed
-// verdict and the forgetting of a replica that left within the time the
-// memory's retention is priced at.
+// verdict in force that no server the pass ran a canary on holds and the pass
+// did not read unattributed (FleetHeld): a replica behind a load balancer that
+// a pass reached earlier and the fleet memory still holds, whose build may be
+// holding the version down or a defect gate on, or whose verdict may be
+// keeping a capability off, or a verdict an earlier pass read over HTTP
+// without naming its server. Each pass that lands on it refreshes its entry
+// and is the pass that sees it roll forward or change its verdict, and the
+// memory forgets a server or an unattributed verdict after a count of passes
+// that miss it (chclient.FleetMemory), so this cadence keeps the roll-forward,
+// the changed verdict and the forgetting of a replica that left within the
+// time the memory's retention is priced at.
 const chOptFloorRetryInterval = 10 * time.Second
 
 // nextReprobeDelay is how long to wait before the next resolution attempt,

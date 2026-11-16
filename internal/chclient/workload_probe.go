@@ -28,7 +28,7 @@ const workloadCapabilityProbeName = "cerberus_probe"
 // the first real dashboard query.
 //
 // Mirrors ProbeTSGridCapability / ProbeResultCacheCapability exactly: the
-// same tri-state classification (classifyCapabilityFromProbeErr) over the
+// same tri-state classification (canaryErrAnswer) over the
 // same trivial canary body (capabilityCanarySQL), and the same "never returns
 // an error" contract.
 // It is the query_workload canary (QueryWorkloadCanary) run on its own;
