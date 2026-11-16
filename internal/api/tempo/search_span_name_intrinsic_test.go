@@ -151,7 +151,9 @@ func TestSearch_SelectNameWinsOverIntrinsicFallback(t *testing.T) {
 	t.Parallel()
 
 	ts := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
-	q := &stubQuerier{samples: []chclient.Sample{{
+	// A windowed `| select(...)` search runs in two phases: strings answers
+	// phase A's trace ranking with the one trace samples then returns.
+	q := &stubQuerier{strings: []string{"a1"}, samples: []chclient.Sample{{
 		MetricName: "metric-name-column",
 		Labels: map[string]string{
 			"__cerberus_traceID":      "a1",

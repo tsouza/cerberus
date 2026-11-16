@@ -1,6 +1,7 @@
-# A search comparing rootName with a span operand returns the span rows
-# inside the request window, [00:00:00, 00:10:00], and reads each trace's root
-# from that window widened by the maximum trace duration (1h) on both sides,
+# A search comparing rootName with a span operand chooses its traces from the
+# span rows inside the request window, [00:00:00, 00:10:00], and reads each
+# trace's root, and each chosen trace's matching spans, from that window
+# widened by the maximum trace duration (1h) on both sides,
 # [23:00:00, 01:10:00]. A trace whose root span starts before the window but
 # within the setting resolves the rootName reference /api/search resolves,
 # which reads the whole trace of every trace that overlaps the window.

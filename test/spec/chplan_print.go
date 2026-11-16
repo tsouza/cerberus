@@ -575,8 +575,16 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 		}
 		printChild(b, visited, v.Input, depth+1)
 	case *chplan.SearchTraceLimit:
-		fmt.Fprintf(b, "%sSearchTraceLimit traceLimit=%d\n", indent, v.TraceLimit)
+		if v.Rank == nil {
+			fmt.Fprintf(b, "%sSearchTraceLimit traceLimit=%d\n", indent, v.TraceLimit)
+			printChild(b, visited, v.Input, depth+1)
+			break
+		}
+		// Input (the drain) first, then Rank (the row source the traces are
+		// ranked over), in Children() order.
+		fmt.Fprintf(b, "%sSearchTraceLimit traceLimit=%d rank=second-child\n", indent, v.TraceLimit)
 		printChild(b, visited, v.Input, depth+1)
+		printChild(b, visited, v.Rank, depth+1)
 	case *chplan.MetricsAggregate:
 		gb := make([]string, len(v.GroupBy))
 		for i, e := range v.GroupBy {

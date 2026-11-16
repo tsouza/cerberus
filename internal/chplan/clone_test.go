@@ -147,7 +147,7 @@ func allNodeKinds() []chplan.Node {
 			Input: leaf, Start: time.Unix(1000, 0).UTC(), End: time.Unix(4600, 0).UTC(),
 			Step: time.Minute, Lookback: 5 * time.Minute, Offset: time.Minute,
 		},
-		&chplan.SearchTraceLimit{Input: leaf, TraceLimit: 20},
+		&chplan.SearchTraceLimit{Input: leaf, Rank: &chplan.Filter{Input: &chplan.Scan{Table: "rank"}, Predicate: expr}, TraceLimit: 20},
 	}
 }
 
@@ -373,5 +373,26 @@ func TestCloneNodeScalarSubqueryIsolation(t *testing.T) {
 	sub.Input = &chplan.Scan{Table: "MUTATED"}
 	if !orig.Equal(snapshot) {
 		t.Fatal("mutating the clone's ScalarSubquery.Input changed the original")
+	}
+}
+
+// TestCloneNode_SearchTraceLimitRankNotAliased pins that cloning a
+// SearchTraceLimit deep-copies its Rank as well as its Input: rewriting the
+// clone's Rank in place leaves the original's untouched.
+func TestCloneNode_SearchTraceLimitRankNotAliased(t *testing.T) {
+	t.Parallel()
+	pred := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "SpanName"}, Right: &chplan.LitString{V: "a"}}
+	orig := &chplan.SearchTraceLimit{
+		Input:      &chplan.Filter{Input: &chplan.Scan{Table: "otel_traces"}, Predicate: pred},
+		Rank:       &chplan.Filter{Input: &chplan.Scan{Table: "otel_traces"}, Predicate: pred},
+		TraceLimit: 20,
+	}
+	clone := chplan.CloneNode(orig).(*chplan.SearchTraceLimit)
+	if clone.Rank == orig.Rank {
+		t.Fatal("CloneNode shares the Rank pointer")
+	}
+	clone.Rank.(*chplan.Filter).Predicate = &chplan.LitBool{V: true}
+	if !orig.Rank.(*chplan.Filter).Predicate.Equal(pred) {
+		t.Fatal("rewriting the clone's Rank changed the original's")
 	}
 }

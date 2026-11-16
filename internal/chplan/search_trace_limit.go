@@ -22,6 +22,14 @@ package chplan
 // ambiguous input schema, a missing or unnamed driver, and TraceLimit <= 0.
 // Lowering only constructs the node with a closed schema and a positive limit.
 //
+// Rank, when set, is the row source the traces are ranked over, and Input is
+// then the row source drained for the ranked traces: Rank reads the matching
+// spans inside the request window and Input the same matching spans over the
+// window widened by the maximum trace duration, so the window chooses the
+// traces and each chosen trace returns its matching spans outside the window
+// too. Rank carries the same closed schema and driver columns as Input. A nil
+// Rank ranks over Input itself.
+//
 // L1 (fat-trace): the node bounds the trace COUNT, not the spans-per-trace.
 // A single trace with millions of matched spans still drains every matched
 // span into the handler's per-trace SpanSet. This per-trace span fan-out is
@@ -37,16 +45,35 @@ package chplan
 // unbounded path — so the trace-count bound deliberately leaves it alone.
 type SearchTraceLimit struct {
 	Input      Node
+	Rank       Node
 	TraceLimit int64
 }
 
 func (*SearchTraceLimit) planNode() {}
 
-func (n *SearchTraceLimit) Children() []Node { return []Node{n.Input} }
+// Children returns Input, followed by Rank when it is set.
+func (n *SearchTraceLimit) Children() []Node {
+	if n.Rank == nil {
+		return []Node{n.Input}
+	}
+	return []Node{n.Input, n.Rank}
+}
+
+// RankSource is the row source the traces are ranked over: Rank when set,
+// Input otherwise.
+func (n *SearchTraceLimit) RankSource() Node {
+	if n.Rank != nil {
+		return n.Rank
+	}
+	return n.Input
+}
 
 func (n *SearchTraceLimit) Equal(other Node) bool {
 	o, ok := other.(*SearchTraceLimit)
 	if !ok {
+		return false
+	}
+	if (n.Rank == nil) != (o.Rank == nil) || (n.Rank != nil && !n.Rank.Equal(o.Rank)) {
 		return false
 	}
 	return n.TraceLimit == o.TraceLimit &&

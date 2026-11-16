@@ -170,7 +170,7 @@ type Handler struct {
 	// ExternalTraceIDPush is the resolved chopt trace_id_external_table
 	// verdict, ANDed with Config.ClickHouse.Protocol==clickhouse.Native
 	// (cmd/cerberus's buildExternalTraceIDPush) — cerberus issue #2783. When
-	// true, runStructuralTwoPhase's phase-B restriction may push the phase-A
+	// true, runTwoPhase's phase-B restriction may push the phase-A
 	// TraceId set as a native-protocol external table instead of splicing it
 	// as a literal IN list once the literal's estimated size crosses
 	// traceIDLiteralByteBudget; see restrictStructural. false (New()'s

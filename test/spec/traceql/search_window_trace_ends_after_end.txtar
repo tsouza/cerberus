@@ -1,7 +1,8 @@
 # A search comparing traceDuration with a literal measures each trace from its
 # spans inside the request window, [00:00:00, 00:10:00], widened by the
-# maximum trace duration (1h) on both sides, [23:00:00, 01:10:00], and
-# returns the matching span rows inside the request window. A trace that ends
+# maximum trace duration (1h) on both sides, [23:00:00, 01:10:00]. It chooses
+# its traces from the matching span rows inside the request window and returns
+# each chosen trace's matching spans over that widened window. A trace that ends
 # after the window but within the setting is measured whole, as reference
 # /api/search measures every trace that overlaps the window.
 #
