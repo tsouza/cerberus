@@ -6,33 +6,20 @@ import (
 	"fmt"
 	"testing"
 
+	chproto "github.com/ClickHouse/ch-go/proto"
 	"github.com/ClickHouse/clickhouse-go/v2"
 
 	"github.com/tsouza/cerberus/internal/chopt"
 )
 
-// chCodeResourceAccessDenied is the ClickHouse error code a real 26.6 server
-// answers with for an unresolvable WORKLOAD name under
-// `throw_on_unknown_workload=true` (a hardened profile that requires every
-// workload a query carries to name a real, provisioned WORKLOAD), next to
-// chCodeUnknownSetting for a server too old to know `workload` at all.
-// Verified directly against a live clickhouse/clickhouse-server:26.6
-// instance rather than trusted from docs:
-// `SELECT 1 SETTINGS bogus_setting=1` answers `Code: 115 (UNKNOWN_SETTING)`;
-// with `throw_on_unknown_workload` reloaded to `true` server-side,
-// `SELECT 1 SETTINGS workload='nonexistent'` answers
-// `Code: 673 (RESOURCE_ACCESS_DENIED): Could not access resource 'cpu'.
-// Please check throw_on_unknown_workload setting.`
-const chCodeResourceAccessDenied = 673
-
-// TestClassifyCapabilityFromProbeErr_WorkloadShapes pins the shared
+// TestCanaryErrAnswer_WorkloadShapes pins the shared
 // classifier against the rejection shapes a server that does not know the
 // `workload` setting (too old) or a hardened profile that pins/forbids/
 // requires-resolvable-workloads-for it raises — a THIRD setting name
 // (workload) confirming, alongside ts_grid_probe_test.go and
 // result_cache_probe_test.go, that the shared classifier's mapping does not
 // depend on which setting the canary stamps.
-func TestClassifyCapabilityFromProbeErr_WorkloadShapes(t *testing.T) {
+func TestCanaryErrAnswer_WorkloadShapes(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -62,7 +49,7 @@ func TestClassifyCapabilityFromProbeErr_WorkloadShapes(t *testing.T) {
 		{
 			name: "unresolvable workload under throw_on_unknown_workload is forbidden",
 			err: &clickhouse.Exception{
-				Code:    chCodeResourceAccessDenied,
+				Code:    int32(chproto.ErrResourceAccessDenied),
 				Name:    "RESOURCE_ACCESS_DENIED",
 				Message: "Could not access resource 'cpu'. Please check `throw_on_unknown_workload` setting.",
 			},
@@ -83,8 +70,8 @@ func TestClassifyCapabilityFromProbeErr_WorkloadShapes(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := classifyCapabilityFromProbeErr(tc.err); got != tc.want {
-				t.Errorf("classifyCapabilityFromProbeErr(%v) = %v; want %v", tc.err, got, tc.want)
+			if got := canaryErrAnswer(tc.err, isSettingsRefusal).verdict; got != tc.want {
+				t.Errorf("canaryErrAnswer(%v) = %v; want %v", tc.err, got, tc.want)
 			}
 		})
 	}
