@@ -1,0 +1,42 @@
+An instant `histogram_quantile(phi, sum by(le)(rate(...)))` over a classic
+bucket with the native rate grid enabled, including its one-point instant
+grid. The native grid's per-`le` rates take the float-domain ladder
+reassembly, and the instant grid exposes the label set and the value only,
+so the ladder is grouped by the label set and the evaluation instant.
+
+Two series scrape zero at 23:59:00 and their counts at 00:00:00, so every
+rung's rate is its count scaled by one shared factor and the quantile is the
+one the summed counts give. Per-bucket counts at bounds 1 / 2 / 4:
+
+    a: 2  4  2  2   cumulative  2  6  8 10
+    b: 2  0  6  2   cumulative  2  2  8 10
+    sum:            cumulative  4  8 16 20
+
+Rank 0.5 * 20 = 10 lands between the rungs at 2 and 4:
+2 + (4 - 2) * (10 - 8) / (16 - 8) = 2.5.
+
+-- query.promql --
+histogram_quantile(0.5, sum by(le) (rate(http_server_request_duration_bucket[5m])))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- experimental_ts_grid_range --
+-- experimental_ts_grid_instant --
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('http_server_request_duration', map('service', 'a'), toDateTime64('2025-12-31 23:59:00', 9), [0, 0, 0, 0], [1.0, 2.0, 4.0]),
+    ('http_server_request_duration', map('service', 'b'), toDateTime64('2025-12-31 23:59:00', 9), [0, 0, 0, 0], [1.0, 2.0, 4.0]),
+    ('http_server_request_duration', map('service', 'a'), toDateTime64('2026-01-01 00:00:00', 9), [2, 4, 2, 2], [1.0, 2.0, 4.0]),
+    ('http_server_request_duration', map('service', 'b'), toDateTime64('2026-01-01 00:00:00', 9), [2, 0, 6, 2], [1.0, 2.0, 4.0]);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:01Z", 2.5]
+]
