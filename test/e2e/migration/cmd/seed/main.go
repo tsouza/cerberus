@@ -238,28 +238,8 @@ func run(logger *slog.Logger) error {
 	// 7. Close the ingestion skew on the reference side. cerberus reads
 	//    ClickHouse directly, so its visibility is already bounded by the
 	//    INSERT round-trip and needs no gate.
-	logger.Info("flushing the reference loki ingester", "url", *lokiAddr)
-	if err := seed.FlushLoki(ctx, *lokiAddr); err != nil {
-		return err
-	}
-	logger.Info("waiting for the reference loki index to settle", "streams", manifest.Streams)
-	if err := seed.WaitLokiSettled(ctx, *lokiAddr, manifest.Streams, lokiBaseline, settleWait); err != nil {
-		return err
-	}
-	logger.Info("waiting for reference loki to hold the whole fixture", "url", *lokiAddr, "streams", manifest.Streams)
-	if err := seed.WaitLokiHoldsFixture(ctx, *lokiAddr, lokiStreams, window, settleWait); err != nil {
-		return err
-	}
-	logger.Info("waiting for reference tempo to hold the whole fixture",
-		"url", *tempoHTTP, "traces", manifest.Traces)
-	if err := seed.WaitTempoSettled(ctx, *tempoHTTP, fixture, settleWait); err != nil {
-		return err
-	}
-	logger.Info("waiting for reference prometheus to hold the whole fixture",
-		"metric", manifest.CounterMetric, "series", manifest.Series.Sum)
-	if err := seed.WaitPrometheusSettled(
-		ctx, *promAddr, manifest.CounterMetric, manifest.Series.Sum, manifest.AnchorEnd, settleWait,
-	); err != nil {
+	if err := settleReferences(ctx, logger, references{loki: *lokiAddr, tempo: *tempoHTTP, prom: *promAddr},
+		fixture, manifest, lokiStreams, lokiBaseline); err != nil {
 		return err
 	}
 
@@ -270,6 +250,40 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("seed done", "manifest", *manifestPath)
 	return nil
+}
+
+// references are the reference backends' base URLs the settle gates read.
+type references struct{ loki, tempo, prom string }
+
+// settleReferences blocks until every reference backend holds the whole
+// fixture this run pushed: Loki flushed and settled on its counters, then
+// read back data-side, and Tempo and Prometheus read back data-side.
+// lokiBaseline is Loki's counters read before the push.
+func settleReferences(ctx context.Context, logger *slog.Logger, refs references, fixture seed.Fixture,
+	manifest seed.Manifest, lokiStreams []seed.Stream, lokiBaseline seed.LokiCounters,
+) error {
+	logger.Info("flushing the reference loki ingester", "url", refs.loki)
+	if err := seed.FlushLoki(ctx, refs.loki); err != nil {
+		return err
+	}
+	logger.Info("waiting for the reference loki index to settle", "streams", manifest.Streams)
+	if err := seed.WaitLokiSettled(ctx, refs.loki, manifest.Streams, lokiBaseline, settleWait); err != nil {
+		return err
+	}
+	logger.Info("waiting for reference loki to hold the whole fixture", "url", refs.loki, "streams", manifest.Streams)
+	if err := seed.WaitLokiHoldsFixture(ctx, refs.loki, lokiStreams, fixture.Window, settleWait); err != nil {
+		return err
+	}
+	logger.Info("waiting for reference tempo to hold the whole fixture",
+		"url", refs.tempo, "traces", manifest.Traces)
+	if err := seed.WaitTempoSettled(ctx, refs.tempo, fixture, settleWait); err != nil {
+		return err
+	}
+	logger.Info("waiting for reference prometheus to hold the whole fixture",
+		"metric", manifest.CounterMetric, "series", manifest.Series.Sum)
+	return seed.WaitPrometheusSettled(
+		ctx, refs.prom, manifest.CounterMetric, manifest.Series.Sum, manifest.AnchorEnd, settleWait,
+	)
 }
 
 func envOr(key, fallback string) string {
