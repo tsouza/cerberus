@@ -37,8 +37,13 @@ const (
 
 	// promMemoryLimitFormatMarker identifies the Prom head's memory-limit
 	// wire format among handler.go's string literals: the one that carries
-	// the per-query cap as a %d verb.
-	promMemoryLimitFormatMarker = "per-query cap %d bytes"
+	// the per-query cap as a %d verb after ClickHouse's own failure.
+	promMemoryLimitFormatMarker = "memory limit exceeded; per-query cap %d bytes"
+
+	// promClassicHistogramMemoryLimitFormatMarker identifies the Prom head's
+	// classic-histogram memory-limit wire format: the stage's message (%s)
+	// followed by the per-query cap as a %d verb.
+	promClassicHistogramMemoryLimitFormatMarker = "%s (per-query cap %d bytes)"
 )
 
 func TestPlaywrightResourceBoundMessagesMatchProduction(t *testing.T) {
@@ -68,6 +73,17 @@ func TestPlaywrightResourceBoundMessagesMatchProduction(t *testing.T) {
 	if tsFormat != goFormat {
 		t.Errorf("%s MEMORY_LIMIT_MESSAGE template = %q; %s formats %q — update the TS template in lock-step",
 			resourceBoundsTSPath, tsFormat, promHandlerPath, goFormat)
+	}
+
+	// The classic-histogram memory-limit message: the TS template must be
+	// the handler's format with the stage's message where the handler puts
+	// %s and the cap where it puts %d.
+	tsClassic := strings.ReplaceAll(tsTemplateLiteral(t, ts, "CLASSIC_HISTOGRAM_MEMORY_LIMIT_MESSAGE"), "${CH_QUERY_MAX_MEMORY_BYTES}", "%d")
+	goClassic := strings.Replace(goStringLiteralContaining(t, promHandlerPath, promClassicHistogramMemoryLimitFormatMarker),
+		"%s", chplan.ClassicHistogramMemoryLimitMessage, 1)
+	if tsClassic != goClassic {
+		t.Errorf("%s CLASSIC_HISTOGRAM_MEMORY_LIMIT_MESSAGE template = %q; %s formats %q — update the TS template in lock-step",
+			resourceBoundsTSPath, tsClassic, promHandlerPath, goClassic)
 	}
 
 	// The cap itself: both stacks set the same env, and the TS literal must

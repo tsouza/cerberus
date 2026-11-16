@@ -69,7 +69,9 @@
  *   - 2xx → the full validity assertions below apply, unchanged.
  *   - 422 with errorType=execution and EITHER cerberus's exact
  *     memory-limit message (MEMORY_LIMIT_MESSAGE below, byte-for-byte —
- *     pinned in lock-step with internal/api/prom/handler_memory_limit_test.go)
+ *     pinned in lock-step with internal/api/prom/handler_memory_limit_test.go
+ *     — or CLASSIC_HISTOGRAM_MEMORY_LIMIT_MESSAGE when the aborted statement
+ *     carries a classic-histogram quantile)
  *     OR one of cerberus's own emitter-planted resource-bound guard
  *     messages (RESOURCE_BOUND_GUARD_MESSAGES below) — a native-
  *     histogram-consuming panel (issue #3170/#3468) can trip its own
@@ -114,6 +116,7 @@ import {
   iterateDashboards,
   iteratePanels,
   CH_QUERY_MAX_MEMORY_BYTES,
+  CLASSIC_HISTOGRAM_MEMORY_LIMIT_MESSAGE,
   MEMORY_LIMIT_MESSAGE,
   RESOURCE_BOUND_GUARD_MESSAGES,
 } from './helpers/index.js';
@@ -456,8 +459,9 @@ test('time-ranges: every aggregating / histogram panel re-asserts under (range, 
       // Memory-limit / resource-bound multi-way contract (see file
       // header): a 422 is acceptable IFF it is exactly cerberus's
       // pinned resource-exhausted rejection — errorType=execution with
-      // EITHER the byte-for-byte MEMORY_LIMIT_MESSAGE OR one of
-      // RESOURCE_BOUND_GUARD_MESSAGES. That outcome is asserted
+      // EITHER the byte-for-byte MEMORY_LIMIT_MESSAGE (or its
+      // classic-histogram form, CLASSIC_HISTOGRAM_MEMORY_LIMIT_MESSAGE) OR
+      // one of RESOURCE_BOUND_GUARD_MESSAGES. That outcome is asserted
       // precisely (a 422 with any other body remains a hard
       // failure) and logged loudly so the nightly report shows
       // which tuples took which rejection branch.
@@ -470,7 +474,7 @@ test('time-ranges: every aggregating / histogram panel re-asserts under (range, 
           parsed = null;
         }
         if (parsed?.status === 'error' && parsed?.errorType === 'execution') {
-          if (parsed?.error === MEMORY_LIMIT_MESSAGE) {
+          if (parsed?.error === MEMORY_LIMIT_MESSAGE || parsed?.error === CLASSIC_HISTOGRAM_MEMORY_LIMIT_MESSAGE) {
             memoryLimitCount++;
             testInfo.annotations.push({
               type: 'time-ranges-memory-limit',
@@ -488,7 +492,7 @@ test('time-ranges: every aggregating / histogram panel re-asserts under (range, 
           }
         }
         failures.push(
-          `[${surface}] query_range returned 422 but NOT a pinned resource-exhausted contract (want errorType=execution + MEMORY_LIMIT_MESSAGE or one of RESOURCE_BOUND_GUARD_MESSAGES)\n  url: ${queryURL}\n  body: ${truncate(body, BODY_EXCERPT_CHARS)}`,
+          `[${surface}] query_range returned 422 but NOT a pinned resource-exhausted contract (want errorType=execution + MEMORY_LIMIT_MESSAGE, CLASSIC_HISTOGRAM_MEMORY_LIMIT_MESSAGE or one of RESOURCE_BOUND_GUARD_MESSAGES)\n  url: ${queryURL}\n  body: ${truncate(body, BODY_EXCERPT_CHARS)}`,
         );
         return;
       }

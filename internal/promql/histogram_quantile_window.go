@@ -1072,14 +1072,13 @@ func windowSampleCountAgg(s schema.Metrics) chplan.AggFunc {
 // the `rate` / `increase` fold can apply Prometheus's boundary-
 // extrapolation correction (see histogramWindowFold).
 //
-// bounds carries the stage's two memory ceilings, both checked before the
-// fold runs (classic_bucket_window_bound.go): the query-wide estimate over
-// input, before the stage collects a sample, and each series' collected
-// entries, before that series is folded.
+// bounds carries the stage's per-series memory ceiling
+// (classic_bucket_window_bound.go): each series' collected entries are
+// checked before that series is folded.
 func classicBucketWindowStage(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics, bounds ResourceBounds) chplan.Node {
 	group := &chplan.Aggregate{
 		Roles:          metricRoles(s),
-		Input:          classicBucketWindowInputGuard(input, s, bounds.ClassicBucketWindowMaxCostUnits),
+		Input:          input,
 		GroupBy:        []chplan.Expr{histogramIdentityExpr(s)},
 		GroupByAliases: []string{s.AttributesColumn},
 		AggFuncs: append(classicBucketWindowAggs(s, shape.windowFn),
