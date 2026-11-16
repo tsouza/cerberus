@@ -285,6 +285,15 @@ const (
 	// appendable floor — head max time minus half its chunk range — below
 	// which remote-write rejects a sample as out of bounds.
 	PreIngestWindow = 10 * time.Minute
+	// ReferenceLokiSplitInterval is reference Loki's query split interval,
+	// `split_queries_by_interval` in compatibility/loki/loki-config.yaml.
+	// The query frontend cuts every range query at each whole multiple of
+	// it. A query or sub-query that starts exactly at a flushed chunk's last
+	// entry does not return that entry, so the sub-query starting at a cut
+	// drops an entry stamped there when it ends its chunk. The fixture's
+	// last record is the last entry of every stream's one chunk, so it must
+	// not sit on a cut.
+	ReferenceLokiSplitInterval = time.Hour
 )
 
 // Window is the fixture's time geometry: where its samples sit, and which
@@ -305,8 +314,15 @@ type Window struct {
 	Step time.Duration
 }
 
+// MaxSeedLead is the furthest before the wall-clock instant NewWindow is
+// given that its SeedStart can fall: the seed window, plus under one step
+// lost to truncation, plus the one step a split-cut anchor moves.
+const MaxSeedLead = SeedWindow + 2*VerifyStep
+
 // NewWindow derives the fixture window from a wall-clock instant, truncating
-// the anchor to the step grid.
+// the anchor to the step grid. An anchor that lands on a whole multiple of
+// [ReferenceLokiSplitInterval] moves one step earlier, so the last record of
+// every log stream sits strictly inside one of reference Loki's query splits.
 //
 // The anchor rolls rather than being pinned to a fixed date, and one anchor
 // serves all three signals. A fixed date is unusable: Tempo's live store
@@ -317,6 +333,9 @@ type Window struct {
 // the declaration and a fixed RNG seed, never from the date.
 func NewWindow(now time.Time) Window {
 	anchorEnd := now.UTC().Truncate(VerifyStep)
+	if anchorEnd.Truncate(ReferenceLokiSplitInterval).Equal(anchorEnd) {
+		anchorEnd = anchorEnd.Add(-VerifyStep)
+	}
 	seedStart := anchorEnd.Add(-SeedWindow)
 	return Window{
 		SeedStart:   seedStart,
@@ -364,6 +383,13 @@ func (w Window) VerifySteps() []time.Time {
 		out = append(out, t)
 	}
 	return out
+}
+
+// LogQueryEnd is the end bound of a log range query that reads every record
+// up to and including the last fixture record. The Loki query API's end
+// bound is exclusive, so it sits one nanosecond past AnchorEnd.
+func (w Window) LogQueryEnd() time.Time {
+	return w.AnchorEnd.Add(time.Nanosecond)
 }
 
 // TraceSearchRange is the [start, end] a trace search covers. The end bound is
