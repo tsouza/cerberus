@@ -392,7 +392,11 @@ func unionStatementCode(ctx context.Context, t *testing.T, srv *server, protocol
 	case errors.As(err, &ex):
 		return ex.Code
 	default:
-		t.Fatalf("%s statement over %s failed without a server exception: %v", map[bool]string{false: "identity", true: "union"}[union], protocol, err)
+		statement := "identity"
+		if union {
+			statement = "union"
+		}
+		t.Fatalf("%s statement over %s failed without a server exception: %v", statement, protocol, err)
 		return 0
 	}
 }

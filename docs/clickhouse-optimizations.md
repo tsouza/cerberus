@@ -920,7 +920,8 @@ without one where the server cannot be named:
   **unreachable** verdict read this way is not held and does not count toward
   the probe's verdict.
 - On either protocol, a **forbidden** verdict from a server error that is
-  neither a refusal nor a condition of the moment is attributed to no server
+  neither a refusal nor a condition of the moment — or, on the query-log union
+  canary, any server error that is not a refusal — is attributed to no server
   and counts toward the verdict in force for the probe that read it only.
   Over the native protocol, an **unreachable** verdict from a server with no
   remembered verdict on that canary counts toward that probe's verdict only.
@@ -1059,7 +1060,8 @@ at boot and on every [re-probe](#re-probe).
   `NO_SUCH_COLUMN_IN_TABLE`), or the server refused a setting the read carries
   (the settings canaries' refusals). Any other server error, a timeout or a
   memory limit included, is **forbidden** for the probe that read it only.
-- **unreachable** — no server verdict: a transport failure.
+- **unreachable** — no server answer: a transport failure, an open circuit
+  breaker, or the client's own cancellation or deadline.
 
 Unlike every other capability-gated feature, a non-`available` verdict is
 **never fatal**, in `enforcing` as in `permissive`: the feature resolves out

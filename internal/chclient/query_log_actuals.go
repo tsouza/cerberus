@@ -276,17 +276,26 @@ func (c *Client) queryLogUnionAnswer(ctx context.Context) canaryAnswer {
 // pass that read it only.
 //
 // Unlike a settings canary, which runs a trivial statement, the union canary
-// runs the read the feature itself runs, so a timeout or a memory limit on it
-// is one the reader would hit too. Read as Unreachable, it would keep a
-// remembered permit in force over the native protocol while every union read
-// failed; as a pass-only Forbidden it turns the feature off until a pass
-// reads the union cleanly.
+// runs the read the feature itself runs, so a lasting timeout or memory limit
+// on it is one the reader hits too. Read as Unreachable, it would keep a
+// permit in force over either protocol — the server's remembered verdict over
+// the native protocol, the held unattributed one over HTTP — while every union
+// read failed; as a pass-only Forbidden it turns the feature off until a pass
+// reads the union cleanly. A momentary condition costs the same: the feature
+// off until the next probe, as when every server exception was a refusal and
+// nothing was remembered.
 func queryLogUnionErrAnswer(err error) canaryAnswer {
-	answer := canaryErrAnswer(err, isQueryLogUnionCanaryRefusal)
-	if _, answered := serverExceptionCode(err); answered && answer.verdict == chopt.CapabilityUnreachable {
+	_, answered := serverExceptionCode(err)
+	switch {
+	case err == nil:
+		return canaryAnswer{verdict: chopt.CapabilityAvailable}
+	case isQueryLogUnionCanaryRefusal(err):
+		return canaryAnswer{verdict: chopt.CapabilityForbidden}
+	case !answered:
+		return canaryAnswer{verdict: chopt.CapabilityUnreachable}
+	default:
 		return canaryAnswer{verdict: chopt.CapabilityForbidden, passOnly: true}
 	}
-	return answer
 }
 
 // isQueryLogUnionCanaryRefusal reports whether err refuses the query-log

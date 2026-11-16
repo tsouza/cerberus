@@ -1578,13 +1578,17 @@ requires the fleet memory to hold the refusal on the next probe.
 The query-log union canary reads a condition of the moment differently from
 the settings canaries. A settings canary runs a trivial statement, so a
 timeout or a memory limit on it says nothing about the statements the
-feature would run; the union canary runs the reconciler's own read, so the
-same condition fails that read too. Read as unreachable, it would leave a
-remembered permit in force over the native protocol, and the reconciler
-would keep reading the union, logging a failed poll each time, for as long
-as the condition lasted. As a forbidden verdict for the probe that read it
-only, it switches the reconciler to the local query log at that probe and
-back at the first probe that reads the union cleanly.
+feature would run; the union canary runs the reconciler's own read, so a
+lasting condition fails that read too. Read as unreachable, it would leave a
+permit in force over either protocol — the server's remembered verdict over
+the native protocol, the held unattributed one over HTTP — and the
+reconciler would keep reading the union, logging a failed poll each time,
+for as long as the condition lasted. As a forbidden verdict for the probe
+that read it only, it switches the reconciler to the local query log at that
+probe and back at the first probe that reads the union cleanly. A momentary
+condition on the canary costs the same one probe interval of the local log,
+which is what any server exception cost when every one was a refusal and
+nothing was remembered.
 
 A refusal that occurs only for a moment is held like a lasting one, over HTTP
 only. A freshly initialised server answers `UNKNOWN_TABLE` on

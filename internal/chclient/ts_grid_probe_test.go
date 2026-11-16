@@ -1,9 +1,11 @@
 package chclient
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"testing"
 
 	"github.com/ClickHouse/ch-go"
@@ -31,34 +33,44 @@ var transientCanaryErrors = []struct {
 	{"memory limit sentinel without a cause", &MemoryLimitError{}, true},
 	{"query timeout sentinel without a cause", &QueryTimeoutError{}, true},
 	{"wrapped memory limit", fmt.Errorf("chclient: query: %w", &clickhouse.Exception{Code: chCodeMemoryLimitExceeded}), true},
+	{"memory limit over http", &clickhouse.HTTPError{StatusCode: http.StatusInternalServerError, Err: &clickhouse.Exception{Code: chCodeMemoryLimitExceeded}}, true},
 	{"dial failure", &net.OpError{Op: "dial", Err: errors.New("connection refused")}, false},
 	{"circuit open", fmt.Errorf("chclient: query: %w", ErrCircuitOpen), false},
+	{"client deadline", fmt.Errorf("chclient: query: %w", context.DeadlineExceeded), false},
+	{"proxy bad gateway", &clickhouse.HTTPError{StatusCode: http.StatusBadGateway, Err: errors.New("response body: upstream connect error")}, false},
 }
 
-// canaryAnswers maps each canary family to the function that answers it from
-// its statement's error.
-var canaryAnswers = map[string]func(error) canaryAnswer{
-	"settings":        func(err error) canaryAnswer { return canaryErrAnswer(err, isSettingsRefusal) },
-	"query-log union": queryLogUnionErrAnswer,
+// canaryFamily is one family of canaries: the function that answers it from
+// its statement's error, and whether it reads a condition of the moment the
+// server answered with as Forbidden for the pass only (the query-log union
+// canary, whose read is the feature's own) rather than Unreachable.
+type canaryFamily struct {
+	answer             func(error) canaryAnswer
+	answeredIsPassOnly bool
 }
 
-// TestCanaryErrAnswer_TransientIsUnreachable pins that no canary reads a load
+// canaryFamilies maps each canary family's name to it.
+var canaryFamilies = map[string]canaryFamily{
+	"settings":        {func(err error) canaryAnswer { return canaryErrAnswer(err, isSettingsRefusal) }, false},
+	"query-log union": {queryLogUnionErrAnswer, true},
+}
+
+// TestCanaryErrAnswer_TransientIsNeverHeld pins that no canary reads a load
 // or resource condition as a refusal it holds: a settings canary reads every
-// one as Unreachable, and the query-log union canary, whose read is the
-// feature's own, reads a condition the server answered with as Forbidden for
-// the pass only and a failure with no server answer as Unreachable.
-func TestCanaryErrAnswer_TransientIsUnreachable(t *testing.T) {
+// one as Unreachable, and the query-log union canary reads a condition the
+// server answered with as Forbidden for the pass only and a failure with no
+// server answer as Unreachable.
+func TestCanaryErrAnswer_TransientIsNeverHeld(t *testing.T) {
 	t.Parallel()
-	for _, tc := range transientCanaryErrors {
-		if got := canaryAnswers["settings"](tc.err); got.verdict != chopt.CapabilityUnreachable {
-			t.Errorf("settings canary: %s classified %v; want %v", tc.name, got.verdict, chopt.CapabilityUnreachable)
-		}
-		wantVerdict, wantPassOnly := chopt.CapabilityUnreachable, false
-		if tc.answered {
-			wantVerdict, wantPassOnly = chopt.CapabilityForbidden, true
-		}
-		if got := queryLogUnionErrAnswer(tc.err); got.verdict != wantVerdict || got.passOnly != wantPassOnly {
-			t.Errorf("query-log union canary: %s answered %v, passOnly=%v; want %v, passOnly=%v", tc.name, got.verdict, got.passOnly, wantVerdict, wantPassOnly)
+	for family, f := range canaryFamilies {
+		for _, tc := range transientCanaryErrors {
+			wantVerdict, wantPassOnly := chopt.CapabilityUnreachable, false
+			if tc.answered && f.answeredIsPassOnly {
+				wantVerdict, wantPassOnly = chopt.CapabilityForbidden, true
+			}
+			if got := f.answer(tc.err); got.verdict != wantVerdict || got.passOnly != wantPassOnly {
+				t.Errorf("%s canary: %s answered %v, passOnly=%v; want %v, passOnly=%v", family, tc.name, got.verdict, got.passOnly, wantVerdict, wantPassOnly)
+			}
 		}
 	}
 }
@@ -71,7 +83,8 @@ func TestCanaryErrAnswer_UnknownServerErrorIsForbiddenForThePassOnly(t *testing.
 	t.Parallel()
 	unknown := &clickhouse.Exception{Code: int32(chproto.ErrTooManyRowsOrBytes), Name: "TOO_MANY_ROWS_OR_BYTES"}
 	refusal := &clickhouse.Exception{Code: int32(chproto.ErrReadonly), Name: "READONLY"}
-	for set, answer := range canaryAnswers {
+	for set, f := range canaryFamilies {
+		answer := f.answer
 		if got := answer(unknown); got.verdict != chopt.CapabilityForbidden || !got.passOnly {
 			t.Errorf("%s canary: unknown server error answered %v, passOnly=%v; want %v, passOnly", set, got.verdict, got.passOnly, chopt.CapabilityForbidden)
 		}
