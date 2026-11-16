@@ -494,3 +494,21 @@ func TestFleetMemory_UnattributedRefusalOutweighsAnAttributedPermit(t *testing.T
 		}
 	}
 }
+
+// TestFleetMemory_PassOnlyVerdictCountsForItsPassOnly: an unattributed
+// PassOnly refusal keeps the fleet's verdict at forbidden for the pass that
+// read it, without marking the fleet held, and the next pass that does not
+// read it reads the permit again.
+func TestFleetMemory_PassOnlyVerdictCountsForItsPassOnly(t *testing.T) {
+	t.Parallel()
+	m := NewFleetMemory()
+	m.Observe(overHTTP(replicaA, chopt.CapabilityAvailable))
+	pass := landed(replicaA, memoryNewBuild)
+	pass.Unattributed = []CanaryReading{{Canary: memoryCanary, Verdict: chopt.CapabilityForbidden, PassOnly: true}}
+	if fv := m.Observe(pass); fv.Capability(memoryCanary) != chopt.CapabilityForbidden || fv.Held {
+		t.Fatalf("pass that read the PassOnly refusal = %+v; want %s, not held", fv, chopt.CapabilityForbidden)
+	}
+	if fv := m.Observe(overHTTP(replicaA, chopt.CapabilityAvailable)); fv.Capability(memoryCanary) != chopt.CapabilityAvailable || fv.Held {
+		t.Fatalf("next pass = %+v; want %s, not held", fv, chopt.CapabilityAvailable)
+	}
+}

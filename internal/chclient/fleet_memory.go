@@ -31,8 +31,8 @@ import (
 // forgetting a serving replica's verdict as small. Its cost is that a refusal
 // no replica gives any more, once the replica is fixed, keeps holding for the
 // same count of passes, at the same 10-second cadence, before it clears. A
-// server error that is not a refusal is an unreachable verdict, which is not
-// held (classifyCapabilityFromProbeErr).
+// server error that is not a known refusal is an unreachable or a PassOnly
+// verdict, neither of which is held (canaryErrAnswer).
 const fleetNodeRetentionPassesPerServer = 40
 
 // retentionPasses is how many consecutive complete passes may miss a server
@@ -79,7 +79,8 @@ func retentionPasses(servers int) int {
 //     passes have not read it again. Behind an HTTP balancer that routes
 //     requests one by one, a replica that refuses a canary keeps the fleet's
 //     verdict at its refusal for as long as it keeps answering the canary,
-//     whichever server the pass's identity read named.
+//     whichever server the pass's identity read named. A PassOnly verdict
+//     counts toward the fleet's verdict for the pass that read it only.
 //
 // The zero value is not usable; build one with NewFleetMemory. It is safe for
 // concurrent use.
@@ -133,10 +134,11 @@ func (m *FleetMemory) CanaryOrder(id string, pending []FleetCanary) []FleetCanar
 
 // Observe folds pass into the memory and returns the fleet the memory now
 // describes: the build of every server it holds, sorted oldest first, the
-// most conservative verdict they and the unattributed verdicts it holds gave
-// on each canary, pass's completeness, and Held set when one of those builds
-// is one no server pass reached runs, or the verdict in force on a canary is
-// one neither a server pass reached holds nor pass read unattributed.
+// most conservative verdict they, the unattributed verdicts it holds and
+// those pass read gave on each canary, pass's completeness, and Held set when
+// one of those builds is one no server pass reached runs, or the verdict in
+// force on a canary is one neither a server pass reached holds nor pass read
+// unattributed.
 func (m *FleetMemory) Observe(pass FleetPass) FleetVersions {
 	if len(pass.Nodes) == 0 {
 		return FleetVersions{Complete: pass.Complete}
@@ -221,6 +223,9 @@ func (m *FleetMemory) Observe(pass FleetPass) FleetVersions {
 	for r := range m.unattributed {
 		fold(r.Canary, r.Verdict)
 	}
+	for r := range readUnattributed {
+		fold(r.Canary, r.Verdict)
+	}
 	for canary, v := range fv.Verdicts {
 		fv.Held = fv.Held || !reachedHolds(reached, ranCanary, canary, v) && !readUnattributed[CanaryReading{Canary: canary, Verdict: v}]
 	}
@@ -229,21 +234,26 @@ func (m *FleetMemory) Observe(pass FleetPass) FleetVersions {
 }
 
 // observeUnattributed folds pass's unattributed verdicts into the memory and
-// returns the ones it read. A verdict read again is held anew. On a complete
-// pass, every held verdict pass did not read counts a miss, and
+// returns the ones it read, PassOnly cleared. A verdict read again is held
+// anew; a PassOnly one counts toward this pass only and is not held. On a
+// complete pass, every held verdict pass did not read counts a miss, and
 // retentionPasses consecutive misses, for the servers the memory now holds,
 // forget it: the server that gave it is expected to be one of them, and a
 // complete pass that does not read its verdict may simply not have reached
-// it. An unreachable
-// reading says nothing about any server and is not held. m.mu must be held.
+// it. An unreachable reading says nothing about any server and is not held.
+// m.mu must be held.
 func (m *FleetMemory) observeUnattributed(pass FleetPass) map[CanaryReading]bool {
 	read := make(map[CanaryReading]bool, len(pass.Unattributed))
 	for _, r := range pass.Unattributed {
 		if r.Verdict == chopt.CapabilityUnreachable {
 			continue
 		}
+		passOnly := r.PassOnly
+		r.PassOnly = false
 		read[r] = true
-		m.unattributed[r] = 0
+		if !passOnly {
+			m.unattributed[r] = 0
+		}
 	}
 	if pass.Complete {
 		limit := retentionPasses(len(m.nodes))

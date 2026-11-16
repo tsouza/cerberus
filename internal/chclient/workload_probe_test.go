@@ -11,14 +11,14 @@ import (
 	"github.com/tsouza/cerberus/internal/chopt"
 )
 
-// TestClassifyCapabilityFromProbeErr_WorkloadShapes pins the shared
+// TestCanaryErrAnswer_WorkloadShapes pins the shared
 // classifier against the rejection shapes a server that does not know the
 // `workload` setting (too old) or a hardened profile that pins/forbids/
 // requires-resolvable-workloads-for it raises — a THIRD setting name
 // (workload) confirming, alongside ts_grid_probe_test.go and
 // result_cache_probe_test.go, that the shared classifier's mapping does not
 // depend on which setting the canary stamps.
-func TestClassifyCapabilityFromProbeErr_WorkloadShapes(t *testing.T) {
+func TestCanaryErrAnswer_WorkloadShapes(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -69,8 +69,8 @@ func TestClassifyCapabilityFromProbeErr_WorkloadShapes(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := classifyCapabilityFromProbeErr(tc.err, isSettingsRefusal); got != tc.want {
-				t.Errorf("classifyCapabilityFromProbeErr(%v) = %v; want %v", tc.err, got, tc.want)
+			if got := canaryErrAnswer(tc.err, isSettingsRefusal).verdict; got != tc.want {
+				t.Errorf("canaryErrAnswer(%v) = %v; want %v", tc.err, got, tc.want)
 			}
 		})
 	}

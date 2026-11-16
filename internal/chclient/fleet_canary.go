@@ -24,11 +24,13 @@ type FleetCanary struct {
 	probe func(ctx context.Context, c *Client) canaryAnswer
 }
 
-// canaryAnswer is what one canary run read: its verdict and, when the
-// canary's own statement returned a row naming the server that answered
-// (identified), that server.
+// canaryAnswer is what one canary run read: its verdict, whether that verdict
+// holds for this pass only (passOnly, canaryErrAnswer) and, when the canary's
+// own statement returned a row naming the server that answered (identified),
+// that server.
 type canaryAnswer struct {
 	verdict    chopt.Capability
+	passOnly   bool
 	node       FleetNode
 	identified bool
 }
@@ -37,8 +39,7 @@ type canaryAnswer struct {
 // an accepted one identifies the server that accepted it.
 func settingsCanary(name string, stamp func(context.Context) context.Context) FleetCanary {
 	return FleetCanary{Name: name, probe: func(ctx context.Context, c *Client) canaryAnswer {
-		node, verdict, ok := c.probeCanaryNode(stamp(ctx))
-		return canaryAnswer{verdict: verdict, node: node, identified: ok}
+		return c.probeCanaryNode(stamp(ctx))
 	}}
 }
 
@@ -71,7 +72,7 @@ func QueryWorkloadCanary(workload string) FleetCanary {
 // read named, and over HTTP it belongs to no named server (probeCanaries).
 func QueryLogUnionCanary() FleetCanary {
 	return FleetCanary{Name: CanaryQueryLogUnion, probe: func(ctx context.Context, c *Client) canaryAnswer {
-		return canaryAnswer{verdict: c.ProbeQueryLogUnionCapability(ctx)}
+		return c.queryLogUnionAnswer(ctx)
 	}}
 }
 

@@ -50,15 +50,17 @@ const (
 	// trivial probe query and the server accepted it: the native aggregates may
 	// be auto-selected (subject to their version floor).
 	CapabilityAvailable
-	// CapabilityForbidden means the server ANSWERED the canary with a typed
-	// rejection of the experimental setting — a constrained profile
-	// (SETTING_CONSTRAINT_VIOLATION) or a readonly user (READONLY). The server is
-	// reachable and may be new enough, but it will not run the native node, so
-	// cerberus falls back to the fan-out path.
+	// CapabilityForbidden means the server ANSWERED the canary with an error:
+	// a refusal of what the canary carries — a constrained profile
+	// (SETTING_CONSTRAINT_VIOLATION), a readonly user (READONLY), a build
+	// without the setting (UNKNOWN_SETTING) — or another server error that is
+	// not a condition of the moment. The server is reachable and may be new
+	// enough, but it will not run the gated feature, so cerberus falls back.
 	CapabilityForbidden
-	// CapabilityUnreachable means the canary could not get a verdict from the
-	// server at all (a dial / timeout / breaker-open transport failure, not a
-	// typed answer). Treated conservatively like Forbidden — the native family
+	// CapabilityUnreachable means the canary got no verdict from the server:
+	// a dial / breaker-open transport failure, or a server error reporting a
+	// condition of the moment (a timeout, a memory or concurrency limit).
+	// Treated conservatively like Forbidden — the native family
 	// stays off until a re-probe reaches a server that answers, matching the
 	// version probe's connectivity fallback — except where the fleet memory
 	// (chclient.FleetMemory) keeps the verdict it remembers for the server.
@@ -66,8 +68,8 @@ const (
 )
 
 // Inconclusive reports whether the canary failed to reach a DEFINITIVE verdict:
-// Unreachable (a dial / timeout / breaker-open transport failure) or Unknown
-// (the probe never ran). It is the opposite axis from a definitive answer --
+// Unreachable (a transport failure, or a server error reporting a condition
+// of the moment) or Unknown (the probe never ran). It is the opposite axis from a definitive answer --
 // Available definitively permits, Forbidden definitively refuses.
 //
 // The resolver uses it to mirror the version probe's connectivity fallback: an

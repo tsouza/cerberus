@@ -2,9 +2,9 @@ package chclient
 
 import (
 	"context"
-	"errors"
+	"slices"
 
-	"github.com/ClickHouse/clickhouse-go/v2"
+	chproto "github.com/ClickHouse/ch-go/proto"
 
 	"github.com/tsouza/cerberus/internal/chopt"
 )
@@ -34,14 +34,14 @@ import (
 const capabilityCanarySQL = nodeSQL
 
 // probeCanaryNode runs capabilityCanarySQL under ctx's canary settings and
-// returns the server that accepted them, or the verdict its error implies
-// (classifyCapabilityFromProbeErr over isSettingsRefusal) with ok=false.
-func (c *Client) probeCanaryNode(ctx context.Context) (node FleetNode, verdict chopt.Capability, ok bool) {
+// answers with the server that accepted them, or with what its error implies
+// (canaryErrAnswer over isSettingsRefusal).
+func (c *Client) probeCanaryNode(ctx context.Context) canaryAnswer {
 	nodes, err := c.probeNodes(withCapabilityCanary(ctx), capabilityCanarySQL)
 	if err != nil {
-		return FleetNode{}, classifyCapabilityFromProbeErr(err, isSettingsRefusal), false
+		return canaryErrAnswer(err, isSettingsRefusal)
 	}
-	return nodes[0], chopt.CapabilityAvailable, true
+	return canaryAnswer{verdict: chopt.CapabilityAvailable, node: nodes[0], identified: true}
 }
 
 // ProbeTSGridCapability runs the boot-time capability canary once and classifies
@@ -83,41 +83,83 @@ const (
 	chCodeReadonly = 164
 	// chCodeResourceAccessDenied is RESOURCE_ACCESS_DENIED: under the server
 	// setting throw_on_unknown_workload, a `workload` that names no defined
-	// WORKLOAD.
+	// WORKLOAD. Read off a live 26.6 server reloaded with
+	// throw_on_unknown_workload=true, `SELECT 1 SETTINGS
+	// workload='nonexistent'` answers `Code: 673 (RESOURCE_ACCESS_DENIED):
+	// Could not access resource 'cpu'. Please check throw_on_unknown_workload
+	// setting.`
 	chCodeResourceAccessDenied = 673
+	// chCodeQueryCacheUsedWithNonThrowOverflowMode is
+	// QUERY_CACHE_USED_WITH_NON_THROW_OVERFLOW_MODE: the query cache refuses
+	// a statement whose profile sets an overflow mode other than throw
+	// (result_overflow_mode='break', for one).
+	chCodeQueryCacheUsedWithNonThrowOverflowMode = 731
 )
 
 // isSettingsRefusal reports whether err is the server refusing a setting the
 // statement carries: a setting the build does not know, a readonly profile, a
-// settings constraint, or a workload the server cannot resolve.
+// settings constraint, a workload the server cannot resolve, or the query
+// cache under a non-throw overflow mode.
 func isSettingsRefusal(err error) bool {
-	var ex *clickhouse.Exception
-	if !errors.As(err, &ex) {
-		return false
-	}
-	switch ex.Code {
-	case chCodeUnknownSetting, chCodeReadonly, chCodeSettingConstraintViolation, chCodeResourceAccessDenied:
-		return true
-	default:
-		return false
-	}
+	return exceptionCodeIn(err, chCodeUnknownSetting, chCodeReadonly, chCodeSettingConstraintViolation,
+		chCodeResourceAccessDenied, chCodeQueryCacheUsedWithNonThrowOverflowMode)
 }
 
-// classifyCapabilityFromProbeErr maps a capability canary's error into the
-// tri-state chopt.Capability verdict: a nil error is Available, an error
-// refused reports as the server refusing the capability is Forbidden, and
-// anything else is Unreachable — a transport failure, or a server exception
-// that says nothing about the capability, such as a timeout or a memory or
-// concurrency limit. Unreachable keeps the verdict the fleet memory
-// remembers for the server and, when it remembers none, leaves the gated
-// feature off until a later re-probe gets a verdict.
-func classifyCapabilityFromProbeErr(err error, refused func(error) bool) chopt.Capability {
+// exceptionCodeIn reports whether err is a server exception whose code is one
+// of codes.
+func exceptionCodeIn(err error, codes ...chproto.Error) bool {
+	code, answered := serverExceptionCode(err)
+	return answered && slices.Contains(codes, code)
+}
+
+// canaryConditionCodes are the server exceptions a canary's statement can
+// fail with that report a resource or load condition of the moment rather
+// than whether the server accepts the capability: a per-query limit, a
+// cancellation, a quota. With the server conditions the breaker counts
+// (breakerServerHealthCodes), they are what canaryErrAnswer reads as no
+// verdict.
+var canaryConditionCodes = []chproto.Error{
+	chproto.ErrTimeoutExceeded,
+	chproto.ErrMemoryLimitExceeded,
+	chproto.ErrQueryWasCancelled,
+	chproto.ErrQuotaExceeded,
+}
+
+// isCanaryCondition reports whether err says nothing about whether the
+// server accepts a capability: no server answer at all, or a server exception
+// that reports a condition of the moment (canaryConditionCodes,
+// breakerServerHealthCodes).
+func isCanaryCondition(err error) bool {
+	code, answered := serverExceptionCode(err)
+	if !answered {
+		return true
+	}
+	_, serverCondition := breakerServerHealthCodes[code]
+	return serverCondition || slices.Contains(canaryConditionCodes, code)
+}
+
+// canaryErrAnswer is the answer of a canary whose statement failed with err;
+// a nil err is Available. refused names the codes the server answers with
+// for refusing the capability:
+//
+//   - A refusal is Forbidden.
+//   - A transport failure, or a server exception reporting a condition of the
+//     moment (isCanaryCondition), is Unreachable: it keeps the verdict the
+//     fleet memory remembers for the server and, when it remembers none,
+//     leaves the gated feature off until a later re-probe gets a verdict.
+//   - Any other server exception is Forbidden for the pass that read it only
+//     (passOnly): the server answered the canary with an error, so the
+//     capability stays off, but an error that is neither a known refusal nor
+//     a known condition is not held as one.
+func canaryErrAnswer(err error, refused func(error) bool) canaryAnswer {
 	switch {
 	case err == nil:
-		return chopt.CapabilityAvailable
+		return canaryAnswer{verdict: chopt.CapabilityAvailable}
 	case refused(err):
-		return chopt.CapabilityForbidden
+		return canaryAnswer{verdict: chopt.CapabilityForbidden}
+	case isCanaryCondition(err):
+		return canaryAnswer{verdict: chopt.CapabilityUnreachable}
 	default:
-		return chopt.CapabilityUnreachable
+		return canaryAnswer{verdict: chopt.CapabilityForbidden, passOnly: true}
 	}
 }

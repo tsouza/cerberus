@@ -35,9 +35,13 @@ type FleetPass struct {
 }
 
 // CanaryReading is one verdict a server gave on the canary named Canary.
+// PassOnly marks a verdict that counts for the pass that read it and is not
+// held after it: a server error that is neither a known refusal nor a known
+// condition of the moment.
 type CanaryReading struct {
-	Canary  string
-	Verdict chopt.Capability
+	Canary   string
+	Verdict  chopt.Capability
+	PassOnly bool
 }
 
 // FleetVersions is the fleet a FleetMemory describes after a pass: the build
@@ -189,7 +193,7 @@ func probeCanaries(ctx context.Context, c *Client, first FleetNode, order Canary
 		case answer.identified:
 			nodes = append(nodes, answer.node)
 		case perRequest:
-			unattributed = append(unattributed, CanaryReading{Canary: canary.Name, Verdict: answer.verdict})
+			unattributed = append(unattributed, CanaryReading{Canary: canary.Name, Verdict: answer.verdict, PassOnly: answer.passOnly})
 			continue
 		}
 		on := &nodes[len(nodes)-1]

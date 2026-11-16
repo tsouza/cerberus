@@ -84,10 +84,10 @@ func TestIsQueryLogUnionRefusal(t *testing.T) {
 	}
 }
 
-// TestClassifyCapabilityFromProbeErr_QueryLogUnionShapes pins the query-log
+// TestCanaryErrAnswer_QueryLogUnionShapes pins the query-log
 // union canary's refusals: the union read refused as not provisioned, or a
 // setting the read carries refused, is Forbidden.
-func TestClassifyCapabilityFromProbeErr_QueryLogUnionShapes(t *testing.T) {
+func TestCanaryErrAnswer_QueryLogUnionShapes(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
@@ -104,7 +104,7 @@ func TestClassifyCapabilityFromProbeErr_QueryLogUnionShapes(t *testing.T) {
 		{"settings constraint", &clickhouse.Exception{Code: chCodeSettingConstraintViolation}, chopt.CapabilityForbidden},
 		{"unknown setting", &clickhouse.Exception{Code: chCodeUnknownSetting}, chopt.CapabilityForbidden},
 	} {
-		if got := classifyCapabilityFromProbeErr(tc.err, isQueryLogUnionCanaryRefusal); got != tc.want {
+		if got := canaryErrAnswer(tc.err, isQueryLogUnionCanaryRefusal).verdict; got != tc.want {
 			t.Errorf("%s: classified %v; want %v", tc.name, got, tc.want)
 		}
 	}

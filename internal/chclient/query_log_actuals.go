@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ClickHouse/clickhouse-go/v2"
-
 	"github.com/tsouza/cerberus/internal/chopt"
 )
 
@@ -249,16 +247,7 @@ func (c *Client) queryLogActualsErr(ctx context.Context, union bool, err error) 
 // union section), the reader lacks the grant, or a member lacks a selected
 // column.
 func isQueryLogUnionRefusal(err error) bool {
-	var ex *clickhouse.Exception
-	if !errors.As(err, &ex) {
-		return false
-	}
-	switch ex.Code {
-	case chCodeUnknownTable, chCodeAccessDenied, chCodeUnknownIdentifier, chCodeNoSuchColumnInTable:
-		return true
-	default:
-		return false
-	}
+	return exceptionCodeIn(err, chCodeUnknownTable, chCodeAccessDenied, chCodeUnknownIdentifier, chCodeNoSuchColumnInTable)
 }
 
 // ProbeQueryLogUnionCapability runs the reader's own record-selection query
@@ -266,15 +255,20 @@ func isQueryLogUnionRefusal(err error) bool {
 // the server checks before it reads a row: the table exists, its columns are
 // the ones selected, and cerberus's user may SELECT it. A nil error is
 // Available; the server refusing the read (isQueryLogUnionRefusal) or a
-// setting it carries (isSettingsRefusal) is Forbidden; anything else — a
-// transport failure, a timeout, a memory or concurrency limit — is
-// Unreachable (classifyCapabilityFromProbeErr). Never returns an error.
+// setting it carries (isSettingsRefusal) is Forbidden; a transport failure,
+// a timeout, a memory or concurrency limit is Unreachable; any other server
+// error is Forbidden (canaryErrAnswer). Never returns an error.
 func (c *Client) ProbeQueryLogUnionCapability(ctx context.Context) chopt.Capability {
+	return c.queryLogUnionAnswer(ctx).verdict
+}
+
+// queryLogUnionAnswer runs the query-log union canary on c.
+func (c *Client) queryLogUnionAnswer(ctx context.Context) canaryAnswer {
 	_, err := c.QueryLogActuals(withCapabilityCanary(ctx), QueryLogActualsRequest{
 		Union: true,
 		After: QueryLogCursor{EventTime: time.Now()},
 	})
-	return classifyCapabilityFromProbeErr(err, isQueryLogUnionCanaryRefusal)
+	return canaryErrAnswer(err, isQueryLogUnionCanaryRefusal)
 }
 
 // isQueryLogUnionCanaryRefusal reports whether err refuses the query-log

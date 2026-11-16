@@ -1521,35 +1521,63 @@ a remembered permit would demote the fleet to unreachable on a transient
 failure. A server with nothing remembered takes the unreachable verdict,
 since that is all that is known about it.
 
-**Why only a refusal code is a forbidden verdict.** A canary error is
-**forbidden** only when its code is one the server answers with for refusing
-the capability, and any other server error is **unreachable**. Reading every
-server exception as a refusal would turn a timeout, a memory limit or a burst
-of concurrent queries into a refusal; held the way a refusal is held — over
-HTTP, for 40 complete probes per remembered server at the 10-second cadence,
-after the 5-minute probe that read it — a single such error would keep the
-capability off for over eleven minutes against one server, where a probe that
-forgets each verdict at the next one keeps it off for one 5-minute interval.
-As unreachable, it is not held over HTTP and leaves a server's remembered
-verdict in place over the native protocol, so a capability already read
-available stays on, and one with no verdict yet stays off only until the next
-probe.
+**Why a canary error is classified three ways.** A canary error is a
+**forbidden** verdict held like any other when its code is a refusal, an
+**unreachable** one when it reports a condition of the moment, and a
+**forbidden** verdict for the probe that read it only otherwise.
+
+Reading every server exception as a refusal would turn a timeout, a memory
+limit or a burst of concurrent queries into a refusal; held the way a refusal
+is held — over HTTP, for 40 complete probes per remembered server at the
+10-second cadence, after the 5-minute probe that read it — a single such
+error would keep the capability off for over eleven minutes against one
+server, where a probe that forgets each verdict at the next one keeps it off
+for one 5-minute interval. As unreachable, it is not held over HTTP and
+leaves a server's remembered verdict in place over the native protocol, so a
+capability already read available stays on, and one with no verdict yet
+stays off only until the next probe.
+
+Reading every server exception that is not a known refusal as unreachable
+fails the other way. A refusal whose code is missing from the list would
+leave a remembered permit in force: a server upgraded in place, or a profile
+changed under a running process, would keep the capability on while every
+query that uses it fails. So the conditions of the moment are the
+enumerated side — the per-query limits, cancellation and quota, and the
+server and cluster conditions the circuit breaker already counts as a
+backend unable to serve — and any other server error turns the capability
+off. Over HTTP it is held for the probe that read it only, so it costs at
+most what it cost when every exception was a refusal and nothing was
+remembered: off until the next probe. Over the native protocol it is the
+verdict of the server that gave it, replaced by the next probe that reaches
+that server.
 
 The refusal codes were read off real servers from 24.8 to 26.10 by provoking
-every condition that refuses a canary: a readonly profile (`READONLY`),
+the conditions that refuse a canary: a readonly profile (`READONLY`),
 `CONST` and `MAX` constraints on the setting a canary turns on and on the
 settings it pins beside it (`SETTING_CONSTRAINT_VIOLATION`), a build that
 predates the setting (`UNKNOWN_SETTING`), a workload name the server cannot
-resolve under `throw_on_unknown_workload` (`RESOURCE_ACCESS_DENIED`), and,
-for the query-log union read, a server without the union table
-(`UNKNOWN_TABLE`) and a user without the `SELECT` grant on it, or with a
-grant on some columns only (`ACCESS_DENIED`). The union read also refuses a
+resolve under `throw_on_unknown_workload` (`RESOURCE_ACCESS_DENIED`), a
+profile whose overflow mode is not `throw`, under which the query cache
+refuses every statement on 25.3 and later
+(`QUERY_CACHE_USED_WITH_NON_THROW_OVERFLOW_MODE`), and, for the query-log
+union read, a server without the union table (`UNKNOWN_TABLE`) and a user
+without the `SELECT` grant on it, or with a grant on some columns only
+(`ACCESS_DENIED`). The union read also keeps the reader's own refusals of a
 member that lacks a selected column (`UNKNOWN_IDENTIFIER`,
-`NO_SUCH_COLUMN_IN_TABLE`), which the reader already treats as the table not
-being provisioned. A readonly profile also refuses the identity read, which
-carries settings, so such a server is never read at all. A refusal answered
-with a code outside the list would read as unreachable: the capability stays
-off on a server with no verdict, and keeps the remembered verdict otherwise.
+`NO_SUCH_COLUMN_IN_TABLE`). A readonly profile also refuses the identity
+read, which carries settings, so a fleet probe never reaches such a server.
+`TestFleetProbe_EveryRefusalIsForbidden` provokes each of these but the
+missing-column refusal on a 26.8 and a 24.8 server.
+
+A refusal that occurs only for a moment is held like a lasting one. A freshly
+initialised server answers `UNKNOWN_TABLE` on `system.all_query_log` for a
+few seconds after it starts accepting connections; a probe over HTTP in that
+window holds the query-log union canary forbidden for the full retention.
+Telling a brief refusal from a lasting one would need a second reading
+before holding it, and a refusal not yet held would let a disagreeing
+replica's refusal come and go with the routing, which is what holding it
+prevents. The cost falls on `query_log_union`, which a refusal never makes
+fatal and which falls back to the local query log.
 
 **Why the order is forbidden, then unreachable, then available.** A query can
 land on any remembered server, so the fleet permits a setting only when every

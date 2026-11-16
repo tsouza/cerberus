@@ -917,7 +917,9 @@ without one where the server cannot be named:
   reach. Each distinct verdict a probe reads this way is held as the verdict of
   a server cerberus cannot name, and counts toward the verdict in force until
   40 complete probes per remembered server have not read it again. An
-  **unreachable** verdict read this way is not held.
+  **unreachable** verdict read this way is not held, and a **forbidden** one
+  from a server error that is neither a refusal nor a condition of the moment
+  counts toward the verdict in force for the probe that read it only.
 - On each server, the canaries run in the order of how long ago a probe last
   ran them there: a canary never run on that server first, then the one run
   there longest ago. Over the native protocol, a probe that lands on a
@@ -978,17 +980,23 @@ The verdict is tri-state:
 
 - **available** — the server accepted the setting; the native family resolves
   per its version floor.
-- **forbidden** — the server refused the setting: `SETTING_CONSTRAINT_VIOLATION`
-  (a constrained profile), `READONLY` (a readonly profile), `UNKNOWN_SETTING`
-  (a build without the setting), or, for the workload canary,
-  `RESOURCE_ACCESS_DENIED` (a workload the server cannot resolve); a
-  *definitive* "no". The native family is **dropped to the fan-out path**.
+- **forbidden** — the server refused the setting, or answered the canary with
+  another server error that is not a condition of the moment; a *definitive*
+  "no". The refusals are `SETTING_CONSTRAINT_VIOLATION` (a constrained
+  profile), `READONLY` (a readonly profile), `UNKNOWN_SETTING` (a build
+  without the setting), `RESOURCE_ACCESS_DENIED` (a workload the server
+  cannot resolve) and `QUERY_CACHE_USED_WITH_NON_THROW_OVERFLOW_MODE` (the
+  query cache under an overflow mode other than `throw`). The native family
+  is **dropped to the fan-out path**.
 - **unreachable** — the canary got no server verdict: a transport failure, or
-  a server error that is not a refusal, such as a timeout or a memory or
-  concurrency limit; an *inconclusive* result. On a server with no remembered verdict, native stays
-  off until a later re-probe gets a verdict, matching the version probe's
-  connectivity fallback; a server with a remembered verdict keeps it (see
-  [Capability canaries across servers](#capability-canaries-across-servers)).
+  a server error reporting a condition of the moment — a timeout, a memory,
+  concurrency or quota limit, a cancellation, or the server or cluster
+  conditions the [circuit breaker](operations.md#clickhouse-circuit-breaker)
+  counts; an *inconclusive* result. On a server with no remembered verdict,
+  native stays off until a later re-probe gets a verdict, matching the version
+  probe's connectivity fallback; a server with a remembered verdict keeps it
+  (see [Capability canaries across
+  servers](#capability-canaries-across-servers)).
 
 A verdict is therefore either **definitive** (`available` permits, `forbidden`
 refuses) or **inconclusive** (`unreachable`, or `unknown` when the probe never
@@ -1043,10 +1051,11 @@ at boot and on every [re-probe](#re-probe).
   (`UNKNOWN_TABLE`: ClickHouse older than 26.8, or no
   `<create_union_system_log_tables>` section), the `SELECT` is not granted
   (`ACCESS_DENIED`), a member lacks a selected column (`UNKNOWN_IDENTIFIER`,
-  `NO_SUCH_COLUMN_IN_TABLE`), or the server refused a setting the read
-  carries, with the codes the settings canaries read as a refusal.
+  `NO_SUCH_COLUMN_IN_TABLE`), the server refused a setting the read carries
+  (the settings canaries' refusals), or it answered with another server error
+  that is not a condition of the moment.
 - **unreachable** — no server verdict: a transport failure, or a server error
-  that is not a refusal, such as a timeout or a memory or concurrency limit.
+  reporting a condition of the moment, as for the settings canaries.
 
 Unlike every other capability-gated feature, a non-`available` verdict is
 **never fatal**, in `enforcing` as in `permissive`: the feature resolves out
