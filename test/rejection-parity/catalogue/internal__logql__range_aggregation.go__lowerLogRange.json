@@ -8,7 +8,7 @@
       "rationale": "the pinned parser yields only MatchersExpr / PipelineExpr as log-range inners",
       "evidence": {
         "guard": [
-          "past exhaustive switch left := lr.Left.(type) over [case *syntax.MatchersExpr; case *syntax.PipelineExpr]"
+          "default of switch left := lr.Left.(type) over [case *syntax.MatchersExpr; case *syntax.PipelineExpr; default]"
         ],
         "callers": [
           "lowerAbsentOverTime",

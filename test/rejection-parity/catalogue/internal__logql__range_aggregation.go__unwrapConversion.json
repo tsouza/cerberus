@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:unwrapConversion#bbe4735f",
+      "message": "logql: unsupported unwrap conversion %q",
+      "class": "internal",
+      "rationale": "every conversion the grammar accepts (bytes / duration / duration_seconds) is handled",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch u.Operation over [case \"\"; case syntax.OpConvDuration, syntax.OpConvDurationSeconds; case syntax.OpConvBytes]"
+        ],
+        "callers": [
+          "applyUnwrapRowSemantics"
+        ]
+      }
+    }
+  ]
+}

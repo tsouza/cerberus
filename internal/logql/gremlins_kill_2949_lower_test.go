@@ -98,9 +98,9 @@ func TestPipelineLineExprSeedsFirstUnpackWithBodyColumn(t *testing.T) {
 
 // TestPipelineSkipsGoSideErrorFilterWithoutStopping kills the
 // INVERT_LOOPCTRL mutant on the `continue` that skips a post-dynamic-stage
-// `__error__` label filter in [lowerPipelineWithLabels]'s stage loop,
+// `__error__` label filter in [lowerPipelineStages]'s stage loop,
 // guarded by
-// lower.go:lowerPipelineWithLabels:`ok && dynamicLabels && FiltersErrorLabel(lf.LabelFilterer)`.
+// lower.go:lowerPipelineStages:`ok && dynamicLabels && FiltersErrorLabel(lf.LabelFilterer)`.
 //
 // The citation names that neighbouring `if` rather than the mutated
 // statement: the mutant rewrites a bare `continue`, which no substring

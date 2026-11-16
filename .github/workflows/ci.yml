@@ -581,8 +581,8 @@ jobs:
       - name: link-check-external self-test
         run: node .github/scripts/run-node-tests.mjs .github/scripts/link-check-external.test.mjs
 
-      # merge-queue-requeue.yml runs on pull_request_target, from the BASE
-      # commit's scripts, so its own suite guards a change only after it has
+      # merge-queue-requeue.yml runs on pull_request_target, from the base
+      # branch's scripts, so its own suite guards a change only after it has
       # merged. Both requeue suites run here as well, on the pull request that
       # edits them.
       - name: merge-queue-requeue self-tests

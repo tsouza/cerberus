@@ -70,7 +70,8 @@
 //       that refuses enable_analyzer=0, so the plans that line runs under the
 //       analyzer only are measured too. Each server's image,
 //       `clickhouse/clickhouse-server:<server>-alpine`, is one just/common.just
-//       pins; the self-check's matrix is the same list; and
+//       pins; the self-check's matrix and perf-nightly's calibration
+//       matrix are the same list; and
 //       test/perf/nightly-baseline.json carries one bound set per server and
 //       no other. A bump of either pin that leaves perf-nightly on the old
 //       server, or a server added without its calibrated bounds, fails here.
@@ -91,6 +92,7 @@
 
 import { error, log } from './lib/gh.mjs';
 import {
+  PERF_NIGHTLY_CALIBRATE_JOB,
   PERF_NIGHTLY_JOB,
   PERF_NIGHTLY_WORKFLOW,
   SELFCHECK_JOB,
@@ -530,6 +532,13 @@ function checkPerfNightlyMatrix(sources, { minCH, quickstart, registry }, failur
     );
   }
 
+  const calibrate = readClickHouseMatrix(sources.perfNightlyWorkflow, PERF_NIGHTLY_CALIBRATE_JOB);
+  if (!calibrate || [...calibrate].sort().join() !== [...matrix].sort().join()) {
+    failures.push(
+      `(h) ${PERF_NIGHTLY_CALIBRATE_JOB}'s clickhouse matrix [${calibrate ?? 'unreadable'}] is not perf-nightly's [${matrix}]`,
+    );
+  }
+
   let baselineServers = null;
   try {
     baselineServers = (JSON.parse(sources.nightlyBaseline).versions ?? []).map((v) => v.clickhouse);
@@ -730,6 +739,8 @@ var AnalyzerMandatorySince = Version{Major: 26, Minor: 9}`;
     // in just/common.just and each with a bound set.
     perfNightlyWorkflow:
       "jobs:\n  perf-nightly-sentinels:\n    strategy:\n      matrix:\n        clickhouse: ['24.8', '25.9', '26.5', '26.9']\n" +
+      "  perf-nightly-calibrate:\n    strategy:\n      matrix:\n        clickhouse: ['24.8', '25.9', '26.5', '26.9']\n" +
+      '        runner: [1, 2, 3, 4]\n' +
       '  perf-nightly:\n    steps: []\n',
     selfcheckWorkflow:
       "jobs:\n  perf-nightly-selfcheck:\n    strategy:\n      matrix:\n        clickhouse: ['24.8', '25.9', '26.5', '26.9']\n",
@@ -903,6 +914,16 @@ var AnalyzerMandatorySince = Version{Major: 26, Minor: 9}`;
     hFails((s) => (s.selfcheckWorkflow = s.selfcheckWorkflow.replace("'26.5'", "'26.4'"))).some((f) =>
       f.includes('perf-nightly-selfcheck'),
     ),
+  );
+  ok(
+    "(h) a calibration matrix that differs from perf-nightly's is caught",
+    hFails(
+      (s) =>
+        (s.perfNightlyWorkflow = s.perfNightlyWorkflow.replace(
+          "calibrate:\n    strategy:\n      matrix:\n        clickhouse: ['24.8', '25.9', '26.5', '26.9']",
+          "calibrate:\n    strategy:\n      matrix:\n        clickhouse: ['24.8', '25.9', '26.5']",
+        )),
+    ).some((f) => f.includes('perf-nightly-calibrate')),
   );
   ok(
     '(h) a server without a bound set is caught',

@@ -2,6 +2,7 @@ package logql
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -233,6 +234,12 @@ func TestStructuredMetadata_GroupByInflatesIdentity(t *testing.T) {
 	}
 }
 
+// unwrapSourceDefinition matches the coalescing lookup that defines the
+// unwrap source column: `if(mapContains(m, ?), m[?], fallback[?])`.
+var unwrapSourceDefinition = regexp.MustCompile(
+	"if\\(mapContains\\(`[A-Za-z_0-9]+`, \\?\\), `[A-Za-z_0-9]+`\\[\\?\\], `[A-Za-z_0-9]+`\\[\\?\\]\\) AS `" + unwrapSourceAlias + "`",
+)
+
 // TestStructuredMetadata_UnwrapResolvesLogAttributes is the regression
 // guard for issue #1887: `| unwrap <structured-metadata field>` used to
 // resolve its value against the bare labels map, which for a
@@ -242,9 +249,12 @@ func TestStructuredMetadata_GroupByInflatesIdentity(t *testing.T) {
 // though the same field filtered and grouped correctly.
 //
 // The value expression must therefore go through the SAME coalescing
-// lookup the filter/grouping sites use. `toFloat64OrZero(if(mapContains(`
-// is the byte-level signature of that: before the fix the emitted value
-// expression was `toFloat64OrZero(\`ResourceAttributes\`[?])`.
+// lookup the filter/grouping sites use. The row stage defines that
+// lookup once as the unwrap source column and the conversion reads the
+// column: the signature is an `if(mapContains(...), ..., \`LogAttributes\`[?])`
+// definition of [unwrapSourceAlias] and a `toFloat64OrZero` over it.
+// Before the fix the emitted value expression was
+// `toFloat64OrZero(\`ResourceAttributes\`[?])`.
 func TestStructuredMetadata_UnwrapResolvesLogAttributes(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelLogs()
@@ -261,8 +271,8 @@ func TestStructuredMetadata_UnwrapResolvesLogAttributes(t *testing.T) {
 			query: `avg_over_time({service_name="clickhouse"} | unwrap latency [1m])`,
 		},
 		{
-			// A parser stage materialises `_logql_merged_labels`; the
-			// unwrap value reads that column and must still fall back to
+			// A parser stage defines the merged labels as a column; the
+			// unwrap source reads that column and must still fall back to
 			// structured metadata for a key the parser did not extract.
 			name:  "parser_merged",
 			query: `avg_over_time({service_name="clickhouse"} | logfmt | unwrap latency [1m])`,
@@ -282,12 +292,14 @@ func TestStructuredMetadata_UnwrapResolvesLogAttributes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Emit: %v", err)
 			}
-			if !strings.Contains(sqlStr, "toFloat64OrZero(if(mapContains(") {
-				t.Errorf("unwrap value expression does not coalesce through structured metadata; "+
-					"a LogAttributes-only unwrap target would read \"\" and drop every sample:\n%s", sqlStr)
+			sourceRef := "`" + unwrapSourceAlias + "`"
+			if !strings.Contains(sqlStr, "toFloat64OrZero("+sourceRef+")") {
+				t.Errorf("unwrap value expression does not convert the %s column:\n%s", unwrapSourceAlias, sqlStr)
 			}
-			if !strings.Contains(sqlStr, "`LogAttributes`[?]") {
-				t.Errorf("emitted SQL never reads a LogAttributes value for the unwrap target:\n%s", sqlStr)
+			def := unwrapSourceDefinition.FindString(sqlStr)
+			if def == "" || !strings.Contains(def, "`LogAttributes`[?]") {
+				t.Errorf("unwrap source %q does not coalesce through structured metadata; "+
+					"a LogAttributes-only unwrap target would read \"\" and drop every sample:\n%s", def, sqlStr)
 			}
 		})
 	}
