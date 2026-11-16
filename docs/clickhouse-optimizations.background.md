@@ -1470,11 +1470,10 @@ refusal never pays that cost, because it is not a refusal verdict (below).
 
 An unreachable verdict read over HTTP is not held, and over the native
 protocol it is not stored on the server that gave it. An unattributed
-unreachable
-verdict has no server to wait on: held for the full retention, it would mark
-the canary unreachable for minutes after one failed request to any replica,
-and an unreachable verdict says nothing about whether any server accepts the
-canary.
+unreachable verdict has no server to wait on: held for the full retention, it
+would mark the canary unreachable for minutes after one failed request to any
+replica, and an unreachable verdict says nothing about whether any server
+accepts the canary.
 
 Tying each statement to one server with an HTTP session (`session_id` on the
 identity read, `session_check=1` on the canary, which a server without the

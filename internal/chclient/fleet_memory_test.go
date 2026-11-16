@@ -331,8 +331,8 @@ func TestFleetMemory_RefusingReplicaReachedIsNotHeld(t *testing.T) {
 
 // TestFleetMemory_NoVerdictKeepsTheRememberedOne: a canary that got no verdict
 // from a server (unreachable) keeps the verdict remembered for it, refusal or
-// permit, since the failed read is no evidence; a server with nothing
-// remembered takes the unreachable verdict.
+// permit, since the failed read is no evidence; on a server with nothing
+// remembered it counts toward that pass's verdict only.
 func TestFleetMemory_NoVerdictKeepsTheRememberedOne(t *testing.T) {
 	t.Parallel()
 	for _, was := range []chopt.Capability{chopt.CapabilityForbidden, chopt.CapabilityAvailable} {
