@@ -741,6 +741,8 @@ func TestParseLaterParenthesisedStage(t *testing.T) {
 		{`{ } | (by(.a))`, "parse error at line 1, col 8: syntax error: unexpected by"},
 		{`{ } | (select(.a))`, "parse error at line 1, col 8: syntax error: unexpected select"},
 		{`{ } | ( )`, "parse error at line 1, col 9: syntax error: unexpected )"},
+		{`{ } | (`, "parse error at line 1, col 8: syntax error: unexpected $end"},
+		{`{ } | ((`, "parse error at line 1, col 9: syntax error: unexpected $end"},
 	}
 	for _, tc := range rejects {
 		t.Run(tc.query, func(t *testing.T) {
@@ -762,6 +764,12 @@ func TestParseLaterParenthesisedStage(t *testing.T) {
 		{`{ } | (2s) < avg(duration)`, `{ } | 2s < avg(duration)`},
 		{`{ } | (count()) > 1 | count() < 3`, `{ } | count() > 1 | count() < 3`},
 		{`{ } | ({ }) | count() > 1`, `{ } | { } | count() > 1`},
+		{`{ } | (({ })) | count() > 1`, `{ } | { } | count() > 1`},
+		{`{ } | (1.5) < count()`, `{ } | 1.5 < count()`},
+		{`{ } | (-1) < count()`, `{ } | -1 < count()`},
+		{`{ } | (max(duration)) > 1s`, `{ } | max(duration) > 1s`},
+		{`{ } | (min(duration)) > 1s`, `{ } | min(duration) > 1s`},
+		{`{ } | (sum(duration)) > 1s`, `{ } | sum(duration) > 1s`},
 	}
 	for _, tc := range accepts {
 		t.Run(tc.query, func(t *testing.T) {

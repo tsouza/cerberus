@@ -342,6 +342,9 @@ func (c *cursor) parsePipelineStage(at stagePosition) PipelineElement {
 	if c.kind() == tokOpenParen && at == laterStage {
 		return c.parseLaterParenStage()
 	}
+	if isAggregateKeyword(c.kind()) {
+		return c.parseScalarStage()
+	}
 	switch c.kind() {
 	case tokBy:
 		return c.parseGroupOperation()
@@ -352,8 +355,6 @@ func (c *cursor) parsePipelineStage(at stagePosition) PipelineElement {
 		return c.parseCoalesceOperation()
 	case tokSelect:
 		return c.parseSelectOperation()
-	case tokCount, tokMax, tokMin, tokAvg, tokSum:
-		return c.parseScalarStage()
 	case tokInteger, tokFloat, tokDuration, tokString, tokTrue, tokFalse,
 		tokStatusOk, tokStatusError, tokStatusUnset,
 		tokKindUnspecified, tokKindInternal, tokKindServer, tokKindClient,
@@ -376,14 +377,16 @@ func (c *cursor) parsePipelineStage(at stagePosition) PipelineElement {
 // `{ } | (count() > 1)` is a syntax error at its `>`. Any other token is
 // unexpected where it stands.
 func (c *cursor) parseLaterParenStage() PipelineElement {
+	// The token slice always ends with the end-of-input token, which ends
+	// the run of parentheses.
 	first := c.pos
-	for c.p.toks[first].kind == tokOpenParen && first < len(c.p.toks)-1 {
+	for c.p.toks[first].kind == tokOpenParen {
 		first++
 	}
-	switch c.p.toks[first].kind {
-	case tokOpenBrace:
+	switch k := c.p.toks[first].kind; {
+	case k == tokOpenBrace:
 		return c.parseSpansetExpr(2, filterOperands)
-	case tokCount, tokMax, tokMin, tokAvg, tokSum, tokInteger, tokFloat, tokDuration, tokSub:
+	case isAggregateKeyword(k), isNumericLiteralStart(k):
 		return c.parseScalarStage()
 	}
 	c.pos = first
@@ -729,16 +732,37 @@ func (c *cursor) parseScalarExpr(minPrec int) ScalarExpression {
 	return left
 }
 
-func (c *cursor) parseScalarPrimary() ScalarExpression {
-	switch c.kind() {
+// isAggregateKeyword reports whether k begins a spanset aggregate, the
+// operand a scalar filter's left side is.
+func isAggregateKeyword(k tokenKind) bool {
+	switch k {
 	case tokCount, tokMax, tokMin, tokAvg, tokSum:
+		return true
+	}
+	return false
+}
+
+// isNumericLiteralStart reports whether k begins a number: an integer, a
+// float, a duration, or the minus sign of a negative one.
+func isNumericLiteralStart(k tokenKind) bool {
+	switch k {
+	case tokInteger, tokFloat, tokDuration, tokSub:
+		return true
+	}
+	return false
+}
+
+func (c *cursor) parseScalarPrimary() ScalarExpression {
+	if isAggregateKeyword(c.kind()) {
 		return c.parseAggregate()
+	}
+	switch c.kind() {
 	case tokOpenParen:
 		c.advance()
 		inner := c.parseScalarExpr(0)
-		// The parenthesis may close, or the expression inside it continue
-		// with an arithmetic operator, so a token that does neither is
-		// unexpected without a single expected alternative.
+		// The reference parser reports a token that neither closes the
+		// parenthesis nor continues the expression inside it with no
+		// expected alternatives: more tokens are valid here than it lists.
 		if _, ok := c.accept(tokCloseParen); !ok {
 			c.fail("syntax error: unexpected %s", c.kind())
 		}
