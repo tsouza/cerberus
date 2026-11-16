@@ -249,6 +249,10 @@ every supported build, with ClickHouse's regex compilation on or off, for:
 A result that carries text of its input — a `label_replace` value, a captured
 group, a replaced string — carries the original bytes wherever Go's does.
 
+A LogQL pattern — of the `| pattern` parser or of a `|>` / `!>` line filter —
+ends at its first invalid UTF-8 sequence, as Loki's does: the text before the
+sequence is the pattern, and a pattern with no text before it is rejected.
+
 The emitted shape (`internal/chsql/regex_invalid_utf8.go`):
 
 - A pattern no invalid byte can take part in — no `.`, no class or literal
