@@ -1468,9 +1468,9 @@ complete probes per remembered server have not read it, rather than on the
 first probe that lands on the fixed replica. A server error that is not a
 refusal never pays that cost, because it is not a refusal verdict (below).
 
-An unreachable verdict read over HTTP is not held. Over the native protocol a
-server's unreachable verdict is kept only until the server gives a real one,
-and only for a server the memory can name. An unattributed unreachable
+An unreachable verdict read over HTTP is not held, and over the native
+protocol it is not stored on the server that gave it. An unattributed
+unreachable
 verdict has no server to wait on: held for the full retention, it would mark
 the canary unreachable for minutes after one failed request to any replica,
 and an unreachable verdict says nothing about whether any server accepts the
@@ -1518,8 +1518,11 @@ verdict carries no evidence about the server: the failure belongs to the
 connection. Letting it replace a remembered refusal would turn the feature
 back on until the next probe that reads the refusal again; letting it replace
 a remembered permit would demote the fleet to unreachable on a transient
-failure. A server with nothing remembered takes the unreachable verdict,
-since that is all that is known about it.
+failure. On a server with nothing remembered, the unreachable verdict counts
+toward the probe that read it only. Stored on the server, it would outrank
+every other replica's permit, and mark the fleet held, until a probe landed
+on that server again, which behind a native balancer can take longer than
+the one re-probe interval a failed canary cost when nothing was remembered.
 
 **Why a canary error is classified three ways.** A canary error is a
 **forbidden** verdict held like any other when its code is a refusal, an

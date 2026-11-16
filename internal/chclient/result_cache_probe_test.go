@@ -48,7 +48,7 @@ func TestCanaryErrAnswer_ResultCacheShapes(t *testing.T) {
 		{
 			name: "readonly user on use_query_cache is forbidden",
 			err: &clickhouse.Exception{
-				Code:    chCodeReadonly,
+				Code:    int32(chproto.ErrReadonly),
 				Name:    "READONLY",
 				Message: "Cannot modify 'use_query_cache' setting in readonly mode",
 			},

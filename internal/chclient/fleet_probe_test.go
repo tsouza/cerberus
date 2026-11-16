@@ -189,7 +189,8 @@ func TestProbeCanaries_HTTPLeavesUnnamedVerdictsUnattributed(t *testing.T) {
 
 // TestProbeCanaries_PassOnlyVerdictIsUnattributed: a PassOnly verdict is
 // returned unattributed, with its flag, over either protocol, so no server
-// keeps it past the pass. Over the native protocol it closed the connection,
+// keeps it past the pass. Over the native protocol the server it ran on
+// records an unreachable verdict for it, and the error closed the connection,
 // so the identity is read again before the next canary.
 func TestProbeCanaries_PassOnlyVerdictIsUnattributed(t *testing.T) {
 	t.Parallel()
@@ -199,8 +200,12 @@ func TestProbeCanaries_PassOnlyVerdictIsUnattributed(t *testing.T) {
 			scriptedCanary("unclassified", canaryAnswer{verdict: chopt.CapabilityForbidden, passOnly: true}, ran),
 			scriptedCanary("next", canaryAnswer{verdict: chopt.CapabilityAvailable}, ran),
 		})
-		if got := verdictsByServer(nodes); len(got[replicaA]) != 0 {
-			t.Errorf("over %s: attributed verdicts = %v; want none", protocol, got)
+		wantOnA := map[string]chopt.Capability{}
+		if protocol == clickhouse.Native {
+			wantOnA["unclassified"] = chopt.CapabilityUnreachable
+		}
+		if got := verdictsByServer(nodes); !maps.Equal(got[replicaA], wantOnA) {
+			t.Errorf("over %s: verdicts on the server = %v; want %v", protocol, got[replicaA], wantOnA)
 		}
 		want := CanaryReading{Canary: "unclassified", Verdict: chopt.CapabilityForbidden, PassOnly: true}
 		if len(unattributed) == 0 || unattributed[0] != want {
@@ -209,5 +214,24 @@ func TestProbeCanaries_PassOnlyVerdictIsUnattributed(t *testing.T) {
 		if wantRead := protocol == clickhouse.HTTP; read != wantRead || (ran["next"] == 1) != wantRead {
 			t.Errorf("over %s: read=%v, runs %v; want the next canary run only over http, where no identity read precedes it", protocol, read, ran)
 		}
+	}
+}
+
+// TestProbeCanaries_PassOnlyVerdictMovesTheCanaryOrderOn: over the native
+// protocol, a canary that read a PassOnly verdict on a server counts as run
+// there, so the next pass that lands on that server runs another canary
+// first. Otherwise a canary failing with an unclassified error on every pass
+// would always run first there and, closing the connection, keep a refusal of
+// the next canary on that server from ever being read.
+func TestProbeCanaries_PassOnlyVerdictMovesTheCanaryOrderOn(t *testing.T) {
+	t.Parallel()
+	ran := map[string]int{}
+	unclassified := scriptedCanary("unclassified", canaryAnswer{verdict: chopt.CapabilityForbidden, passOnly: true}, ran)
+	other := scriptedCanary("other", canaryAnswer{verdict: chopt.CapabilityAvailable}, ran)
+	m := NewFleetMemory()
+	nodes, unattributed, _ := probeCanaries(context.Background(), unreachableCanaryClient(t), FleetNode{ID: replicaA, Version: memoryNewBuild}, m.CanaryOrder, []FleetCanary{unclassified, other})
+	m.Observe(FleetPass{Nodes: nodes, Unattributed: unattributed, Complete: true})
+	if got := m.CanaryOrder(replicaA, []FleetCanary{unclassified, other}); got[0].Name != other.Name {
+		t.Errorf("canary order on the server after a PassOnly verdict = %s first; want %s", got[0].Name, other.Name)
 	}
 }

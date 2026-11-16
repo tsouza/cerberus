@@ -113,11 +113,11 @@ func NewFleetMemory() *FleetMemory {
 
 // CanaryOrder orders pending for the server named id: the canaries no pass has
 // run on it first, then the one run on it longest ago, keeping pending's order
-// among equals. A canary the server refuses closes the connection, so a pass
-// that reaches a server runs it only up to its first refusal; ordering by the
-// server's own history runs every canary on it within as many passes that
-// land on it first as there are canaries, however a load balancer hands out
-// connections. It is a CanaryOrder for ProbeFleet.
+// among equals. A canary that fails on the server closes the connection, so a
+// pass that reaches a server runs it only up to its first failure; ordering
+// by the server's own history runs every canary on it within as many passes
+// that land on it first as there are canaries, however a load balancer hands
+// out connections. It is a CanaryOrder for ProbeFleet.
 func (m *FleetMemory) CanaryOrder(id string, pending []FleetCanary) []FleetCanary {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -140,7 +140,8 @@ func (m *FleetMemory) CanaryOrder(id string, pending []FleetCanary) []FleetCanar
 // those pass read gave on each canary, pass's completeness, and Held set when
 // one of those builds is one no server pass reached runs, or the verdict in
 // force on a canary is one neither a server pass reached holds nor pass read
-// unattributed.
+// unattributed nor pass read as an unreachable verdict from a server with
+// none remembered (which counts toward this pass's verdict only).
 func (m *FleetMemory) Observe(pass FleetPass) FleetVersions {
 	if len(pass.Nodes) == 0 {
 		return FleetVersions{Complete: pass.Complete}

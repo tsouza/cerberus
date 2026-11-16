@@ -55,7 +55,7 @@ func TestCanaryErrAnswer_UnknownServerErrorIsForbiddenForThePassOnly(t *testing.
 	t.Parallel()
 	refusals := map[string]func(error) bool{"settings": isSettingsRefusal, "query-log union": isQueryLogUnionCanaryRefusal}
 	unknown := &clickhouse.Exception{Code: int32(chproto.ErrTooManyRowsOrBytes), Name: "TOO_MANY_ROWS_OR_BYTES"}
-	refusal := &clickhouse.Exception{Code: chCodeReadonly, Name: "READONLY"}
+	refusal := &clickhouse.Exception{Code: int32(chproto.ErrReadonly), Name: "READONLY"}
 	for set, refused := range refusals {
 		if got := canaryErrAnswer(unknown, refused); got.verdict != chopt.CapabilityForbidden || !got.passOnly {
 			t.Errorf("%s canary: unknown server error answered %v, passOnly=%v; want %v, passOnly", set, got.verdict, got.passOnly, chopt.CapabilityForbidden)
@@ -99,7 +99,7 @@ func TestCanaryErrAnswer_AllStates(t *testing.T) {
 		{
 			name: "readonly user (164) is forbidden",
 			err: &clickhouse.Exception{
-				Code:    chCodeReadonly,
+				Code:    int32(chproto.ErrReadonly),
 				Name:    "READONLY",
 				Message: "Cannot modify 'allow_experimental_time_series_aggregate_functions' setting in readonly mode",
 			},

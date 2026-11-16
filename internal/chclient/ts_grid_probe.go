@@ -77,31 +77,22 @@ func (c *Client) ProbeTSGridCapability(ctx context.Context) chopt.Capability {
 	return TSGridCanary().probe(ctx, c).verdict
 }
 
-// Server error codes that, with chCodeUnknownSetting and
-// chCodeSettingConstraintViolation, mean the server refuses a setting a
-// statement carries.
-const (
-	// chCodeReadonly is READONLY: the user's profile sets readonly=1, which
-	// refuses every setting a statement carries.
-	chCodeReadonly = 164
-	// chCodeResourceAccessDenied is RESOURCE_ACCESS_DENIED: under the server
-	// setting throw_on_unknown_workload, a `workload` that names no defined
-	// WORKLOAD. Read off a live 26.6 server reloaded with
-	// throw_on_unknown_workload=true, `SELECT 1 SETTINGS
-	// workload='nonexistent'` answers `Code: 673 (RESOURCE_ACCESS_DENIED):
-	// Could not access resource 'cpu'. Please check throw_on_unknown_workload
-	// setting.`
-	chCodeResourceAccessDenied = 673
-)
-
 // isSettingsRefusal reports whether err is the server refusing a setting the
-// statement carries: a setting the build does not know, a readonly profile, a
+// statement carries: a setting the build does not know, a readonly profile
+// (READONLY: readonly=1 refuses every setting a statement carries), a
 // settings constraint, a workload the server cannot resolve, or the query
 // cache refusing a statement whose profile sets an overflow mode other than
 // throw (result_overflow_mode='break', for one).
+//
+// The workload refusal is RESOURCE_ACCESS_DENIED: under the server setting
+// throw_on_unknown_workload, a `workload` that names no defined WORKLOAD.
+// Read off a live 26.6 server reloaded with throw_on_unknown_workload=true,
+// `SELECT 1 SETTINGS workload='nonexistent'` answers `Code: 673
+// (RESOURCE_ACCESS_DENIED): Could not access resource 'cpu'. Please check
+// throw_on_unknown_workload setting.`
 func isSettingsRefusal(err error) bool {
-	return exceptionCodeIn(err, chCodeUnknownSetting, chCodeReadonly, chCodeSettingConstraintViolation,
-		chCodeResourceAccessDenied, chproto.ErrQueryCacheUsedWithNonThrowOverflowMode)
+	return exceptionCodeIn(err, chCodeUnknownSetting, chproto.ErrReadonly, chCodeSettingConstraintViolation,
+		chproto.ErrResourceAccessDenied, chproto.ErrQueryCacheUsedWithNonThrowOverflowMode)
 }
 
 // exceptionCodeIn reports whether err is a server exception whose code is one
@@ -145,7 +136,7 @@ func isCanaryCondition(err error) bool {
 //   - A transport failure, or a server exception reporting a condition of the
 //     moment (isCanaryCondition), is Unreachable: it keeps the verdict the
 //     fleet memory remembers for the server and, when it remembers none,
-//     leaves the gated feature off until a later re-probe gets a verdict.
+//     leaves the gated feature off for the pass that read it.
 //   - Any other server exception is Forbidden for the pass that read it only
 //     (passOnly): the server answered the canary with an error, so the
 //     capability stays off, but an error that is neither a known refusal nor

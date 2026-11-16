@@ -917,7 +917,8 @@ without one where the server cannot be named:
   reach. Each distinct verdict a probe reads this way is held as the verdict of
   a server cerberus cannot name, and counts toward the verdict in force until
   40 complete probes per remembered server have not read it again. An
-  **unreachable** verdict read this way is not held.
+  **unreachable** verdict read this way is not held and does not count toward
+  the probe's verdict.
 - On either protocol, a **forbidden** verdict from a server error that is
   neither a refusal nor a condition of the moment is attributed to no server
   and counts toward the verdict in force for the probe that read it only.
@@ -926,9 +927,9 @@ without one where the server cannot be named:
 - On each server, the canaries run in the order of how long ago a probe last
   ran them there: a canary never run on that server first, then the one run
   there longest ago. Over the native protocol, a probe that lands on a
-  replica refusing its first canary therefore runs another canary first on
-  that replica the next time one lands there. Over HTTP every probe runs
-  every canary.
+  replica failing its first canary, with a refusal or any other error,
+  therefore runs another canary first on that replica the next time one lands
+  there. Over HTTP every probe runs every canary.
 - A server a probe ran a canary on takes the verdict it gave, except that an
   **unreachable** verdict leaves the verdict remembered for it in place, and
   a server read twice in one probe takes a real verdict over an
@@ -997,8 +998,8 @@ The verdict is tri-state:
   concurrency or quota limit, a cancellation, or the server or cluster
   conditions the [circuit breaker](operations.md#clickhouse-circuit-breaker)
   counts; an *inconclusive* result. On a server with no remembered verdict,
-  native stays off until a later re-probe gets a verdict, matching the version
-  probe's connectivity fallback; a server with a remembered verdict keeps it
+  native stays off for that probe, matching the version probe's connectivity
+  fallback; a server with a remembered verdict keeps it
   (see [Capability canaries across
   servers](#capability-canaries-across-servers)).
 

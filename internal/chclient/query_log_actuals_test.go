@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	chproto "github.com/ClickHouse/ch-go/proto"
 	"github.com/ClickHouse/clickhouse-go/v2"
 
 	"github.com/tsouza/cerberus/internal/chopt"
@@ -100,7 +101,7 @@ func TestCanaryErrAnswer_QueryLogUnionShapes(t *testing.T) {
 		{"unknown identifier", &clickhouse.Exception{Code: chCodeUnknownIdentifier}, chopt.CapabilityForbidden},
 		{"no such column", &clickhouse.Exception{Code: chCodeNoSuchColumnInTable}, chopt.CapabilityForbidden},
 		{"refused as not provisioned", fmt.Errorf("%w: %w", ErrQueryLogUnionRefused, &clickhouse.Exception{Code: chCodeUnknownTable}), chopt.CapabilityForbidden},
-		{"readonly profile", &clickhouse.Exception{Code: chCodeReadonly}, chopt.CapabilityForbidden},
+		{"readonly profile", &clickhouse.Exception{Code: int32(chproto.ErrReadonly)}, chopt.CapabilityForbidden},
 		{"settings constraint", &clickhouse.Exception{Code: chCodeSettingConstraintViolation}, chopt.CapabilityForbidden},
 		{"unknown setting", &clickhouse.Exception{Code: chCodeUnknownSetting}, chopt.CapabilityForbidden},
 	} {

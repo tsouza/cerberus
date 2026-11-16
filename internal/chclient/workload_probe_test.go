@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	chproto "github.com/ClickHouse/ch-go/proto"
 	"github.com/ClickHouse/clickhouse-go/v2"
 
 	"github.com/tsouza/cerberus/internal/chopt"
@@ -48,7 +49,7 @@ func TestCanaryErrAnswer_WorkloadShapes(t *testing.T) {
 		{
 			name: "unresolvable workload under throw_on_unknown_workload is forbidden",
 			err: &clickhouse.Exception{
-				Code:    chCodeResourceAccessDenied,
+				Code:    int32(chproto.ErrResourceAccessDenied),
 				Name:    "RESOURCE_ACCESS_DENIED",
 				Message: "Could not access resource 'cpu'. Please check `throw_on_unknown_workload` setting.",
 			},

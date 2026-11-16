@@ -28,7 +28,8 @@ type FleetPass struct {
 	// Unattributed holds every canary verdict a server gave that no
 	// statement of the pass tied to that server: over HTTP, a refusal and a
 	// query-log union answer name no server, and each is its own request,
-	// which a balancer may route to a server no identity read named.
+	// which a balancer may route to a server no identity read named. Over
+	// either protocol it also holds every PassOnly verdict.
 	Unattributed []CanaryReading
 	Complete     bool
 	Enumerated   bool
@@ -51,18 +52,19 @@ type FleetVersions struct {
 	Versions []chopt.Version
 	// Verdicts holds, per canary name, the most conservative verdict any
 	// server the memory holds gave on that canary, or any unattributed
-	// verdict the memory holds on it (chopt.Capability.Conservative). A
-	// server no pass ran the canary on contributes nothing.
+	// verdict the memory holds on it, or any verdict the pass read for itself
+	// only (a PassOnly reading, or an unreachable one from a server with no
+	// verdict remembered) (chopt.Capability.Conservative). A server no pass
+	// ran the canary on contributes nothing.
 	Verdicts map[string]chopt.Capability
 	Complete bool
-	// Held reports that Versions holds a build no server the pass reached
-	// runs, or that Verdicts holds a verdict no server the pass ran a canary
-	// on holds on that canary, read this pass or remembered for it, and the
-	// pass did not read unattributed: a server no canary of this pass ran on,
-	// which the memory has not forgotten, gave it, or it is an unattributed
-	// verdict the memory still holds and this pass did not read. Every
-	// decision read off the fleet may then rest on a server this pass did not
-	// see.
+	// Held reports that Versions holds a build no server the pass reached runs,
+	// or that Verdicts holds a verdict no server the pass ran a canary on holds
+	// on that canary, read this pass or remembered for it, and the pass did not
+	// read unattributed or for itself only: a server no canary of this pass ran
+	// on, which the memory has not forgotten, gave it, or it is an unattributed
+	// verdict the memory still holds and this pass did not read. Every decision
+	// read off the fleet may then rest on a server this pass did not see.
 	Held bool
 }
 
@@ -175,7 +177,10 @@ func ProbeFleet(ctx context.Context, cfg Config, cluster string, order CanaryOrd
 //
 // A PassOnly verdict counts toward the pass that read it only, so it is
 // returned unattributed over either protocol: attributed to a server, it
-// would stay in force until a pass reached that server again.
+// would stay in force until a pass reached that server again. Over the native
+// protocol the server it ran on records an unreachable verdict for it, which
+// keeps that server's remembered verdict (FleetMemory) and moves the canary
+// order on, and the identity is read again before the next canary.
 func probeCanaries(ctx context.Context, c *Client, first FleetNode, order CanaryOrder, canaries []FleetCanary) (nodes []FleetNode, unattributed []CanaryReading, read bool) {
 	nodes = []FleetNode{first}
 	perRequest := c.protocol == clickhouse.HTTP
@@ -196,10 +201,14 @@ func probeCanaries(ctx context.Context, c *Client, first FleetNode, order Canary
 		switch {
 		case answer.identified:
 			nodes = append(nodes, answer.node)
-		case perRequest || answer.passOnly:
+		case perRequest:
 			unattributed = append(unattributed, CanaryReading{Canary: canary.Name, Verdict: answer.verdict, PassOnly: answer.passOnly})
-			connected = perRequest
 			continue
+		case answer.passOnly:
+			// The verdict counts for this pass only; the server it ran on
+			// records the run with no verdict, so the canary order moves on.
+			unattributed = append(unattributed, CanaryReading{Canary: canary.Name, Verdict: answer.verdict, PassOnly: true})
+			answer.verdict = chopt.CapabilityUnreachable
 		}
 		on := &nodes[len(nodes)-1]
 		if on.Verdicts == nil {
