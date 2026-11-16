@@ -112,7 +112,11 @@ const jsonObjectPrefix = "{"
 // mapConcat/mapFilter wrapper at all (internal/logql/lang.go's
 // Lang.ProjectSamples). Substituting here means the chclient cursor always
 // scans a genuine Map(String,String) for that column, on every log-stream
-// query shape, regardless of which pipeline stages ran.
+// query shape, regardless of which pipeline stages ran — because every
+// outermost projection a cursor scans names its output. The same column
+// projected under no alias keeps the stored JSON type, so
+// chplan.ProjectionOutputName's equivalence of {X, ""} and {X, "X"} holds
+// for the output name only, not for a JSON-strategy column's type.
 func projectedExpr(b *Builder, expr chplan.Expr) chplan.Expr {
 	if col, ok := jsonAttrColumn(b, expr); ok {
 		return jsonFullMapReconstruction(col)
