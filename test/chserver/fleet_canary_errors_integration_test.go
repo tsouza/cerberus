@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"math"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -205,9 +206,7 @@ func startInjectingProxy(t *testing.T, backend string, inject *atomic.Pointer[ur
 		if settings == nil || !canary {
 			return
 		}
-		for name, values := range *settings {
-			query[name] = values
-		}
+		maps.Copy(query, *settings)
 		r.Out.URL.RawQuery = query.Encode()
 	}}
 	srv := httptest.NewServer(proxy)
