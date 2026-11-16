@@ -5,6 +5,7 @@
   "cases": [
     "metrics_range | metrics_rate_by_kind_all_spans",
     "metrics_range | parenthesised_pipeline_then_metrics_rejected",
+    "search | parenthesised_scalar_filter_stage_rejected",
     "search | scoped_trace_duration_gt",
     "traces_v2 | trace_by_id_v2_first_checkout"
   ]
