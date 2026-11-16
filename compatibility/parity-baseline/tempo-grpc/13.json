@@ -4,6 +4,7 @@
   "bucket": "13",
   "cases": [
     "metrics_range | metrics_rate_by_kind_all_spans",
+    "search | parenthesised_scalar_filter_stage_rejected",
     "search | scoped_trace_duration_gt"
   ]
 }

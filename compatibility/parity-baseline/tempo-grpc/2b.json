@@ -2,5 +2,7 @@
   "schema_version": 1,
   "head": "tempo-grpc",
   "bucket": "2b",
-  "cases": []
+  "cases": [
+    "search | spanset_filter_then_wrapped_pipeline_rejected"
+  ]
 }
