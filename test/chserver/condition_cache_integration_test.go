@@ -421,25 +421,10 @@ func (s *server) defaultSetting(ctx context.Context, t *testing.T, name string) 
 	return v
 }
 
-// queryLogFinished and queryLogAborted are the system.query_log types of a
-// query that completed and of one that failed while running.
-const (
-	queryLogFinished = "QueryFinish"
-	queryLogAborted  = "ExceptionWhileProcessing"
-)
-
-// assertEffectiveSetting requires query qid to have finished with
-// name = want.
+// assertEffectiveSetting requires query qid to have run with name = want.
+// system.query_log.Settings records only values that differ from the
+// profile's, so an absent key means the query ran under the default.
 func (s *server) assertEffectiveSetting(ctx context.Context, t *testing.T, qid, name, want string) {
-	t.Helper()
-	s.assertEffectiveSettingAt(ctx, t, qid, queryLogFinished, name, want)
-}
-
-// assertEffectiveSettingAt requires query qid's system.query_log entry of
-// type logType to record name = want. Settings records only values that
-// differ from the profile's, so an absent key means the query ran under the
-// default.
-func (s *server) assertEffectiveSettingAt(ctx context.Context, t *testing.T, qid, logType, name, want string) {
 	t.Helper()
 	s.flushLogs(ctx, t)
 	var (
@@ -449,13 +434,13 @@ func (s *server) assertEffectiveSettingAt(ctx context.Context, t *testing.T, qid
 	)
 	err := s.admin.Conn().QueryRow(ctx,
 		"SELECT any(Settings[?]), max(mapContains(Settings, ?)), count() FROM system.query_log "+
-			"WHERE type = ? AND query_id = ?",
-		name, name, logType, qid).Scan(&value, &present, &rows)
+			"WHERE type = 'QueryFinish' AND query_id = ?",
+		name, name, qid).Scan(&value, &present, &rows)
 	if err != nil {
 		t.Fatalf("read query_log for %s: %v", qid, err)
 	}
 	if rows == 0 {
-		t.Fatalf("query_log has no %s entry for %s", logType, qid)
+		t.Fatalf("query_log has no finished query %s", qid)
 	}
 	if present == 0 {
 		value = s.defaultSetting(ctx, t, name)

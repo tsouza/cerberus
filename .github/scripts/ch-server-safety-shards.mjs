@@ -78,8 +78,13 @@ const CANCELLATION_PREFIX = `${KIND_CANCELLATION}-`;
 // family's prefix. The classic-histogram ceiling tests seed tens of millions
 // of bucket entries per build and together take about five minutes on the
 // CI runner; in `rest` they left its go test run at 1,010 s of the recipe's
-// 1,200 s timeout.
-export const FAMILY_SHARDS = [{ id: 'classic-histogram', prefix: 'TestClassicBucket' }];
+// 1,200 s timeout. TestDistinctSpill_WithheldShapesAnswer drives seven
+// statements over 1M unique 256-byte values, each measured several times, and
+// takes four to six minutes there.
+export const FAMILY_SHARDS = [
+  { id: 'classic-histogram', prefix: 'TestClassicBucket' },
+  { id: 'distinct-spill-harm', prefix: 'TestDistinctSpill_WithheldShapesAnswer' },
+];
 
 // cancellationImages — the images of the `cancellationBuilds` table in the
 // cancellation test's source, in table order. Each row opens with the image
@@ -282,16 +287,41 @@ export function builtUnderIntegration(source) {
   return constraint === null || constraint[1].trim() === 'integration';
 }
 
-// familyImages — for each family of FAMILY_SHARDS, the images named by the
-// sources that define one of its tests.
+// imageConstants — every Go constant across sources whose value is an image
+// literal, `name = "clickhouse/clickhouse-server:<tag>"`, by name.
+export function imageConstants(sources) {
+  const constants = new Map();
+  for (const source of sources) {
+    for (const m of source.matchAll(/^(?:const\s+|\t)(\w+)\s*=\s*"(clickhouse\/clickhouse-server:[^"]+)"/gm)) {
+      constants.set(m[1], m[2]);
+    }
+  }
+  return constants;
+}
+
+// familyImages — for each family of FAMILY_SHARDS, the images the sources
+// that define one of its tests name: as a literal, or through an image
+// constant another source of the package defines. A family whose tests name
+// none would boot an image its shard never pulled, so it is an error.
 export function familyImages(sources) {
+  const constants = imageConstants(sources);
   const images = {};
   for (const family of FAMILY_SHARDS) {
     const named = new Set();
+    let defined = false;
     for (const source of sources) {
       if (familyTests(family, topLevelTests([source])).length === 0) continue;
+      defined = true;
       for (const image of namedImages(source)) named.add(image);
+      const code = source
+        .split('\n')
+        .filter((line) => !line.trimStart().startsWith('//'))
+        .join('\n');
+      for (const [name, image] of constants) {
+        if (new RegExp(`\\b${name}\\b`).test(code)) named.add(image);
+      }
     }
+    if (defined && named.size === 0) throw new Error(`${PACKAGE_DIR}: family ${family.id} names no image; its shard would pull none`);
     images[family.id] = [...named];
   }
   return images;

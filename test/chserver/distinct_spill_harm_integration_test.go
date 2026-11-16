@@ -141,6 +141,7 @@ func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 	defer cancel()
 	s := startServer(ctx, t, metadataSpillImage)
 	rules := resolveDistinctSpillRules(t, s)
+	defaultThreads := s.defaultSetting(ctx, t, settingMaxThreads)
 	traces := seedHarmProbe(ctx, t, s)
 
 	tagValues := func(tag string) string { return "/api/v2/search/tag/" + tag + "/values" }
@@ -169,21 +170,31 @@ func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 				}
 				return runTempoProbeOn(ctx, t, client, rules, traces, shape.path, params)
 			}
-			// assertRanWith requires statement qid's logType entry to record
-			// the thread count, memLimit, and the group_by/sort/join
-			// thresholds at half of memCap.
-			assertRanWith := func(qid, logType string, memCap, memLimit int64, threads int) {
+			// assertRanWith requires entry, statement qid's, to record the
+			// thread count, memLimit, and the group_by/sort/join thresholds
+			// at half of memCap.
+			assertRanWith := func(qid string, entry harmLogEntry, memCap, memLimit int64, threads int) {
 				t.Helper()
 				threshold := strconv.FormatInt(memCap/2, 10)
-				for _, name := range []string{settingExternalGroupBy, settingExternalSort, chopt.SettingMaxBytesBeforeExternalJoin} {
-					s.assertEffectiveSettingAt(ctx, t, qid, logType, name, threshold)
+				want := map[string]string{
+					settingExternalGroupBy:                  threshold,
+					settingExternalSort:                     threshold,
+					chopt.SettingMaxBytesBeforeExternalJoin: threshold,
+					settingMaxMemoryUsage:                   strconv.FormatInt(memLimit, 10),
+					settingMaxThreads:                       strconv.Itoa(threads),
 				}
-				s.assertEffectiveSettingAt(ctx, t, qid, logType, settingMaxMemoryUsage, strconv.FormatInt(memLimit, 10))
-				wantThreads := strconv.Itoa(threads)
 				if threads == serverDefaultThreads {
-					wantThreads = s.defaultSetting(ctx, t, settingMaxThreads)
+					want[settingMaxThreads] = defaultThreads
 				}
-				s.assertEffectiveSettingAt(ctx, t, qid, logType, settingMaxThreads, wantThreads)
+				for name, value := range want {
+					got, ok := entry.settings[name]
+					if !ok {
+						got = s.defaultSetting(ctx, t, name)
+					}
+					if got != value {
+						t.Errorf("statement %s ran with %s = %q; want %q", qid, name, got, value)
+					}
+				}
 			}
 			// dispatchedPeak is the largest of harmCalibrationRuns peaks of
 			// the request as dispatched under memCap — the spill thresholds
@@ -196,8 +207,9 @@ func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 					if code, body := run(lifted, memCap, harmProbeThreads); code != http.StatusOK {
 						t.Fatalf("as dispatched under the %d-byte cap's settings, with the memory limit lifted, the probe answered HTTP %d: %.500s", memCap, code, body)
 					}
-					assertRanWith(qid, queryLogFinished, memCap, harmCalibrationCap, harmProbeThreads)
-					peak = max(peak, int64(s.peakMemory(ctx, t, qid)))
+					entry := s.harmLogEntry(ctx, t, qid, queryLogFinished)
+					assertRanWith(qid, entry, memCap, harmCalibrationCap, harmProbeThreads)
+					peak = max(peak, int64(entry.memory))
 				}
 				return peak
 			}
@@ -211,17 +223,17 @@ func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 				if code, _ := run(forced, memCap, threads); code == http.StatusOK {
 					return false
 				}
-				got, msg := s.finishedException(ctx, t, qid)
-				if got != memoryLimitExceeded {
+				entry := s.harmLogEntry(ctx, t, qid, queryLogAborted)
+				if entry.code != memoryLimitExceeded {
 					t.Fatalf("under the %d-byte cap on max_threads %d the forced-spill probe failed with server code %d (%s); want code %d",
-						memCap, threads, got, msg, memoryLimitExceeded)
+						memCap, threads, entry.code, entry.exception, memoryLimitExceeded)
 				}
-				if !s.abortedCarrying(ctx, t, qid, chopt.SettingMaxBytesBeforeExternalDistinct) {
+				if _, ok := entry.settings[chopt.SettingMaxBytesBeforeExternalDistinct]; !ok {
 					t.Fatalf("under the %d-byte cap on max_threads %d the forced-spill probe aborted without carrying %s, so its abort says nothing about a spill",
 						memCap, threads, chopt.SettingMaxBytesBeforeExternalDistinct)
 				}
-				assertRanWith(qid, queryLogAborted, memCap, memCap, threads)
-				t.Logf("under the %d-byte cap on max_threads %d the forced-spill probe aborted: %.200s", memCap, threads, msg)
+				assertRanWith(qid, entry, memCap, memCap, threads)
+				t.Logf("under the %d-byte cap on max_threads %d the forced-spill probe aborted: %.200s", memCap, threads, entry.exception)
 				return true
 			}
 
@@ -235,8 +247,9 @@ func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 				if got := shape.answers(t, body); got != shape.want {
 					t.Fatalf("under the calibration cap the probe returned %d values; want %d", got, shape.want)
 				}
-				assertRanWith(qid, queryLogFinished, harmCalibrationCap, harmCalibrationCap, harmProbeThreads)
-				peak = max(peak, int64(s.peakMemory(ctx, t, qid)))
+				entry := s.harmLogEntry(ctx, t, qid, queryLogFinished)
+				assertRanWith(qid, entry, harmCalibrationCap, harmCalibrationCap, harmProbeThreads)
+				peak = max(peak, int64(entry.memory))
 			}
 
 			memCap, capPeak := int64(0), int64(0)
@@ -281,12 +294,13 @@ func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 			if got := shape.answers(t, body); got != shape.want {
 				t.Errorf("as dispatched the probe returned %d values; want %d", got, shape.want)
 			}
-			assertRanWith(qid, queryLogFinished, memCap, memCap, harmProbeThreads)
-			if s.finishedCarries(ctx, t, qid, chopt.SettingMaxBytesBeforeExternalDistinct) {
+			entry := s.harmLogEntry(ctx, t, qid, queryLogFinished)
+			assertRanWith(qid, entry, memCap, memCap, harmProbeThreads)
+			if _, ok := entry.settings[chopt.SettingMaxBytesBeforeExternalDistinct]; ok {
 				t.Errorf("as dispatched the statement carries %s; want it withheld from a DISTINCT a spill harms",
 					chopt.SettingMaxBytesBeforeExternalDistinct)
 			}
-			answered := s.peakMemory(ctx, t, qid)
+			answered := entry.memory
 			t.Logf("as dispatched: answered under %d bytes (%.2f x the %d-byte unspilled peak) at a peak of %d, the cap %.3f x that peak",
 				memCap, float64(memCap)/float64(peak), peak, answered, float64(memCap)/float64(answered))
 		})
@@ -294,6 +308,44 @@ func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 }
 
 // abortedCarrying reports whether the statement query qid aborted with
+
+// queryLogFinished and queryLogAborted are the system.query_log types of a
+// statement that completed and of one that failed while running.
+const (
+	queryLogFinished = "QueryFinish"
+	queryLogAborted  = "ExceptionWhileProcessing"
+)
+
+// harmLogEntry is what system.query_log records of one statement of
+// TestDistinctSpill_WithheldShapesAnswer: the settings it ran with that
+// differ from the profile's, its peak memory, and its exception.
+type harmLogEntry struct {
+	settings  map[string]string
+	memory    uint64
+	code      int32
+	exception string
+}
+
+// harmLogEntry reads statement qid's system.query_log entry of type logType
+// in one flush and one query.
+func (s *server) harmLogEntry(ctx context.Context, t *testing.T, qid, logType string) harmLogEntry {
+	t.Helper()
+	s.flushLogs(ctx, t)
+	var (
+		entry harmLogEntry
+		rows  uint64
+	)
+	if err := s.admin.Conn().QueryRow(ctx,
+		"SELECT any(Settings), max(memory_usage), max(exception_code), any(exception), count() FROM system.query_log WHERE type = ? AND query_id = ?",
+		logType, qid).Scan(&entry.settings, &entry.memory, &entry.code, &entry.exception, &rows); err != nil {
+		t.Fatalf("read query_log for %s: %v", qid, err)
+	}
+	if rows == 0 {
+		t.Fatalf("query_log has no %s entry for %s", logType, qid)
+	}
+	return entry
+}
+
 // carried the setting name explicitly.
 func (s *server) abortedCarrying(ctx context.Context, t *testing.T, qid, name string) bool {
 	t.Helper()
