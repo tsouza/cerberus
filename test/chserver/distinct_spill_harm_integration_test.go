@@ -31,7 +31,9 @@ const (
 	// TestDistinctSpill_WithheldShapesAnswer.
 	harmProbeBudget = 15 * time.Minute
 	// harmCalibrationCap is the cap a shape's unspilled peak is measured
-	// under: far above every shape's peak, so nothing spills or aborts.
+	// under, and the memory limit a request's peak under a lower cap's
+	// settings is measured with: far above every shape's peak, so nothing
+	// spills or aborts.
 	harmCalibrationCap = 4 << 30
 	// harmSpanKey / harmResourceKey are the materialized attribute keys the
 	// seed fills, schema.DefaultMaterializedSpanAttributeColumns' and
@@ -52,6 +54,43 @@ var harmCapFactors = []float64{1.11, 1.2, 1.4, 1.6}
 // measured; the probe sizes its caps from the largest, since one statement's
 // peak varies from run to run.
 const harmCalibrationRuns = 3
+
+// settingMaxThreads is ClickHouse's per-query thread count, and
+// settingMaxMemoryUsage its per-query memory limit.
+const (
+	settingMaxThreads     = "max_threads"
+	settingMaxMemoryUsage = "max_memory_usage"
+)
+
+// harmDispatchedHeadroom is how far above the request's own peak under a
+// cap's settings — the largest of harmCalibrationRuns, memory limit lifted —
+// a cap must lie for TestDistinctSpill_WithheldShapesAnswer to require the
+// request to answer under it, and how far that peak may exceed the unspilled
+// one. It exceeds the widest spread measured between one withheld
+// statement's single-thread peaks across repeated runs, under either set of
+// settings.
+const harmDispatchedHeadroom = 1.10
+
+// harmProbeThreads is the thread count TestDistinctSpill_WithheldShapesAnswer
+// measures peaks and sends the request as dispatched with. Run in parallel, a
+// DISTINCT's peak depends on how its per-thread sets happen to merge, and an
+// occasional run peaks far above the rest; on one thread the peak repeats
+// within a few percent of the largest of a few runs.
+const harmProbeThreads = 1
+
+// serverDefaultThreads stands for sending no max_threads, so the statement
+// runs on the server's own default thread count, as every withheld statement
+// does in production.
+const serverDefaultThreads = 0
+
+// harmManyThreads is a thread count the size a production server defaults
+// to, its core count, well above the test container's two CPUs.
+const harmManyThreads = 16
+
+// harmForcedThreads are the thread counts the forced-spill probe must abort
+// on at the chosen cap: the one the peaks are measured on, the server's
+// default, and a production-sized one.
+var harmForcedThreads = []int{harmProbeThreads, serverDefaultThreads, harmManyThreads}
 
 // harmedShape is one Tempo tag-discovery request whose statement's DISTINCT
 // a spill harms, so the handler withholds the DISTINCT threshold from it.
@@ -83,15 +122,20 @@ func tagNamesAnswers(t *testing.T, body string) int {
 // shape the handler withholds the DISTINCT spill threshold from, over 1M
 // unique 256-byte values, through the production handler on ClickHouse 26.9
 // with the engine's settings rules resolved from "auto,distinct_spill". For
-// each shape it measures the statement's unspilled peak P under a cap far
-// above it, the largest of harmCalibrationRuns runs, then finds a cap between
-// P and 2P at which the DISTINCT threshold forced onto the statement at half
-// the cap makes it abort with MEMORY_LIMIT_EXCEEDED (code 241) while carrying
-// that threshold — failing if there is none, since a shape a
-// spill no longer harms must not go without the threshold — and requires the
-// request as dispatched to answer every seeded value under that same cap,
-// running with the group_by/sort/join thresholds at cap/2 and without the
-// DISTINCT one (system.query_log's Settings).
+// each shape, on harmProbeThreads threads, it measures the statement's
+// unspilled peak P under a cap far above it, the largest of
+// harmCalibrationRuns runs. It then takes the first cap in harmCapFactors x P
+// that clears the request's own peak under that cap's settings (memory limit
+// lifted, the largest of harmCalibrationRuns runs) by harmDispatchedHeadroom
+// and at which the DISTINCT threshold forced onto the statement at half the
+// cap makes it abort with MEMORY_LIMIT_EXCEEDED (code 241) while carrying
+// that threshold, on every thread count in harmForcedThreads — failing if there is none, since a shape a spill no longer harms
+// must not go without the threshold. It requires the request's peak under
+// that cap's settings to stay within harmDispatchedHeadroom of P, and the
+// request as dispatched to answer every seeded value under the cap, running
+// with the group_by/sort/join thresholds at cap/2 and without the DISTINCT
+// one. Every statement's thread count, memory limit and thresholds are read
+// back from system.query_log's Settings.
 func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), harmProbeBudget)
 	defer cancel()
@@ -114,93 +158,192 @@ func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 		{"resource tag names", "/api/search/tags", scope("resource"), tagNamesAnswers, harmSpans + materializedKeyPerMap},
 	} {
 		t.Run(shape.name, func(t *testing.T) {
-			run := func(ctx context.Context, memCap int64) (int, string) {
+			// run sends the request under memCap on the given thread count,
+			// serverDefaultThreads leaving max_threads to the server.
+			run := func(ctx context.Context, memCap int64, threads int) (int, string) {
 				client := s.client(t, adminUser, adminPassword, chclient.Config{MaxQueryMemoryBytes: memCap})
 				params := url.Values{}
 				maps.Copy(params, shape.params)
+				if threads != serverDefaultThreads {
+					ctx = chclient.WithQuerySetting(ctx, settingMaxThreads, threads)
+				}
 				return runTempoProbeOn(ctx, t, client, rules, traces, shape.path, params)
+			}
+			// assertRanWith requires entry, statement qid's, to record the
+			// thread count, memLimit, and the group_by/sort/join thresholds
+			// at half of memCap.
+			assertRanWith := func(qid string, entry harmLogRow, memCap, memLimit int64, threads int) {
+				t.Helper()
+				threshold := strconv.FormatInt(memCap/2, 10)
+				wantThreads := strconv.Itoa(threads)
+				if threads == serverDefaultThreads {
+					wantThreads = s.defaultSetting(ctx, t, settingMaxThreads)
+				}
+				for _, want := range [][2]string{
+					{settingExternalGroupBy, threshold},
+					{settingExternalSort, threshold},
+					{chopt.SettingMaxBytesBeforeExternalJoin, threshold},
+					{settingMaxMemoryUsage, strconv.FormatInt(memLimit, 10)},
+					{settingMaxThreads, wantThreads},
+				} {
+					name, value := want[0], want[1]
+					got, ok := entry.settings[name]
+					if !ok {
+						got = s.defaultSetting(ctx, t, name)
+					}
+					if got != value {
+						t.Errorf("statement %s ran with %s = %q; want %q", qid, name, got, value)
+					}
+				}
+			}
+			// dispatchedPeak is the largest of harmCalibrationRuns peaks of
+			// the request as dispatched under memCap — the spill thresholds
+			// memCap sets — with only the memory limit itself lifted.
+			dispatchedPeak := func(memCap int64) int64 {
+				peak := int64(0)
+				for range harmCalibrationRuns {
+					qid := fmt.Sprintf("harm-dispatched-peak-%d", time.Now().UnixNano())
+					lifted := chclient.WithQuerySetting(chclient.WithQueryID(ctx, qid), settingMaxMemoryUsage, int64(harmCalibrationCap))
+					if code, body := run(lifted, memCap, harmProbeThreads); code != http.StatusOK {
+						t.Fatalf("as dispatched under the %d-byte cap's settings, with the memory limit lifted, the probe answered HTTP %d: %.500s", memCap, code, body)
+					}
+					entry := s.harmLogRow(ctx, t, qid, queryLogFinished)
+					assertRanWith(qid, entry, memCap, harmCalibrationCap, harmProbeThreads)
+					peak = max(peak, int64(entry.memory))
+				}
+				return peak
+			}
+			// forcedSpillAborts reports whether the request, with the
+			// DISTINCT threshold forced onto it at half of memCap, aborts with
+			// MEMORY_LIMIT_EXCEEDED under memCap on the given thread count,
+			// and fails the test if it fails any other way.
+			forcedSpillAborts := func(memCap int64, threads int) bool {
+				qid := fmt.Sprintf("harm-forced-%d", time.Now().UnixNano())
+				forced := chclient.WithQuerySetting(chclient.WithQueryID(ctx, qid), chopt.SettingMaxBytesBeforeExternalDistinct, memCap/2)
+				if code, _ := run(forced, memCap, threads); code == http.StatusOK {
+					return false
+				}
+				entry := s.harmLogRow(ctx, t, qid, queryLogFailed)
+				if entry.code != memoryLimitExceeded {
+					t.Fatalf("under the %d-byte cap on max_threads %d the forced-spill probe failed with server code %d (%s); want code %d",
+						memCap, threads, entry.code, entry.exception, memoryLimitExceeded)
+				}
+				if _, ok := entry.settings[chopt.SettingMaxBytesBeforeExternalDistinct]; !ok {
+					t.Fatalf("under the %d-byte cap on max_threads %d the forced-spill probe aborted without carrying %s, so its abort says nothing about a spill",
+						memCap, threads, chopt.SettingMaxBytesBeforeExternalDistinct)
+				}
+				assertRanWith(qid, entry, memCap, memCap, threads)
+				t.Logf("under the %d-byte cap on max_threads %d the forced-spill probe aborted: %.200s", memCap, threads, entry.exception)
+				return true
 			}
 
 			peak := int64(0)
 			for range harmCalibrationRuns {
 				qid := fmt.Sprintf("harm-peak-%d", time.Now().UnixNano())
-				code, body := run(chclient.WithQueryID(ctx, qid), harmCalibrationCap)
+				code, body := run(chclient.WithQueryID(ctx, qid), harmCalibrationCap, harmProbeThreads)
 				if code != http.StatusOK {
 					t.Fatalf("under the %d-byte calibration cap the probe answered HTTP %d: %.500s", harmCalibrationCap, code, body)
 				}
 				if got := shape.answers(t, body); got != shape.want {
 					t.Fatalf("under the calibration cap the probe returned %d values; want %d", got, shape.want)
 				}
-				peak = max(peak, int64(s.peakMemory(ctx, t, qid)))
+				entry := s.harmLogRow(ctx, t, qid, queryLogFinished)
+				assertRanWith(qid, entry, harmCalibrationCap, harmCalibrationCap, harmProbeThreads)
+				peak = max(peak, int64(entry.memory))
 			}
 
-			memCap := int64(0)
+			memCap, capPeak := int64(0), int64(0)
+			var rejected []string
+		factors:
 			for _, factor := range harmCapFactors {
 				candidate := int64(factor * float64(peak))
-				qid := fmt.Sprintf("harm-forced-%d", time.Now().UnixNano())
-				forced := chclient.WithQuerySetting(chclient.WithQueryID(ctx, qid), chopt.SettingMaxBytesBeforeExternalDistinct, candidate/2)
-				if code, _ := run(forced, candidate); code == http.StatusOK {
-					t.Logf("at %.2f x the %d-byte peak (%d bytes) the forced-spill probe completed", factor, peak, candidate)
+				dispatched := dispatchedPeak(candidate)
+				if float64(candidate) < harmDispatchedHeadroom*float64(dispatched) {
+					rejected = append(rejected, fmt.Sprintf("%.2f x: the %d-byte cap does not clear the request's own %d-byte peak under its settings by %.2f x",
+						factor, candidate, dispatched, harmDispatchedHeadroom))
 					continue
 				}
-				got, msg := s.finishedException(ctx, t, qid)
-				if got != memoryLimitExceeded {
-					t.Fatalf("at %.2f x the peak the forced-spill probe failed with server code %d (%s); want code %d",
-						factor, got, msg, memoryLimitExceeded)
+				for _, threads := range harmForcedThreads {
+					if !forcedSpillAborts(candidate, threads) {
+						rejected = append(rejected, fmt.Sprintf("%.2f x: under the %d-byte cap on max_threads %d the forced-spill probe completed",
+							factor, candidate, threads))
+						continue factors
+					}
 				}
-				if !s.abortedCarrying(ctx, t, qid, chopt.SettingMaxBytesBeforeExternalDistinct) {
-					t.Fatalf("at %.2f x the peak the forced-spill probe aborted without carrying %s, so its abort says nothing about a spill",
-						factor, chopt.SettingMaxBytesBeforeExternalDistinct)
-				}
-				t.Logf("at %.2f x the %d-byte peak (%d bytes) the forced-spill probe aborted: %.200s", factor, peak, candidate, msg)
-				memCap = candidate
+				memCap, capPeak = candidate, dispatched
 				break
 			}
+			for _, r := range rejected {
+				t.Logf("rejected %s", r)
+			}
 			if memCap == 0 {
-				t.Fatalf("no cap in %v x the %d-byte peak made the forced-spill probe abort: a spill no longer harms this shape, so it must keep the DISTINCT threshold",
-					harmCapFactors, peak)
+				t.Fatalf("no cap in %v x the %d-byte peak both cleared the request's own peak under its settings by %.2f x and made the forced-spill probe abort on every thread count in %v (rejections above): "+
+					"a shape a spill no longer harms must keep the DISTINCT threshold",
+					harmCapFactors, peak, harmDispatchedHeadroom, harmForcedThreads)
+			}
+			if float64(capPeak) > harmDispatchedHeadroom*float64(peak) {
+				t.Errorf("as dispatched under the %d-byte cap's settings the request peaked at %d bytes, more than %.2f x its %d-byte unspilled peak: withholding the DISTINCT threshold no longer leaves the statement at its unspilled size",
+					memCap, capPeak, harmDispatchedHeadroom, peak)
 			}
 
 			qid := fmt.Sprintf("harm-dispatched-%d", time.Now().UnixNano())
-			code, body := run(chclient.WithQueryID(ctx, qid), memCap)
+			code, body := run(chclient.WithQueryID(ctx, qid), memCap, harmProbeThreads)
 			if code != http.StatusOK {
 				t.Fatalf("as dispatched under the %d-byte cap the probe answered HTTP %d: %.500s", memCap, code, body)
 			}
 			if got := shape.answers(t, body); got != shape.want {
 				t.Errorf("as dispatched the probe returned %d values; want %d", got, shape.want)
 			}
-			threshold := strconv.FormatInt(memCap/2, 10)
-			for _, name := range []string{settingExternalGroupBy, settingExternalSort, chopt.SettingMaxBytesBeforeExternalJoin} {
-				s.assertEffectiveSetting(ctx, t, qid, name, threshold)
-			}
-			if s.finishedCarries(ctx, t, qid, chopt.SettingMaxBytesBeforeExternalDistinct) {
+			entry := s.harmLogRow(ctx, t, qid, queryLogFinished)
+			assertRanWith(qid, entry, memCap, memCap, harmProbeThreads)
+			if _, ok := entry.settings[chopt.SettingMaxBytesBeforeExternalDistinct]; ok {
 				t.Errorf("as dispatched the statement carries %s; want it withheld from a DISTINCT a spill harms",
 					chopt.SettingMaxBytesBeforeExternalDistinct)
 			}
-			t.Logf("as dispatched: answered under %d bytes, %.2f x the %d-byte unspilled peak, at a peak of %d",
-				memCap, float64(memCap)/float64(peak), peak, s.peakMemory(ctx, t, qid))
+			answered := entry.memory
+			t.Logf("as dispatched: answered under %d bytes (%.2f x the %d-byte unspilled peak) at a peak of %d, the cap %.3f x that peak",
+				memCap, float64(memCap)/float64(peak), peak, answered, float64(memCap)/float64(answered))
 		})
 	}
 }
 
-// abortedCarrying reports whether the statement query qid aborted with
-// carried the setting name explicitly.
-func (s *server) abortedCarrying(ctx context.Context, t *testing.T, qid, name string) bool {
+// queryLogFinished and queryLogFailed are the system.query_log types of a
+// statement that completed and of one that failed, before it started or
+// while it ran.
+var (
+	queryLogFinished = []string{"QueryFinish"}
+	queryLogFailed   = []string{"ExceptionBeforeStart", "ExceptionWhileProcessing"}
+)
+
+// harmLogRow is what system.query_log records of one statement of
+// TestDistinctSpill_WithheldShapesAnswer: the settings it ran with that
+// differ from the profile's, its peak memory, and its exception.
+type harmLogRow struct {
+	settings  map[string]string
+	memory    uint64
+	code      int32
+	exception string
+}
+
+// harmLogRow reads statement qid's system.query_log entry of one of
+// logTypes in one flush and one query.
+func (s *server) harmLogRow(ctx context.Context, t *testing.T, qid string, logTypes []string) harmLogRow {
 	t.Helper()
 	s.flushLogs(ctx, t)
 	var (
-		present uint8
-		rows    uint64
+		row  harmLogRow
+		rows uint64
 	)
 	if err := s.admin.Conn().QueryRow(ctx,
-		"SELECT max(mapContains(Settings, ?)), count() FROM system.query_log WHERE type = 'ExceptionWhileProcessing' AND query_id = ?",
-		name, qid).Scan(&present, &rows); err != nil {
+		"SELECT any(Settings), max(memory_usage), max(exception_code), any(exception), count() FROM system.query_log "+
+			"WHERE type IN ? AND query_id = ?",
+		logTypes, qid).Scan(&row.settings, &row.memory, &row.code, &row.exception, &rows); err != nil {
 		t.Fatalf("read query_log for %s: %v", qid, err)
 	}
 	if rows == 0 {
-		t.Fatalf("query_log has no aborted query %s", qid)
+		t.Fatalf("query_log has no %v entry for %s", logTypes, qid)
 	}
-	return present != 0
+	return row
 }
 
 // seedHarmProbe applies cerberus's traces DDL with the default materialized
