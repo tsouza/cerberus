@@ -2,10 +2,11 @@
 
 Organizations that run cerberus are listed below.
 
-| Organization                        | Stage      | Use                                                                       |
-| ----------------------------------- | ---------- | ------------------------------------------------------------------------- |
-| [ONZACK AG](https://www.onzack.com) | Staging    | Query gateway between Grafana and ClickHouse in staging and test clusters |
-| [Squid AI](https://getsquid.ai)     | Production | Query gateway between Grafana and a ClickHouse observability store        |
+| Organization                         | Stage      | Use                                                                       |
+| ------------------------------------ | ---------- | ------------------------------------------------------------------------- |
+| [Formance](https://www.formance.com) | Production | Query gateway between Grafana and a ClickHouse observability store        |
+| [ONZACK AG](https://www.onzack.com)  | Staging    | Query gateway between Grafana and ClickHouse in staging and test clusters |
+| [Squid AI](https://getsquid.ai)      | Production | Query gateway between Grafana and a ClickHouse observability store        |
 
 ## Adding your organization
 
