@@ -3,6 +3,7 @@
   "head": "tempo",
   "bucket": "1c",
   "cases": [
+    "search | scalar_filter_aggregate_rhs_rejected",
     "search | scoped_span_status_not_error"
   ]
 }
