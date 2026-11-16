@@ -537,8 +537,9 @@ default does not fit; a value of the ignored variable is not an entry count.
 ### Classic-histogram window ceiling
 
 An instant `histogram_quantile` over a classic histogram — over `rate`,
-`increase` or `sum_over_time` of a bucket selector, or over the bare selector,
-with or without an aggregation around it — first reduces each series'
+`increase`, `sum_over_time`, `avg_over_time`, `max_over_time`,
+`min_over_time` or `last_over_time` of a bucket selector, or over the bare
+selector, with or without an aggregation around it — first reduces each series'
 in-window samples to one bucket ladder, then merges the ladders under the
 bucket-merge ceiling above. One ceiling bounds each series of that window
 stage:

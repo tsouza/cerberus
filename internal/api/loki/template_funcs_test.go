@@ -373,3 +373,38 @@ func TestTemplateFunc_AlignWidths(t *testing.T) {
 		}
 	}
 }
+
+// TestToDateInZone pins toDateInZone, the body of Loki's `toDateInZone`
+// template function: the string is parsed in the named zone, an unknown
+// zone falls back to UTC, and an unparsable string yields the zero time.
+func TestToDateInZone(t *testing.T) {
+	t.Parallel()
+
+	newYork, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("load America/New_York: %v", err)
+	}
+	cases := []struct {
+		name, format, zone, in string
+		want                   time.Time
+		wantZone               string
+	}{
+		{"named zone", "2006-01-02 15:04", "America/New_York", "2024-03-10 12:30", time.Date(2024, 3, 10, 12, 30, 0, 0, newYork), "America/New_York"},
+		{"unknown zone falls back to UTC", "2006-01-02", "Not/AZone", "2024-03-10", time.Date(2024, 3, 10, 0, 0, 0, 0, time.UTC), "UTC"},
+		{"empty zone is UTC", "2006-01-02", "", "2024-03-10", time.Date(2024, 3, 10, 0, 0, 0, 0, time.UTC), "UTC"},
+		{"unparsable string is the zero time", "2006-01-02", "America/New_York", "not a date", time.Time{}, "UTC"},
+		{"unparsable string in an unknown zone is the zero time", "2006-01-02", "Not/AZone", "10/03/2024", time.Time{}, "UTC"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			got := toDateInZone(c.format, c.zone, c.in)
+			if !got.Equal(c.want) || got.IsZero() != c.want.IsZero() {
+				t.Fatalf("toDateInZone(%q, %q, %q) = %v, want %v", c.format, c.zone, c.in, got, c.want)
+			}
+			if zone := got.Location().String(); zone != c.wantZone {
+				t.Fatalf("toDateInZone(%q, %q, %q) is in %s, want %s", c.format, c.zone, c.in, zone, c.wantZone)
+			}
+		})
+	}
+}

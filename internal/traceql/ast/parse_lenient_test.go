@@ -146,10 +146,10 @@ func TestReplaceIncompleteMatchersScansPastAnUnrepairableComparison(t *testing.T
 
 // NOT KILLABLE — documented, not defended by a test.
 //
-// parse.go:`expr == nil || len(expr.Pipeline.Elements) == 0`
+// parse.go:`root == nil || len(root.Pipeline.Elements) == 0`
 // (INVERT_LOGICAL, `||` -> `&&`). Both operands are always false
 // together, so neither form ever enters the branch. parseTokens returns a nil
-// expr only alongside a non-nil error, which ParseIdentifier has already
+// root only alongside a non-nil error, which loneAttribute has already
 // returned on; on the success path parseRoot returns the result of
 // newRootExpr, newRootExprWithMetrics or newRootExprWithMetricsTwoStage,
 // each of which is non-nil and sets Pipeline through asPipeline. asPipeline

@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/dustin/go-humanize"
 	"github.com/prometheus/prometheus/model/labels"
@@ -214,15 +213,9 @@ func NewBytesLabelFilter(t LabelFilterType, name string, value uint64) *BytesLab
 func (b *BytesLabelFilter) isLabelFilterer() {}
 
 func (b *BytesLabelFilter) String() string {
-	// Render the byte count the way upstream does: humanize then strip the
-	// space humanize.Bytes inserts (e.g. "5 kB" -> "5kB").
-	v := strings.Map(func(r rune) rune {
-		if unicode.IsSpace(r) {
-			return -1
-		}
-		return r
-	}, humanize.Bytes(b.Value))
-	return fmt.Sprintf("%s%s%s", b.Name, b.Type, v)
+	// humanize.Bytes writes "5.0 kB"; the filter's surface form joins the
+	// number and its unit: "5.0kB".
+	return b.Name + b.Type.String() + strings.ReplaceAll(humanize.Bytes(b.Value), " ", "")
 }
 
 // IPLabelFilter matches a label value against an `ip("...")` pattern
