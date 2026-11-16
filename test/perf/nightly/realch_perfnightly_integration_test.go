@@ -402,6 +402,20 @@ func TestPerfNightlyRealCH(t *testing.T) {
 						}
 					}
 
+					// The statement prong, on every repeat like the status
+					// check: where the server places the PREWHERE split, the
+					// dispatched statement must leave it to the server.
+					if slices.Contains(sentinel.ServerPrewhereOn, version) {
+						statement, _, err := dispatchedStatement(ctx, pipelineConns[sentinel.Deployment], queryID)
+						if err != nil {
+							t.Fatalf("%s repeat %d: %v", sentinel.Name, i, err)
+						}
+						if carriesExplicitPrewhere(statement) {
+							t.Fatalf("%s repeat %d: the dispatched statement carries an explicit PREWHERE on ClickHouse %s, where move_to_prewhere leaves the split to the server — %s may have regressed:\n%s",
+								sentinel.Name, i, version, sentinel.Family, statement)
+						}
+					}
+
 					// The plan prong, on every repeat like the status check: a
 					// mechanism that fires intermittently is as broken as one
 					// that never fires.

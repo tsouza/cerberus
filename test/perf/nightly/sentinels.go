@@ -3,6 +3,7 @@ package nightly
 import (
 	"net/http"
 	"net/url"
+	"regexp"
 	"time"
 
 	"github.com/tsouza/cerberus/internal/chopt"
@@ -212,6 +213,17 @@ type Sentinel struct {
 	// of a line is SentinelsFor(line); nightly-baseline.json carries a bound
 	// for exactly that set.
 	NotOn map[string]string
+	// ServerPrewhereOn names the ClickHouse release lines ("major.minor") of
+	// perf-nightly.yml's matrix on which the statement cerberus dispatched
+	// for this sentinel, read back from system.query_log, must carry no
+	// explicit PREWHERE clause (carriesExplicitPrewhere): the lines where
+	// move_to_prewhere resolves in under "auto", so the server's own
+	// optimize_move_to_prewhere places the split. It is the check for a
+	// split whose cost the memory prong cannot tell from run-to-run noise.
+	// The lines are written out rather than read from the registry, so an
+	// AutoRange that drifts fails TestSentinels_ServerPrewhereOnLines instead
+	// of moving the check with it.
+	ServerPrewhereOn []string
 	// WantSettings names ClickHouse settings the statement cerberus
 	// dispatched for this sentinel must carry, read back from
 	// system.query_log, on every server at or past each entry's Since line.
@@ -240,6 +252,24 @@ func (s Sentinel) WantedOn(line chopt.Version) []WantSetting {
 		}
 	}
 	return out
+}
+
+// serverPrewhereLines are the release lines of perf-nightly.yml's matrix on
+// which move_to_prewhere resolves in under "auto" (chopt's
+// FeatureMoveToPrewhere AutoRange, 24.11 up to 26.2).
+var serverPrewhereLines = []string{"25.9"}
+
+// quotedSQL matches a statement's single-quoted literals and its backtick-
+// and double-quoted identifiers, whose text is no clause of the statement.
+var quotedSQL = regexp.MustCompile("'(?:[^'\\\\]|\\\\.)*'|`[^`]*`|\"[^\"]*\"")
+
+// prewhereKeyword matches the PREWHERE keyword as a whole word.
+var prewhereKeyword = regexp.MustCompile(`(?i)\bPREWHERE\b`)
+
+// carriesExplicitPrewhere reports whether statement writes a PREWHERE
+// clause, outside its quoted literals and identifiers.
+func carriesExplicitPrewhere(statement string) bool {
+	return prewhereKeyword.MatchString(quotedSQL.ReplaceAllString(statement, ""))
 }
 
 // histogramAdaptiveAggregatorOff is the stamp
@@ -567,6 +597,7 @@ var Sentinels = []Sentinel{
 		BaselineHeadroom: labelValuesBaselineHeadroom,
 		Deployment:       DeploymentStockKey,
 		QuerySettings:    map[string]any{settingUseQueryConditionCache: 0},
+		ServerPrewhereOn: serverPrewhereLines,
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{"match[]": {sumMetric + `{method="` + scrubbedMethod + `"}`}}
 		},
@@ -585,6 +616,7 @@ var Sentinels = []Sentinel{
 		BaselineHeadroom: labelValuesBaselineHeadroom,
 		Deployment:       DeploymentStockKeyRenamed,
 		QuerySettings:    map[string]any{settingUseQueryConditionCache: 0},
+		ServerPrewhereOn: serverPrewhereLines,
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{"match[]": {sumMetric + `{method="` + scrubbedMethod + `"}`}}
 		},

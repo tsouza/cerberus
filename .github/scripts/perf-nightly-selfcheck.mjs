@@ -73,11 +73,12 @@
 //      PREWHERE gate, stripped of its SchemaStrategies.PrewhereByServer
 //      test, so the emitter writes its own PREWHERE split on a server
 //      where move_to_prewhere resolved in (cerberus issue #3955). The
-//      nightly label_values_matcher_stock_key{,_renamed} sentinels read the
-//      matcher's attribute maps for every row of the metric's granules
-//      again and go red on their committed memory ceiling. Runs on 25.9,
-//      the matrix's server inside move_to_prewhere's auto range — on the
-//      others the gate's PrewhereByServer test is already false.
+//      nightly label_values_matcher_stock_key{,_renamed} sentinels go red on
+//      their statement prong: on the lines their ServerPrewhereOn names,
+//      the statement they dispatched must carry no explicit PREWHERE, and
+//      the mutated emitter writes one. Runs on 25.9, the matrix's server
+//      inside move_to_prewhere's auto range — on the others the gate's
+//      PrewhereByServer test is already false.
 //
 //   4b. prewhere-split-partition-bypassed — the same gate's partition
 //      (partitionPrewhere) bypassed, so the emitter's explicit PREWHERE
@@ -227,7 +228,8 @@ export const MUTATIONS = [
     description:
       "Strip internal/chsql/emit_node.go's filtered-scan PREWHERE gate of its PrewhereByServer test, so the " +
       'emitter writes its own PREWHERE split where move_to_prewhere resolved in (issue #3955). The nightly ' +
-      'label_values_matcher_stock_key{,_renamed} sentinels must go red on their committed memory ceiling.',
+      'label_values_matcher_stock_key{,_renamed} sentinels must go red on their statement prong: the statement ' +
+      'they dispatched carries an explicit PREWHERE on a line their ServerPrewhereOn names.',
     recipe: 'perf-nightly-integration',
     file: 'internal/chsql/emit_node.go',
     sentinels: ['label_values_matcher_stock_key', 'label_values_matcher_stock_key_renamed'],
