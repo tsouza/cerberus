@@ -93,7 +93,8 @@ func IsDerivedShape(n Node, cols SampleColumns) bool {
 	case *Filter:
 		return IsDerivedShape(v.Input, cols)
 	case *TraceLookupFilter:
-		// Its output row type is Input's; the lookups are never projected.
+		// Its output row type is Input's, plus — when it exposes them — the
+		// lookups' per-trace value columns, which name no canonical column.
 		return IsDerivedShape(v.Input, cols)
 	case *CrossJoin:
 		// Canonical when EITHER side supplies the canonical columns —

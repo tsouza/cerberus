@@ -174,7 +174,11 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 		b.WriteString("\n")
 		printChild(b, visited, v.Input, depth+1)
 	case *chplan.TraceLookupFilter:
-		fmt.Fprintf(b, "%sTraceLookupFilter lookups=%d predicate=%s\n", indent, len(v.Lookups), printExpr(v.Predicate))
+		expose := ""
+		if v.ExposeLookups {
+			expose = " exposeLookups"
+		}
+		fmt.Fprintf(b, "%sTraceLookupFilter lookups=%d predicate=%s%s\n", indent, len(v.Lookups), printExpr(v.Predicate), expose)
 		printChild(b, visited, v.Input, depth+1)
 		for _, lookup := range v.Lookups {
 			printChild(b, visited, lookup, depth+1)

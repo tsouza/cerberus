@@ -1869,3 +1869,96 @@ search
 400
 -- expect_grpc_code --
 InvalidArgument
+
+# --- Trace-scoped intrinsics in value position (#4027) ---
+#
+# rootName / traceDuration read as a per-span VALUE outside a spanset filter:
+# a by() key, an aggregate argument, a compare() selection against a span
+# operand. Each span reads its OWN trace's value. Every seeded trace has a
+# root span "GET /api/<svc>/<idx>" (150ms) and shorter children, so a
+# trace's duration exceeds its children's.
+
+-- name --
+group_by_root_name
+-- query --
+{ } | by(rootName)
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+group_by_root_name_eq_name
+# true for each root span (its name is its trace's root name), false for
+# every child.
+-- query --
+{ } | by(rootName = name)
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+group_by_trace_duration_arith
+-- query --
+{ } | by(traceDuration * 2)
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+aggregate_avg_trace_duration
+-- query --
+{ } | avg(traceDuration) > 100ms
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+aggregate_max_trace_duration_minus_duration
+-- query --
+{ } | max(traceDuration - duration) > 0
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+aggregate_max_trace_duration_arith_literal
+# Twice the trace's duration, not the boolean a per-trace membership test
+# would hand max(): every trace lasts at least 150ms, so 2x clears 200ms.
+-- query --
+{ } | max(traceDuration * 2) > 200ms
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+metrics_compare_root_name_eq_name
+# topN=500 exceeds every per-attribute cardinality in the seed so neither
+# backend truncates (see metrics_compare_status_error).
+-- query --
+{ } | compare({ rootName = name }, 500)
+-- endpoint --
+metrics_range
+-- step --
+60s
+-- expected_min_series --
+4
+-- expected_max_series --
+5000

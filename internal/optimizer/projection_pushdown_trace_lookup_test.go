@@ -73,3 +73,67 @@ func TestProjectionPushdown_TraceLookupFilterOpenLookupDeclines(t *testing.T) {
 		t.Fatal("ProjectionPushdown narrowed a span input beside an open-row-type lookup")
 	}
 }
+
+// TestProjectionPushdown_AggregateOverExposingLookupNarrowsSpanInput pins the
+// `{ } | by(rootName)` shape: an Aggregate whose group key reads an exposed
+// lookup column narrows the span input under the TraceLookupFilter to the
+// columns the Aggregate reads off the span row plus the trace id, never the
+// exposed lookup column.
+func TestProjectionPushdown_AggregateOverExposingLookupNarrowsSpanInput(t *testing.T) {
+	t.Parallel()
+	spans := &chplan.Scan{Table: "otel_traces", Roles: []chplan.Column{{Name: "TraceId", Role: chplan.RoleTraceID}}}
+	plan := &chplan.Aggregate{
+		Input: &chplan.TraceLookupFilter{
+			Input:         &chplan.Filter{Input: spans, Predicate: &chplan.LitBool{V: true}},
+			Lookups:       []chplan.Node{rootNameLookup()},
+			ExposeLookups: true,
+		},
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "_cerb_root_name"}},
+		GroupByAliases: []string{"GroupKey"},
+		AggFuncs: []chplan.AggFunc{
+			{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: "SpanId"}}, Alias: "SpanId"},
+		},
+	}
+	out, changed := ProjectionPushdown{}.Apply(plan)
+	if !changed {
+		t.Fatal("ProjectionPushdown did not narrow Aggregate(TraceLookupFilter(Filter(Scan)))")
+	}
+	scan := out.(*chplan.Aggregate).Input.(*chplan.TraceLookupFilter).Input.(*chplan.Filter).Input.(*chplan.Scan)
+	if want := []string{"SpanId", "TraceId"}; !reflect.DeepEqual(scan.Columns, want) {
+		t.Fatalf("narrowed span input columns = %v, want %v", scan.Columns, want)
+	}
+	if _, again := (ProjectionPushdown{}).Apply(out); again {
+		t.Fatal("ProjectionPushdown fired again on an already-narrowed span input")
+	}
+}
+
+// TestProjectionPushdown_NestedTraceLookupFiltersNarrowInnermostSpanInput pins
+// `{ rootName = name } | avg(traceDuration)`: an exposing TraceLookupFilter
+// over the spanset filter's own TraceLookupFilter narrows through both to the
+// span input, keeping what the inner predicate reads off the span row.
+func TestProjectionPushdown_NestedTraceLookupFiltersNarrowInnermostSpanInput(t *testing.T) {
+	t.Parallel()
+	inner := traceLookupPlan(rootNameLookup()).Input.(*chplan.TraceLookupFilter)
+	durationLookup := &chplan.Aggregate{
+		Input:          &chplan.Scan{Table: "otel_traces"},
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "TraceId"}},
+		GroupByAliases: []string{chplan.TraceLookupKeyColumn},
+		AggFuncs:       []chplan.AggFunc{{Fn: chplan.FnMax, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Duration"}}, Alias: "_cerb_trace_duration"}},
+	}
+	plan := &chplan.Aggregate{
+		Input:          &chplan.TraceLookupFilter{Input: inner, Lookups: []chplan.Node{durationLookup}, ExposeLookups: true},
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "TraceId"}},
+		GroupByAliases: []string{"TraceId"},
+		AggFuncs: []chplan.AggFunc{
+			{Fn: chplan.FnAvg, Args: []chplan.Expr{&chplan.ColumnRef{Name: "_cerb_trace_duration"}}, Alias: "Value"},
+		},
+	}
+	out, changed := ProjectionPushdown{}.Apply(plan)
+	if !changed {
+		t.Fatal("ProjectionPushdown did not narrow nested TraceLookupFilters")
+	}
+	scan := out.(*chplan.Aggregate).Input.(*chplan.TraceLookupFilter).Input.(*chplan.TraceLookupFilter).Input.(*chplan.Filter).Input.(*chplan.Scan)
+	if want := []string{"Duration", "SpanName", "TraceId"}; !reflect.DeepEqual(scan.Columns, want) {
+		t.Fatalf("narrowed span input columns = %v, want %v", scan.Columns, want)
+	}
+}

@@ -120,6 +120,9 @@ func (ProjectionPushdown) Apply(n chplan.Node) (chplan.Node, bool) {
 			return n, false
 		}
 	case *chplan.Aggregate:
+		if lookup, ok := node.Input.(*chplan.TraceLookupFilter); ok {
+			return applyAggregateTraceLookupFilter(node, lookup)
+		}
 		return applyStageScan(node, node.Input, aggregateColumns(node))
 	case *chplan.RangeWindow:
 		if ma, ok := node.Input.(*chplan.MetricsAggregate); ok {
@@ -744,47 +747,75 @@ func applyProjectFilterScan(p *chplan.Project, f *chplan.Filter) (chplan.Node, b
 }
 
 // applyProjectTraceLookupFilter handles `Project(TraceLookupFilter(Scan))` and
-// `Project(TraceLookupFilter(Filter(Scan)))`. A TraceLookupFilter passes its
-// Input's rows through unchanged, so the Input Scan must carry the
-// projection's columns, every column the joined predicate reads off the span
-// row, and the trace id the lookups join on. A predicate column a lookup
-// relation provides is not an Input column and stays off the Scan; a lookup
-// whose row type is open cannot say which columns it provides, so the rule
-// declines.
+// `Project(TraceLookupFilter(Filter(Scan)))`: the projection's columns are
+// what the TraceLookupFilter must output, and narrowTraceLookupSource carries
+// them down to its span input.
 func applyProjectTraceLookupFilter(p *chplan.Project, f *chplan.TraceLookupFilter) (chplan.Node, bool) {
 	projCols := referencedColumns(p.Projections)
 	if len(projCols) == 0 {
 		return p, false
 	}
-	traceID, err := f.Input.RowType().UniqueNamedRole(chplan.RoleTraceID)
-	if err != nil {
+	newFilter, ok := narrowTraceLookupSource(f, projCols)
+	if !ok {
 		return p, false
 	}
+	newProject := *p
+	newProject.Input = newFilter
+	return &newProject, true
+}
+
+// applyAggregateTraceLookupFilter handles `Aggregate(TraceLookupFilter(…))`,
+// the shape of a `by()` key or an aggregate argument that reads a
+// trace-scoped intrinsic (`{ } | by(rootName)`, `{ } | avg(traceDuration)`):
+// the Aggregate reads only its own columns off the TraceLookupFilter, and
+// narrowTraceLookupSource carries them down to the span input.
+func applyAggregateTraceLookupFilter(a *chplan.Aggregate, f *chplan.TraceLookupFilter) (chplan.Node, bool) {
+	newFilter, ok := narrowTraceLookupSource(f, aggregateColumns(a))
+	if !ok {
+		return a, false
+	}
+	return cloneStageOverInput(a, newFilter), true
+}
+
+// narrowTraceLookupSource narrows the span input of f — a Scan, a
+// Filter(Scan), or another TraceLookupFilter over either — so f still
+// outputs cols. A TraceLookupFilter passes its
+// Input's rows through, plus the lookups' value columns when it exposes them,
+// so the Input Scan must carry every column of cols a lookup does not
+// provide, every column the joined predicate reads off the span row, and the
+// trace id the lookups join on. A lookup whose row type is open cannot say
+// which columns it provides, so the rule declines.
+func narrowTraceLookupSource(f *chplan.TraceLookupFilter, cols []string) (chplan.Node, bool) {
+	traceID, err := f.Input.RowType().UniqueNamedRole(chplan.RoleTraceID)
+	if err != nil {
+		return nil, false
+	}
+	values, ok := f.LookupValueColumns()
+	if !ok {
+		return nil, false
+	}
 	provided := map[string]struct{}{}
-	for _, lookup := range f.Lookups {
-		rowType := lookup.RowType()
-		if rowType.Open {
-			return p, false
-		}
-		for _, c := range rowType.Columns {
-			provided[c.Name] = struct{}{}
-		}
+	for _, c := range values {
+		provided[c.Name] = struct{}{}
 	}
 	inputCols := []string{traceID.Name}
-	for _, c := range predicateColumns(f.Predicate) {
+	for _, c := range unionSortedColumns(cols, predicateColumns(f.Predicate)) {
 		if _, fromLookup := provided[c]; !fromLookup {
 			inputCols = append(inputCols, c)
 		}
 	}
-	newInput, ok := narrowScanSource(f.Input, unionSortedColumns(projCols, inputCols))
+	var newInput chplan.Node
+	if inner, nested := f.Input.(*chplan.TraceLookupFilter); nested {
+		newInput, ok = narrowTraceLookupSource(inner, inputCols)
+	} else {
+		newInput, ok = narrowScanSource(f.Input, inputCols)
+	}
 	if !ok {
-		return p, false
+		return nil, false
 	}
 	newFilter := *f
 	newFilter.Input = newInput
-	newProject := *p
-	newProject.Input = &newFilter
-	return &newProject, true
+	return &newFilter, true
 }
 
 // predicateColumns returns the set of ColumnRef names the predicate

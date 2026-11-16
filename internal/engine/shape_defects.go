@@ -33,7 +33,8 @@ func granuleFilterPredicate(n chplan.Node) (chplan.Expr, bool) {
 	case *chplan.Filter:
 		return v.Predicate, true
 	case *chplan.TraceLookupFilter:
-		return v.Predicate, true
+		// A node that only exposes its lookups carries no WHERE.
+		return v.Predicate, v.Predicate != nil
 	}
 	return nil, false
 }

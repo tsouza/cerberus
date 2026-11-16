@@ -66,11 +66,14 @@ func lowerGroup(prev chplan.Node, g traceql.GroupOperation, s schema.Traces) (ch
 	if col, sub, ok := nestedIntrinsicGroupTarget(g.Expression, s); ok {
 		return groupAggregate(prev, &chplan.ColumnRef{Name: col + "." + sub}, s), nil
 	}
-	key, err := lowerFieldExpr(g.Expression, s, noLookupJoin)
+	// A key reading a trace-scoped intrinsic (`by(rootName)`,
+	// `by(rootName = name)`) groups by each span's own trace's value, joined
+	// onto the spans.
+	key, err := lowerFieldExpr(g.Expression, s)
 	if err != nil {
 		return nil, err
 	}
-	return groupAggregate(prev, key, s), nil
+	return groupAggregate(withTraceScopedValues(prev, s, key), key, s), nil
 }
 
 // groupAggregate builds the per-group Aggregate shared by lowerGroup:
