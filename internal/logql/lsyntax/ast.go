@@ -332,25 +332,23 @@ func (e *DropLabelsExpr) Matchers() []NamedLabelMatcher { return e.dropLabels }
 // HasNamedMatchers reports whether any drop entry is a value matcher
 // (`| drop env="prod"`) rather than a bare label name.
 func (e *DropLabelsExpr) HasNamedMatchers() bool {
-	for _, d := range e.dropLabels {
-		if d.Matcher != nil {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(e.dropLabels, func(entry NamedLabelMatcher) bool { return entry.Matcher != nil })
 }
 
-// Names returns the label names targeted by the drop stage.
+// Names returns the label names targeted by the drop stage: an entry's own
+// name, else the label its matcher tests. An entry with neither targets no
+// label.
 func (e *DropLabelsExpr) Names() []string {
-	names := []string{}
-	for _, d := range e.dropLabels {
-		if d.Name != "" {
-			names = append(names, d.Name)
-		} else if d.Matcher != nil {
-			names = append(names, d.Matcher.Name)
+	targets := make([]string, 0, len(e.dropLabels))
+	for _, entry := range e.dropLabels {
+		switch {
+		case entry.Name != "":
+			targets = append(targets, entry.Name)
+		case entry.Matcher != nil:
+			targets = append(targets, entry.Matcher.Name)
 		}
 	}
-	return names
+	return targets
 }
 
 // KeepLabelsExpr is a `| keep a, b="v"` stage.
@@ -619,52 +617,54 @@ type BinOpExpr struct {
 	err  error
 }
 
+// binOpLegNames name the two legs of a binary operation in the order a
+// construction error reports them.
+var binOpLegNames = [2]string{"left", "right"}
+
+// mustNewBinOpExpr builds `lhs op rhs`. A construction error is carried by
+// the returned node and checked in phases, each over the left leg first:
+// both legs must be sample expressions, a literal leg must hold a number,
+// and a logical or set operator takes no literal leg. Two literal legs
+// fold into one literal, so no binary node has two literal legs.
 func mustNewBinOpExpr(op string, opts *BinOpOptions, lhs, rhs Expr) SampleExpr {
-	left, ok := lhs.(SampleExpr)
-	if !ok {
-		return &BinOpExpr{err: NewParseError(fmt.Sprintf("unexpected type for left leg of binary operation (%s): %T", op, lhs), 0, 0)}
-	}
-	right, ok := rhs.(SampleExpr)
-	if !ok {
-		return &BinOpExpr{err: NewParseError(fmt.Sprintf("unexpected type for right leg of binary operation (%s): %T", op, rhs), 0, 0)}
+	var legs [2]SampleExpr
+	for i, operand := range [2]Expr{lhs, rhs} {
+		leg, isSample := operand.(SampleExpr)
+		if !isSample {
+			return binOpConstructionError("unexpected type for %s leg of binary operation (%s): %T", binOpLegNames[i], op, operand)
+		}
+		legs[i] = leg
 	}
 
-	leftLit, lOk := left.(*LiteralExpr)
-	rightLit, rOk := right.(*LiteralExpr)
-	var leftVal, rightVal float64
-	if lOk {
-		v, err := leftLit.Value()
-		if err != nil {
-			return &BinOpExpr{err: err}
+	var literals [2]*float64
+	for i, leg := range legs {
+		if lit, isLiteral := leg.(*LiteralExpr); isLiteral {
+			v, err := lit.Value()
+			if err != nil {
+				return &BinOpExpr{err: err}
+			}
+			literals[i] = &v
 		}
-		leftVal = v
-	}
-	if rOk {
-		v, err := rightLit.Value()
-		if err != nil {
-			return &BinOpExpr{err: err}
-		}
-		rightVal = v
 	}
 
-	// Logical / set operators reject literal legs.
 	if IsLogicalBinOp(op) {
-		if lOk {
-			return &BinOpExpr{err: NewParseError(fmt.Sprintf("unexpected literal for left leg of logical/set binary operation (%s): %f", op, leftVal), 0, 0)}
-		}
-		if rOk {
-			return &BinOpExpr{err: NewParseError(fmt.Sprintf("unexpected literal for right leg of logical/set binary operation (%s): %f", op, rightVal), 0, 0)}
+		for i, v := range literals {
+			if v != nil {
+				return binOpConstructionError("unexpected literal for %s leg of logical/set binary operation (%s): %f", binOpLegNames[i], op, *v)
+			}
 		}
 	}
 
-	// Fold `(1 + 1)` → `2`: a binop with two literal legs reduces to a
-	// single literal so the invariant "no binop has two literal legs"
-	// holds for the lowering.
-	if lOk && rOk {
-		return reduceBinOp(op, leftVal, rightVal)
+	if literals[0] != nil && literals[1] != nil {
+		return reduceBinOp(op, *literals[0], *literals[1])
 	}
+	return &BinOpExpr{SampleExpr: legs[0], RHS: legs[1], Op: op, Opts: opts}
+}
 
-	return &BinOpExpr{SampleExpr: left, RHS: right, Op: op, Opts: opts}
+// binOpConstructionError is a binary node carrying a construction error at
+// no position.
+func binOpConstructionError(format string, args ...any) *BinOpExpr {
+	return &BinOpExpr{err: NewParseError(fmt.Sprintf(format, args...), 0, 0)}
 }
 
 func (e *BinOpExpr) isExpr()       {}

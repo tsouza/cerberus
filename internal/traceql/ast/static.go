@@ -176,34 +176,26 @@ func (s Static) BooleanArray() ([]bool, bool) {
 // Elements iterates the members of an array static; a scalar static yields
 // itself once at index 0.
 func (s Static) Elements() iter.Seq2[int, Static] {
+	switch s.Type {
+	case TypeIntArray:
+		return staticMembers(s.ints, NewStaticInt)
+	case TypeFloatArray:
+		return staticMembers(s.floats, NewStaticFloat)
+	case TypeStringArray:
+		return staticMembers(s.strs, NewStaticString)
+	case TypeBooleanArray:
+		return staticMembers(s.bools, NewStaticBool)
+	}
+	return func(yield func(int, Static) bool) { yield(0, s) }
+}
+
+// staticMembers yields each member of an array static as a scalar static.
+func staticMembers[T any](members []T, scalar func(T) Static) iter.Seq2[int, Static] {
 	return func(yield func(int, Static) bool) {
-		switch s.Type {
-		case TypeIntArray:
-			for i, v := range s.ints {
-				if !yield(i, NewStaticInt(v)) {
-					return
-				}
+		for i, m := range members {
+			if !yield(i, scalar(m)) {
+				return
 			}
-		case TypeFloatArray:
-			for i, v := range s.floats {
-				if !yield(i, NewStaticFloat(v)) {
-					return
-				}
-			}
-		case TypeStringArray:
-			for i, v := range s.strs {
-				if !yield(i, NewStaticString(v)) {
-					return
-				}
-			}
-		case TypeBooleanArray:
-			for i, v := range s.bools {
-				if !yield(i, NewStaticBool(v)) {
-					return
-				}
-			}
-		default:
-			yield(0, s)
 		}
 	}
 }

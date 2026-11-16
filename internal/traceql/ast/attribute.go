@@ -78,39 +78,38 @@ func NewIntrinsic(n Intrinsic) Attribute {
 }
 
 func (a Attribute) String() string {
-	var scopes []string
+	// The surface path is the qualifiers, `parent` then the scope, and the
+	// name, joined by dots. An unqualified user attribute is written with a
+	// leading dot (`.name`); an unqualified intrinsic is written bare.
+	var path []string
 	if a.Parent {
-		scopes = append(scopes, "parent")
+		path = append(path, "parent")
 	}
 	if a.Scope != AttributeScopeNone {
-		scopes = append(scopes, a.Scope.String())
+		path = append(path, a.Scope.String())
 	}
-
-	name := a.Name
-	switch {
-	case a.Spelling != IntrinsicNone:
-		// A scoped spelling of an intrinsic that also has a bare form
-		// (span:status, trace:duration, …): render the surface spelling
-		// the query used, not the bare Intrinsic it resolves to.
-		name = a.Spelling.String()
-	case a.Intrinsic != IntrinsicNone:
-		name = a.Intrinsic.String()
+	name := a.surfaceName()
+	if len(path) == 0 && a.Intrinsic == IntrinsicNone && name != "" {
+		path = append(path, "")
 	}
-
-	prefix := ""
-	if len(scopes) > 0 {
-		prefix = strings.Join(scopes, ".") + "."
-	}
-	// A top-level user attribute is written `.name`; a top-level intrinsic
-	// is written bare.
-	if prefix == "" && a.Intrinsic == IntrinsicNone && len(name) > 0 {
-		prefix = "."
-	}
-
 	if containsNonAttributeRune(name) {
 		name = "\"" + name + "\""
 	}
-	return prefix + name
+	return strings.Join(append(path, name), ".")
+}
+
+// surfaceName is the name the query spelled: a scoped spelling of an
+// intrinsic that also has a bare form (span:status, trace:duration, …) as
+// written rather than the bare Intrinsic it resolves to, else the
+// intrinsic's own spelling, else the attribute name.
+func (a Attribute) surfaceName() string {
+	if a.Spelling != IntrinsicNone {
+		return a.Spelling.String()
+	}
+	if a.Intrinsic != IntrinsicNone {
+		return a.Intrinsic.String()
+	}
+	return a.Name
 }
 
 // containsNonAttributeRune reports whether s holds any rune that cannot

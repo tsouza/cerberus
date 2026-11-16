@@ -144,13 +144,18 @@ func unixEpochNanos(date time.Time) string {
 	return strconv.FormatInt(date.UnixNano(), 10)
 }
 
+// toDateInZone parses str with the Go layout format in the named IANA zone.
+// An unknown zone reads as UTC, and a string the layout does not parse
+// yields the zero time rather than an error, so a template keeps rendering.
 func toDateInZone(format, zone, str string) time.Time {
-	loc, err := time.LoadLocation(zone)
-	if err != nil {
-		loc, _ = time.LoadLocation("UTC")
+	in := time.UTC
+	if named, err := time.LoadLocation(zone); err == nil {
+		in = named
 	}
-	t, _ := time.ParseInLocation(format, str, loc)
-	return t
+	if parsed, err := time.ParseInLocation(format, str, in); err == nil {
+		return parsed
+	}
+	return time.Time{}
 }
 
 // unixToTime parses an integer epoch string, inferring the unit from its
