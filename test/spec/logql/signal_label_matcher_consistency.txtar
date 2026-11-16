@@ -3,12 +3,16 @@
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map(
+    ResourceAttributes Map(String, String) DEFAULT map(
         'job', if(Body = 'wrong-job', 'other', 'api'),
         'env', if(Body = 'wrong-env', 'prod', 'staging'),
         'region', if(Body = 'wrong-region', 'eu-west', 'us-east'),
         'cell', if(Body = 'wrong-cell', 'staging-2', 'prod-1')
-    )
+    ),
+    LogAttributes Map(String, String) DEFAULT map(),
+    SeverityNumber UInt8 DEFAULT 0,
+    SeverityText LowCardinality(String) DEFAULT '',
+    Timestamp DateTime64(9) DEFAULT 0
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Body) VALUES ('match'), ('wrong-env'), ('wrong-region'), ('wrong-cell'), ('wrong-job');
 -- expected_rows --
@@ -17,7 +21,7 @@ INSERT INTO otel_logs (Body) VALUES ('match'), ('wrong-env'), ('wrong-region'), 
 ]
 -- parity_exempt --
 reason: log-query-answer
-detail: log query `{job="api",env!="prod",region=~"us-.*",cell!~"staging.*"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+detail: log query `{job="api",env!="prod",region=~"us-.*",cell!~"staging.*"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args --
 [0] string = "job"
 [1] string = "api"

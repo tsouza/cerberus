@@ -9,7 +9,11 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (position(`Bod
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+    ResourceAttributes Map(String, String) DEFAULT map('job', 'api'),
+    LogAttributes Map(String, String) DEFAULT map(),
+    SeverityNumber UInt8 DEFAULT 0,
+    SeverityText LowCardinality(String) DEFAULT '',
+    Timestamp DateTime64(9) DEFAULT 0
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Body) VALUES
     ('this is an error'),
@@ -26,7 +30,7 @@ Filter predicate=((ResourceAttributes["job"] = "api") AND lineContent(Body, "err
   Scan(otel_logs)
 -- parity_exempt --
 reason: log-query-answer
-detail: log query `{job="api"} |= "error"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+detail: log query `{job="api"} |= "error"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
 [0] string = "job"
 [1] string = "api"

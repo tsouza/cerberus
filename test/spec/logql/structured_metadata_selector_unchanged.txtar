@@ -4,8 +4,11 @@
 CREATE TABLE otel_logs (
     ServiceName LowCardinality(String) DEFAULT 'clickhouse',
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('service_name', 'clickhouse', 'tier', 'gold'),
-    LogAttributes Map(String, String) MATERIALIZED map('tier', 'silver')
+    ResourceAttributes Map(String, String) DEFAULT map('service_name', 'clickhouse', 'tier', 'gold'),
+    LogAttributes Map(String, String) DEFAULT map('tier', 'silver'),
+    SeverityNumber UInt8 DEFAULT 0,
+    SeverityText LowCardinality(String) DEFAULT '',
+    Timestamp DateTime64(9) DEFAULT 0
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Body) VALUES ('a'), ('b');
 -- expected_rows --
@@ -30,7 +33,7 @@ SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContai
 [8] string = "gold"
 -- parity_exempt --
 reason: log-query-answer
-detail: log query `{service_name="clickhouse", tier="gold"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+detail: log query `{service_name="clickhouse", tier="gold"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
 [0] string = ""
 [1] string = "service_name"

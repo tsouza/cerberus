@@ -12,12 +12,15 @@
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) = ?) AND (position(`Body`, ?) > 0)
 -- seed --
 CREATE TABLE otel_logs (
-    LogAttributes Map(String, String) MATERIALIZED map(),
+    LogAttributes Map(String, String) DEFAULT map(),
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map(
+    ResourceAttributes Map(String, String) DEFAULT map(
         'job', 'api',
         'level', if(Body LIKE 'i%', 'info', 'error')
-    )
+    ),
+    SeverityNumber UInt8 DEFAULT 0,
+    SeverityText LowCardinality(String) DEFAULT '',
+    Timestamp DateTime64(9) DEFAULT 0
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Body) VALUES
     ('e1-timeout reading upstream'),
@@ -35,7 +38,7 @@ Filter predicate=(((ResourceAttributes["job"] = "api") AND (FnIf(FnMapContainsKe
   Scan(otel_logs)
 -- parity_exempt --
 reason: log-query-answer
-detail: log query `{job="api"} | level="error" |= "timeout"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+detail: log query `{job="api"} | level="error" |= "timeout"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
 [0] string = "job"
 [1] string = "api"

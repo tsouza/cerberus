@@ -10,7 +10,10 @@
 CREATE TABLE otel_logs (
     LogAttributes Map(String, String),
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+    ResourceAttributes Map(String, String) DEFAULT map('job', 'api'),
+    SeverityNumber UInt8 DEFAULT 0,
+    SeverityText LowCardinality(String) DEFAULT '',
+    Timestamp DateTime64(9) DEFAULT 0
 ) ENGINE = Memory;
 INSERT INTO otel_logs (LogAttributes, Body) VALUES
     (map('region', 'eu', 'zone', 'c', 'host', 'h.1'), 'eu-c-h.1'),
@@ -46,7 +49,7 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContain
 [15] string = "^(?:h\\.1|(?i)H2)$"
 -- parity_exempt --
 reason: log-query-answer
-detail: log query `{job="api"} | region=~"eu|" | zone!~"a|b" | host=~"h\\.1|(?i)H2"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+detail: log query `{job="api"} | region=~"eu|" | zone!~"a|b" | host=~"h\\.1|(?i)H2"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
 [0] string = "job"
 [1] string = "api"

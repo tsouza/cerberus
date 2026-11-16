@@ -104,7 +104,10 @@ CREATE TABLE otel_logs (
     ResourceAttributes Map(String, String) MATERIALIZED map(
         'job', 'api',
         'level', if(Body = 'packed info skip', 'info', 'error')
-    )
+    ),
+    Timestamp DateTime64(9) DEFAULT 0,
+    SeverityText LowCardinality(String) DEFAULT '',
+    SeverityNumber UInt8 DEFAULT 0
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Body) VALUES ('packed error one'), ('packed error two'), ('packed info skip');
 -- expected_rows --
@@ -117,7 +120,7 @@ Filter predicate=((ResourceAttributes["job"] = "api") AND (FnIf(FnMapContainsKey
   Scan(otel_logs)
 -- parity_exempt --
 reason: log-query-answer
-detail: log query `{job="api"} | unpack | level="error"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+detail: log query `{job="api"} | unpack | level="error"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
 [0] string = "job"
 [1] string = "api"

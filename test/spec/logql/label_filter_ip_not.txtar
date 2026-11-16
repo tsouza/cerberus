@@ -3,7 +3,11 @@
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api'),
+    LogAttributes Map(String, String) DEFAULT map(),
+    Timestamp DateTime64(9) DEFAULT 0,
+    SeverityText LowCardinality(String) DEFAULT '',
+    SeverityNumber UInt8 DEFAULT 0
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Body) VALUES
     ('addr=192.168.1.5 msg=a'),
@@ -61,7 +65,7 @@ Filter predicate=((ResourceAttributes["job"] = "api") AND FnMultiIf(FnMapContain
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND multiIf(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), ?, not(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?)), ?, not(arrayExists(_cerb_ip -> ifNull(((toIPv4OrNull(_cerb_ip) >= toIPv4(?)) AND (toIPv4OrNull(_cerb_ip) <= toIPv4(?))), ?), extractAll(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], ?))))
 -- parity_exempt --
 reason: log-query-answer
-detail: log query `{job="api"} | logfmt | addr != ip("192.168.0.0/16")` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+detail: log query `{job="api"} | logfmt | addr != ip("192.168.0.0/16")` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
 [0] string = "job"
 [1] string = "api"

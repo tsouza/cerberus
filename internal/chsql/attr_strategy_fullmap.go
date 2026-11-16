@@ -107,8 +107,8 @@ const jsonObjectPrefix = "{"
 // detectedLevelIdentityExpr false — an explicit `| drop detected_level`/
 // `| keep` with no parser stage) projects the bare ResourceAttributes
 // column as the query's ENTIRE "Attributes" output with no
-// mapConcat/mapFilter wrapper at all (internal/logql/lang.go's
-// Lang.ProjectSamples). Substituting here means the chclient cursor always
+// mapConcat/mapFilter wrapper at all (internal/logql/log_rows.go's
+// lowerLogQuery). Substituting here means the chclient cursor always
 // scans a genuine Map(String,String) for that column, on every log-stream
 // query shape, regardless of which pipeline stages ran.
 func projectedExpr(b *Builder, expr chplan.Expr) chplan.Expr {

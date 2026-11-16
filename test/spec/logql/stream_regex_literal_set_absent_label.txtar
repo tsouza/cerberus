@@ -8,9 +8,13 @@
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
-    ResourceAttributes Map(String, String)
+    ResourceAttributes Map(String, String),
+    LogAttributes Map(String, String) DEFAULT map(),
+    SeverityNumber UInt8 DEFAULT 0,
+    SeverityText LowCardinality(String) DEFAULT '',
+    Timestamp DateTime64(9) DEFAULT 0
 ) ENGINE = Memory;
-INSERT INTO otel_logs VALUES
+INSERT INTO otel_logs (Body, ResourceAttributes) VALUES
     ('prod-web', map('env', 'prod', 'app', 'web')),
     ('stg-noapp', map('env', 'stg')),
     ('prod-api', map('env', 'prod', 'app', 'api')),
@@ -38,7 +42,7 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] IN (?, ?)) AND (`Resour
 [8] string = "edge"
 -- parity_exempt --
 reason: log-query-answer
-detail: log query `{env=~"prod|stg", app=~"web|", team!~"core|edge"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+detail: log query `{env=~"prod|stg", app=~"web|", team!~"core|edge"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
 [0] string = "env"
 [1] string = "prod"

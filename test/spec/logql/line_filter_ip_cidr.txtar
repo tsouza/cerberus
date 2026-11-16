@@ -3,7 +3,11 @@
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+    ResourceAttributes Map(String, String) DEFAULT map('job', 'api'),
+    LogAttributes Map(String, String) DEFAULT map(),
+    SeverityNumber UInt8 DEFAULT 0,
+    SeverityText LowCardinality(String) DEFAULT '',
+    Timestamp DateTime64(9) DEFAULT 0
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Body) VALUES
     ('10.1.2.3 GET /healthz ok'),
@@ -31,7 +35,7 @@ Filter predicate=((ResourceAttributes["job"] = "api") AND FnArrayExists(_cerb_ip
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND arrayExists(_cerb_ip -> ifNull(((toIPv4OrNull(_cerb_ip) >= toIPv4(?)) AND (toIPv4OrNull(_cerb_ip) <= toIPv4(?))), ?), extractAll(`Body`, ?))
 -- parity_exempt --
 reason: log-query-answer
-detail: log query `{job="api"} |= ip("10.0.0.0/8")` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+detail: log query `{job="api"} |= ip("10.0.0.0/8")` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
 [0] string = "job"
 [1] string = "api"

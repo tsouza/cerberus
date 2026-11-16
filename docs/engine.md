@@ -535,6 +535,18 @@ The emitter is also CH-native rather than ANSI-ish:
   projection reads any wide column. Under the `move_to_prewhere`
   optimization (`SchemaStrategies.PrewhereByServer`) it writes every
   conjunct into `WHERE` instead and leaves the split to the server.
+- **Row-chain fusion** renders a filter over a stack of per-row
+  `Project` layers over `Filter(Scan)` as one
+  `SELECT … FROM <table> WHERE …`, whose select list defines every
+  layer alias and whose `WHERE` reads them by name, when the `Project`
+  reading it is marked `OneScopeRows` and has an explicit select list.
+  The LogQL lowering marks a log query's row stage only; a range
+  aggregation's row stage renders one `SELECT` per layer. The chain
+  stays nested when an alias is defined twice, when an alias is named
+  like a table column that the scan's filter or a node at or below the
+  alias's own layer reads, or when the chain with every alias read
+  replaced by its expression — what ClickHouse's analyzer does in one
+  scope — is past the emitted-SQL byte bound.
 - **`WITH RECURSIVE`** for label-set / trace-graph traversal.
 - **Streaming `clickhouse-go/v2` cursor** — bounded RSS, no row buffer
   on the hot path; the engine's `QueryCursor` opens a streaming

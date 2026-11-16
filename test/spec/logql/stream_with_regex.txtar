@@ -9,7 +9,11 @@ SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] IN (?, ?))
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('env', if(Body = 'm1', 'prod', if(Body = 'm2', 'stg', 'dev')))
+    ResourceAttributes Map(String, String) DEFAULT map('env', if(Body = 'm1', 'prod', if(Body = 'm2', 'stg', 'dev'))),
+    LogAttributes Map(String, String) DEFAULT map(),
+    SeverityNumber UInt8 DEFAULT 0,
+    SeverityText LowCardinality(String) DEFAULT '',
+    Timestamp DateTime64(9) DEFAULT 0
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Body) VALUES ('m1'), ('m2'), ('m3');
 -- expected_rows --
@@ -22,7 +26,7 @@ Filter predicate=(ResourceAttributes["env"] =~ "prod|stg")
   Scan(otel_logs)
 -- parity_exempt --
 reason: log-query-answer
-detail: log query `{env=~"prod|stg"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+detail: log query `{env=~"prod|stg"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
 [0] string = "env"
 [1] string = "prod"

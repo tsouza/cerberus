@@ -19,14 +19,17 @@
 CREATE TABLE otel_logs (
     Timestamp DateTime64(9),
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED multiIf(
+    ResourceAttributes Map(String, String) DEFAULT multiIf(
         Body = 'dotted-ns3', map('k8s.namespace.name', 'ns-3'),
         Body = 'dotted-ns3-extra', map('k8s.namespace.name', 'ns-3', 'k8s.pod.name', 'p1'),
         Body = 'other-ns', map('k8s.namespace.name', 'ns-9'),
         Body = 'no-key', CAST(map() AS Map(String, String)),
         CAST(map() AS Map(String, String))
     ),
-    `__otel_materialized_k8s.namespace.name` LowCardinality(String) MATERIALIZED ResourceAttributes['k8s.namespace.name']
+    `__otel_materialized_k8s.namespace.name` LowCardinality(String) MATERIALIZED ResourceAttributes['k8s.namespace.name'],
+    LogAttributes Map(String, String) DEFAULT map(),
+    SeverityNumber UInt8 DEFAULT 0,
+    SeverityText LowCardinality(String) DEFAULT ''
 ) ENGINE = Memory;
 -- Two matching rows (value in the dotted map key the materialized
 -- column mirrors), one non-matching namespace, one missing-key row
@@ -50,7 +53,7 @@ Filter predicate=(__otel_materialized_k8s.namespace.name = "ns-3")
 SELECT * FROM `otel_logs` WHERE (`__otel_materialized_k8s.namespace.name` = ?)
 -- parity_exempt --
 reason: log-query-answer
-detail: log query `{k8s_namespace_name="ns-3"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+detail: log query `{k8s_namespace_name="ns-3"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
 [0] string = "ns-3"
 -- settings --

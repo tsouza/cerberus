@@ -27,18 +27,20 @@
 CREATE TABLE otel_logs (
     Timestamp DateTime64(9),
     Body String,
-    SeverityNumber UInt8 MATERIALIZED multiIf(
+    SeverityNumber UInt8 DEFAULT multiIf(
         Body = 'top-level-only', 9,
         Body = 'both', 9,
         Body = 'negative-top', 17,
         0
     ),
-    ResourceAttributes Map(String, String) MATERIALIZED multiIf(
+    ResourceAttributes Map(String, String) DEFAULT multiIf(
         Body = 'map-only', map('SeverityNumber', '9'),
         Body = 'both', map('SeverityNumber', '9'),
         Body = 'negative-map', map('SeverityNumber', '17'),
         CAST(map() AS Map(String, String))
-    )
+    ),
+    LogAttributes Map(String, String) DEFAULT map(),
+    SeverityText LowCardinality(String) DEFAULT ''
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Timestamp, Body) VALUES
     (toDateTime64('2026-05-20 12:00:00.000000000', 9), 'top-level-only'),
@@ -63,7 +65,7 @@ Filter predicate=(FnCoalesce(FnNullIf(FnToString(SeverityNumber), "0"), Resource
 SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(toString(`SeverityNumber`), ?), `ResourceAttributes`[?]) = ?)
 -- parity_exempt --
 reason: log-query-answer
-detail: log query `{SeverityNumber="9"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+detail: log query `{SeverityNumber="9"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
 [0] string = "0"
 [1] string = "SeverityNumber"

@@ -412,9 +412,9 @@ func anyEqual(expr chplan.Expr, variants []string) chplan.Expr {
 // pipeline removes `detected_level` from the output label set on every
 // row, and the key is left out of the synthesized map entirely.
 //
-// Used by both the log-stream projection (Lang.ProjectSamples for log
-// queries, where the surfaced label splits the streams response into
-// one Stream per detected_level) and the bare range-aggregation
+// Used by both the log-stream projection ([lowerLogQuery], where the
+// surfaced label splits the streams response into one Stream per
+// detected_level) and the bare range-aggregation
 // projection (lowerRangeAggregation when no by/without grouping, where
 // the augmented identity drives the RangeWindow GROUP BY to emit one
 // series per detected_level).
@@ -574,8 +574,9 @@ func structuredMetadataExpr(s schema.Logs) chplan.Expr {
 }
 
 // detectedLevelIdentityExpr returns the value expression the
-// synthesized `detected_level` identity key carries for `expr`, or nil
-// when the query must not surface the label at all.
+// synthesized `detected_level` identity key carries for `expr`, given
+// level, the row's detected level, or nil when the query must not
+// surface the label at all.
 //
 // Reference Loki stamps `detected_level` as STRUCTURED METADATA at
 // ingest (`pkg/distributor/field_detection.go::extractLogLevel`, default-on
@@ -611,10 +612,6 @@ func structuredMetadataExpr(s schema.Logs) chplan.Expr {
 // `detected_level` / `level`) is what caused the loki-compat
 // `fast/basic-selectors.yaml` stream-identity regressions.
 //
-// A nil `expr` returns nil rather than panicking: only the metric
-// branch of [Lang.ProjectSamples] reaches a projection without an
-// `expr` in [engine.Meta.Extra], and it doesn't consult this.
-//
 // Pipe stages with parser-extracted `level` keys (`| logfmt`,
 // `| json`, `| regexp ...`, `| pattern ...`, `| label_format ...`)
 // keep going through their existing label-filter-context lookups —
@@ -622,13 +619,8 @@ func structuredMetadataExpr(s schema.Logs) chplan.Expr {
 // the matcher / grouping split. The synthesized key coexists with any
 // parser-derived keys in the output label map (Loki's reference
 // response carries both when applicable).
-func detectedLevelIdentityExpr(s schema.Logs, expr syntax.Expr) chplan.Expr {
-	if expr == nil {
-		return nil
-	}
-	return projectSyntheticLabelValue(expr, detectedLevelLabel, func() chplan.Expr {
-		return detectedLevelExpr(s)
-	})
+func detectedLevelIdentityExpr(expr syntax.Expr, level chplan.Expr) chplan.Expr {
+	return projectSyntheticLabelValue(expr, detectedLevelLabel, func() chplan.Expr { return level })
 }
 
 // Column aliases a range aggregation's row stage defines for the

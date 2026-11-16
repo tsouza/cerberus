@@ -14,12 +14,15 @@ CREATE TABLE otel_logs (
         Body = 'negative-top', 'fedcba9876543210fedcba9876543210',
         ''
     ),
-    ResourceAttributes Map(String, String) MATERIALIZED multiIf(
+    ResourceAttributes Map(String, String) DEFAULT multiIf(
         Body = 'map-only', map('TraceId', '0123456789abcdef0123456789abcdef'),
         Body = 'both', map('TraceId', '0123456789abcdef0123456789abcdef'),
         Body = 'negative-map', map('TraceId', 'fedcba9876543210fedcba9876543210'),
         CAST(map() AS Map(String, String))
-    )
+    ),
+    LogAttributes Map(String, String) DEFAULT map(),
+    SeverityNumber UInt8 DEFAULT 0,
+    SeverityText LowCardinality(String) DEFAULT ''
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Timestamp, Body) VALUES
     (toDateTime64('2026-05-20 12:00:00.000000000', 9), 'top-level-only'),
@@ -44,7 +47,7 @@ Filter predicate=(FnCoalesce(FnNullIf(TraceId, ""), ResourceAttributes["TraceId"
 SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`TraceId`, ?), `ResourceAttributes`[?]) = ?)
 -- parity_exempt --
 reason: log-query-answer
-detail: log query `{TraceId="0123456789abcdef0123456789abcdef"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+detail: log query `{TraceId="0123456789abcdef0123456789abcdef"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
 [0] string = ""
 [1] string = "TraceId"

@@ -14,7 +14,7 @@ import (
 // error arm of [logql.Lang.ProjectSamples]'s projection swap.
 //
 // The swap consults [logql.PipelineLabelsExpr], which re-walks EVERY pipeline
-// stage. The lowering does not: [lowerPipelineWithLabels]'s dynamicLabels gate
+// stage. The lowering does not: [lowerPipelineStages]'s dynamicLabels gate
 // skips SQL lowering for an `__error__` label filter that follows a `| pattern`
 // stage, because those markers only exist after the Go-side transform runs. So
 // a query can lower cleanly and still be rejected by the projection walk — here

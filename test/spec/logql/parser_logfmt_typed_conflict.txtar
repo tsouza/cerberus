@@ -4,7 +4,10 @@
 CREATE TABLE otel_logs (
     LogAttributes Map(String, String) MATERIALIZED map(),
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('level', 'error')
+    ResourceAttributes Map(String, String) MATERIALIZED map('level', 'error'),
+    Timestamp DateTime64(9) DEFAULT 0,
+    SeverityText LowCardinality(String) DEFAULT '',
+    SeverityNumber UInt8 DEFAULT 0
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Body) VALUES
     ('ts=2025-01-01 severity=warn msg="picks-up"'),
@@ -57,7 +60,7 @@ Filter predicate=((ResourceAttributes["level"] = "error") AND (FnIf(FnMapContain
 SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)[?])), ?), mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)[?]))[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?]))) = ?)
 -- parity_exempt --
 reason: log-query-answer
-detail: log query `{level="error"} | logfmt level="severity" | level_extracted="warn"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+detail: log query `{level="error"} | logfmt level="severity" | level_extracted="warn"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
 [0] string = "level"
 [1] string = "error"

@@ -177,20 +177,17 @@ const (
 	ReasonDuplicateTimestampSeed = "duplicate-timestamp-seed"
 
 	// ReasonLogQueryAnswer covers a LogQL fixture whose query is a LOG
-	// query rather than a metric one. The two engines answer such a
-	// query in shapes that have no element-wise correspondence at all:
-	// the reference returns [logqlmodel.Streams], a set of log LINES
-	// grouped by stream, while cerberus returns the `SELECT *` row set
-	// whose column layout is whatever the fixture's own `seed:` DDL
-	// happened to declare.
+	// query rather than a metric one. The reference returns
+	// [logqlmodel.Streams], a set of log LINES grouped by stream, while
+	// cerberus's round trip returns one row per line — (Line,
+	// Attributes, TimeUnix, Metadata) — and the parity comparator
+	// matches samples, element by element.
 	//
-	// This is not a gap in RunParity's dispatch table that a comparator
-	// could close. test/spec/parityoracle/logql's flatten already
-	// REFUSES the [logqlmodel.Streams] case by name, with the same
-	// reasoning: manufacturing a correspondence between lines and a
-	// fixture-defined projection would manufacture a green. The
-	// oracle's own doc comment states the resulting rule as "enrol
-	// metric queries only".
+	// test/spec/parityoracle/logql's flatten REFUSES the
+	// [logqlmodel.Streams] case by name, and its doc comment states the
+	// rule as "enrol metric queries only". Comparing a log query takes a
+	// comparator that groups the round trip's rows into streams by
+	// label set (issue #4295).
 	//
 	// Membership is decided by the UPSTREAM parser, not by inspecting
 	// the emitted SQL: syntax.ParseExpr returns a syntax.SampleExpr for

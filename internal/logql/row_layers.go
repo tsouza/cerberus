@@ -7,46 +7,54 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
-// rowLayers builds the per-row stage of a LogQL metric query — everything
-// between the stream scan and the projection a range aggregation windows
-// over — as a stack of Project layers, one per value the stage computes.
+// rowLayers builds the per-row stage of a LogQL query — everything
+// between the stream scan and the consumer that reads the row: the
+// projection a range aggregation windows over, or the projection a log
+// query returns its lines through — as a stack of Project layers, one per
+// value the stage computes.
 //
 // Each [rowLayers.define] adds one layer that computes an expression once
 // per row under a column alias and hands back a reference to that alias.
 // Every later expression that needs the value reads the column instead of
 // embedding the expression again. A LogQL pipeline reads the same values
 // over and over: a parser stage's labels map feeds every label filter,
-// the unwrap lookup, the conversion-error mark and the series identity,
-// and the unwrap conversion reads its source several times. Inlining a
-// value at each read repeats it in the statement text once per read, and
-// one value nested inside another multiplies the copies. Defining each
-// value as a column keeps every value to one copy.
+// the unwrap lookup, the conversion-error mark, the series identity and a
+// log line's labels, and the unwrap conversion reads its source several
+// times. Inlining a value at each read repeats it in the statement text
+// once per read, and one value nested inside another multiplies the
+// copies. Defining each value as a column keeps every value to one copy.
 //
 // [rowLayers.filter] AND-folds a predicate onto the current row. Before
 // the first layer exists that is the stream scan's own filter, so a
 // stage that runs ahead of any defined value stays a scan predicate.
 //
+// [rowLayers.hoist] splits the stack at a log query's ORDER BY … LIMIT.
+// Below it sit only the values a filter reads. A wide one among them, such
+// as a labels map, is computed again above the limit for the rows that
+// survive it, rather than carried through the sort; the sort carries only
+// the narrow values the consumer also reads. Every value no filter reads is
+// computed above the limit alone.
+//
 // A layer is created with its defined value only; [rowLayers.seal]
 // decides what else it passes through, once the consumer above the stack
 // is known. It walks the stack from the top, gives each layer exactly the
 // columns read above it, and drops a layer whose value nothing reads.
-//
-// With materialise unset, define returns its expression unchanged and no
-// layer is built: the stage lowers to a single filtered scan whose
-// expressions are fully inlined. The log-query path uses that mode, since
-// its labels expression is rebuilt from the pipeline after the rows return
-// ([PipelineLabelsExpr]) rather than read off a column.
 type rowLayers struct {
-	node        chplan.Node
-	materialise bool
-	layers      []*chplan.Project
-	scopes      int
+	node   chplan.Node
+	layers []*chplan.Project
+	// passes are the nodes [rowLayers.hoist] wrapped the filtered rows in;
+	// seal walks through them, and gives a Project among them exactly the
+	// columns read above it.
+	passes []chplan.Node
+	// wide are the layers [rowLayers.defineWide] added.
+	wide   []*chplan.Project
+	scopes int
 }
 
 // newRowLayers starts a per-row stage over node, the lowered stream
 // selector.
-func newRowLayers(node chplan.Node, materialise bool) *rowLayers {
-	return &rowLayers{node: node, materialise: materialise}
+func newRowLayers(node chplan.Node) *rowLayers {
+	return &rowLayers{node: node}
 }
 
 // filter AND-folds pred onto the current row. A nil pred is a no-op.
@@ -59,12 +67,8 @@ func (r *rowLayers) filter(pred chplan.Expr) {
 
 // define computes expr once per row under alias and returns the
 // expression later reads use in its place: a reference to the alias, or
-// expr itself when it is already a bare column or the stack does not
-// materialise.
+// expr itself when it is already a bare column.
 func (r *rowLayers) define(alias string, expr chplan.Expr) chplan.Expr {
-	if !r.materialise {
-		return expr
-	}
 	if _, ok := expr.(*chplan.ColumnRef); ok {
 		return expr
 	}
@@ -80,6 +84,19 @@ func (r *rowLayers) define(alias string, expr chplan.Expr) chplan.Expr {
 	return &chplan.ColumnRef{Name: alias}
 }
 
+// defineWide is [rowLayers.define] for a value too wide to carry through
+// a log query's sort, such as a parser stage's labels map: when a filter
+// reads it, [rowLayers.hoist] defines it once more above the limit rather
+// than passing it through the ORDER BY.
+func (r *rowLayers) defineWide(alias string, expr chplan.Expr) chplan.Expr {
+	n := len(r.layers)
+	ref := r.define(alias, expr)
+	if len(r.layers) > n {
+		r.wide = append(r.wide, r.layers[n])
+	}
+	return ref
+}
+
 // seal fills in the pass-through columns of every layer below consumer,
 // a Project whose Input is the stack's current node, and removes the
 // layers whose value nothing above reads. Each name in carry is passed
@@ -91,7 +108,9 @@ func (r *rowLayers) define(alias string, expr chplan.Expr) chplan.Expr {
 // needed by name, and passes down the columns its value reads; a layer
 // whose alias is not in needed is spliced out. The walk stops at the
 // first node the stack did not build — the stream scan and its filter —
-// which already exposes every column of the logs table.
+// which already exposes every column of the logs table. It walks through
+// the nodes [rowLayers.hoist] added, adding the columns an ORDER BY
+// reads.
 func (r *rowLayers) seal(consumer *chplan.Project, carry ...string) {
 	needed := map[string]bool{}
 	for _, name := range carry {
@@ -110,18 +129,27 @@ func (r *rowLayers) seal(consumer *chplan.Project, carry ...string) {
 		switch n := child.(type) {
 		case *chplan.Filter:
 			addColumnsRead(needed, n.Predicate)
+		case *chplan.OrderBy:
+			for _, key := range n.Keys {
+				addColumnsRead(needed, key.Expr)
+			}
 		case *chplan.Project:
+			if slices.Contains(r.passes, child) {
+				carried = sortedNames(carried[:0], needed)
+				n.Projections = make([]chplan.Projection, 0, len(carried))
+				for _, name := range carried {
+					n.Projections = append(n.Projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: name}})
+				}
+				parent = child
+				continue
+			}
 			value := n.Projections[0]
 			if !needed[value.Alias] {
 				setInputOf(parent, n.Input)
 				continue
 			}
 			delete(needed, value.Alias)
-			carried = carried[:0]
-			for name := range needed {
-				carried = append(carried, name)
-			}
-			slices.Sort(carried)
+			carried = sortedNames(carried[:0], needed)
 			projections := make([]chplan.Projection, 0, len(carried)+1)
 			for _, name := range carried {
 				projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: name}})
@@ -133,26 +161,161 @@ func (r *rowLayers) seal(consumer *chplan.Project, carry ...string) {
 	}
 }
 
+// sortedNames appends the names in set to dst in sorted order.
+func sortedNames(dst []string, set map[string]bool) []string {
+	for name := range set {
+		dst = append(dst, name)
+	}
+	slices.Sort(dst)
+	return dst
+}
+
+// hoist rebuilds the stack around limit, a log query's ORDER BY … LIMIT:
+// limit's Input is set to order and order's to the filtered rows. A nil
+// limit wraps nothing. It must be called before [rowLayers.seal], on a
+// stack whose layers still hold their value alone.
+//
+// A layer stays below the limit when a filter reads it, directly or
+// through another layer that stays; every other layer moves above it, in
+// its original order, so a value only the consumer reads is computed for
+// the rows the limit lets through and not for every row the filters keep.
+// Between the filtered rows and the sort sits a Project that passes on
+// only the columns read above it. A wide value ([rowLayers.defineWide])
+// that stays is defined once more above the limit, in its place in that
+// order, so the sort never carries it: it is computed once for every row
+// the filters see and once for the rows returned. Any other value that
+// stays and that the consumer reads is passed through the sort.
+//
+// A filter conjunct that reads no layer is folded into the stream scan's
+// own filter, where it sat before any layer existed: the layers are pure
+// per-row values, so where an AND of predicates over the same row runs
+// does not change which rows survive.
+func (r *rowLayers) hoist(order *chplan.OrderBy, limit *chplan.Limit) {
+	var items []chplan.Node
+	base := r.node
+	for r.stackNode(base) {
+		items = append(items, base)
+		base = inputOf(base)
+	}
+	slices.Reverse(items)
+
+	aliases := map[string]bool{}
+	for _, layer := range r.layers {
+		aliases[layer.Projections[0].Alias] = true
+	}
+	readsLayer := func(e chplan.Expr) bool {
+		read := map[string]bool{}
+		addColumnsRead(read, e)
+		for name := range read {
+			if aliases[name] {
+				return true
+			}
+		}
+		return false
+	}
+
+	needed := map[string]bool{}
+	stays := map[*chplan.Project]bool{}
+	for i := len(items) - 1; i >= 0; i-- {
+		switch n := items[i].(type) {
+		case *chplan.Filter:
+			addColumnsRead(needed, n.Predicate)
+		case *chplan.Project:
+			if value := n.Projections[0]; needed[value.Alias] {
+				stays[n] = true
+				addColumnsRead(needed, value.Expr)
+			}
+		}
+	}
+
+	for _, item := range items {
+		if f, ok := item.(*chplan.Filter); ok {
+			for _, conjunct := range conjuncts(f.Predicate) {
+				if !readsLayer(conjunct) {
+					base = andFilter(base, conjunct)
+				}
+			}
+		}
+	}
+	node := base
+	var above []*chplan.Project
+	for _, item := range items {
+		switch n := item.(type) {
+		case *chplan.Filter:
+			for _, conjunct := range conjuncts(n.Predicate) {
+				if readsLayer(conjunct) {
+					node = andFilter(node, conjunct)
+				}
+			}
+		case *chplan.Project:
+			if !stays[n] {
+				above = append(above, n)
+				continue
+			}
+			n.Input = node
+			node = n
+			if limit != nil && slices.Contains(r.wide, n) {
+				again := chplan.CloneNode(&chplan.Project{Projections: n.Projections}).(*chplan.Project)
+				r.layers = append(r.layers, again)
+				r.wide = append(r.wide, again)
+				above = append(above, again)
+			}
+		}
+	}
+
+	top := node
+	if limit != nil {
+		if len(stays) > 0 {
+			narrow := &chplan.Project{Input: node, OneScopeRows: true}
+			r.passes = append(r.passes, narrow)
+			node = narrow
+		}
+		order.Input = node
+		limit.Input = order
+		top = limit
+		r.passes = append(r.passes, limit, order)
+	}
+	for _, layer := range above {
+		layer.Input = top
+		top = layer
+	}
+	r.node = top
+}
+
+// conjuncts splits pred into the operands of its top-level ANDs, in order.
+func conjuncts(pred chplan.Expr) []chplan.Expr {
+	if b, ok := pred.(*chplan.Binary); ok && b.Op == chplan.OpAnd {
+		return append(conjuncts(b.Left), conjuncts(b.Right)...)
+	}
+	return []chplan.Expr{pred}
+}
+
 // stackNode reports whether n is a node seal rewrites: one of the
-// stack's layers, or a filter sitting above one. The stream scan and the
-// filter folded into it are not.
+// stack's layers, a filter sitting above one, or a node hoist added. The
+// stream scan and the filter folded into it are not.
 func (r *rowLayers) stackNode(n chplan.Node) bool {
 	switch v := n.(type) {
 	case *chplan.Project:
-		return r.owns(v)
+		return r.owns(v) || slices.Contains(r.passes, n)
 	case *chplan.Filter:
 		return r.built(v.Input)
+	case *chplan.OrderBy, *chplan.Limit:
+		return slices.Contains(r.passes, n)
 	}
 	return false
 }
 
-// inputOf returns the input of a node seal walks through: a Project or
-// a Filter. setInputOf replaces it.
+// inputOf returns the input of a node seal walks through: a Project, a
+// Filter, an OrderBy or a Limit. setInputOf replaces it.
 func inputOf(n chplan.Node) chplan.Node {
 	switch v := n.(type) {
 	case *chplan.Project:
 		return v.Input
 	case *chplan.Filter:
+		return v.Input
+	case *chplan.OrderBy:
+		return v.Input
+	case *chplan.Limit:
 		return v.Input
 	}
 	return nil
@@ -163,6 +326,10 @@ func setInputOf(n, input chplan.Node) {
 	case *chplan.Project:
 		v.Input = input
 	case *chplan.Filter:
+		v.Input = input
+	case *chplan.OrderBy:
+		v.Input = input
+	case *chplan.Limit:
 		v.Input = input
 	}
 }
@@ -205,12 +372,8 @@ const filterAliasPrefix = "_logql_filter_"
 
 // scope returns the [defineFunc] for one value set that can occur more
 // than once in a stack — one duration filter's parse among several —
-// naming its values under a prefix no other scope of r uses. A stack
-// that does not materialise defines nothing.
+// naming its values under a prefix no other scope of r uses.
 func (r *rowLayers) scope() defineFunc {
-	if !r.materialise {
-		return inlineDefine
-	}
 	r.scopes++
 	return r.definer(filterAliasPrefix + strconv.Itoa(r.scopes) + "_")
 }

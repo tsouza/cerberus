@@ -626,15 +626,35 @@ func conjunctionFrag(exprs []chplan.Expr) Frag {
 }
 
 func (e *emitter) emitProject(p *chplan.Project) error {
-	sub, err := e.subqueryFrag(p.Input)
-	if err != nil {
-		return err
+	// A select list names every column this Project reads, so it can read
+	// a fused row chain, whose columns are a superset of its Input's. Only
+	// a Project marked [chplan.Project.OneScopeRows] reads its Input fused.
+	var sub Frag
+	fused := false
+	var err error
+	if p.OneScopeRows && len(p.Projections) > 0 {
+		if sub, fused, err = e.rowChainFrag(p.Input); err != nil {
+			return err
+		}
+	}
+	if !fused {
+		if sub, err = e.subqueryFrag(p.Input); err != nil {
+			return err
+		}
 	}
 	sb := NewQuery().From(sub)
 	// An empty Projections slice leaves the SELECT list empty, which
 	// renders as the bare `SELECT *` — no length guard needed.
 	for _, pr := range p.Projections {
 		expr := pr.Expr
+		// A bare column with no alias passes the column through unchanged
+		// under its own name, for a layer above to read with the same
+		// attribute strategy; only a projection that names its output
+		// renders a JSON-strategy column as the reconstructed map.
+		if pr.Alias == "" {
+			sb.Select(func(b *Builder) { _ = b.Expr(expr) })
+			continue
+		}
 		sb.SelectAs(func(b *Builder) { _ = b.Expr(projectedExpr(b, expr)) }, pr.Alias)
 	}
 	if len(p.Projections) == 0 && len(p.Replacements) > 0 {
