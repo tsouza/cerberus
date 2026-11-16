@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -190,6 +191,89 @@ func WaitLokiSettled(ctx context.Context, baseURL string, streams int, baseline 
 		case <-time.After(settleInterval):
 		}
 	}
+}
+
+// WaitLokiHoldsFixture blocks until reference Loki answers a log range query
+// over [w.SeedStart, w.LogQueryEnd()) for every pushed stream with exactly
+// the entry timestamps this run pushed to it.
+//
+// It is the data-side half of the Loki gate, which [WaitLokiSettled]'s
+// counters cannot replace: a flushed chunk counts toward chunks_flushed
+// whether or not a range query returns every entry in it, and the parity
+// lane asks only the second question.
+func WaitLokiHoldsFixture(ctx context.Context, baseURL string, streams []Stream, w Window, timeout time.Duration) error {
+	if len(streams) == 0 {
+		return fmt.Errorf("the fixture holds no log streams, so this gate would wait for nothing and " +
+			"report a settled reference loki over an empty push")
+	}
+	deadline := time.Now().Add(timeout)
+	var last error
+	for {
+		last = checkLokiHoldsFixture(ctx, baseURL, streams, w)
+		if last == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("reference loki did not hold the fixture within %s: %w", timeout, last)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(settleInterval):
+		}
+	}
+}
+
+// checkLokiHoldsFixture is one poll of [WaitLokiHoldsFixture]: every stream
+// read back, its entry timestamps compared to the pushed ones as a sorted
+// list.
+func checkLokiHoldsFixture(ctx context.Context, baseURL string, streams []Stream, w Window) error {
+	for _, s := range streams {
+		selector := LogSelector(s.Labels)
+		got, err := QueryLogRange(ctx, baseURL, selector, w.SeedStart, w.LogQueryEnd())
+		if err != nil {
+			return err
+		}
+		var gotTimes []int64
+		for _, r := range got {
+			for _, v := range r.Values {
+				if len(v) == 0 {
+					return fmt.Errorf("stream %s returned an entry with no timestamp", selector)
+				}
+				ns, err := strconv.ParseInt(v[0], 10, 64)
+				if err != nil {
+					return fmt.Errorf("stream %s returned entry timestamp %q: %w", selector, v[0], err)
+				}
+				gotTimes = append(gotTimes, ns)
+			}
+		}
+		wantTimes := make([]int64, 0, len(s.Entries))
+		for _, e := range s.Entries {
+			wantTimes = append(wantTimes, e.Time.UnixNano())
+		}
+		slices.Sort(gotTimes)
+		slices.Sort(wantTimes)
+		if !slices.Equal(gotTimes, wantTimes) {
+			return fmt.Errorf("stream %s returned %d entries, want the %d this run pushed%s",
+				selector, len(gotTimes), len(wantTimes), firstTimeDifference(gotTimes, wantTimes))
+		}
+	}
+	return nil
+}
+
+// firstTimeDifference names, for a gate's error message, the pushed entry at
+// the first position where the sorted returned timestamps differ from the
+// sorted pushed ones, or the first returned entry past the pushed ones.
+func firstTimeDifference(got, want []int64) string {
+	for i := range want {
+		if i >= len(got) || got[i] != want[i] {
+			return fmt.Sprintf(" (first difference at the pushed entry %s)", time.Unix(0, want[i]).UTC().Format(time.RFC3339Nano))
+		}
+	}
+	if len(got) > len(want) {
+		return fmt.Sprintf(" (unexpected entry at %s)", time.Unix(0, got[len(want)]).UTC().Format(time.RFC3339Nano))
+	}
+	return ""
 }
 
 // WaitTempoSettled blocks until BOTH hold in a single poll:

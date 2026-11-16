@@ -268,7 +268,9 @@ apart from its offset from the epoch:
 - ClickHouse `Map` columns written in sorted key order, because the driver
   otherwise serialises a Go map in randomised iteration order and the same
   logical label set lands under two different stored representations;
-- a rolling anchor truncated to the step grid. One anchor serves all three
+- a rolling anchor truncated to the step grid, and moved one step earlier when
+  it lands on a whole multiple of reference Loki's query split interval
+  (`split_queries_by_interval: 1h` in its config). One anchor serves all three
   signals: cross-signal correlation needs the three inside one window, and a
   fixed date is unusable because Tempo's live store clamps span timestamps
   outside its ingestion slack and the clamped block metadata makes search
@@ -282,9 +284,10 @@ there instead of one ending at `now`. `cerberus migrate verify`'s own
 `--start -1h --end now` defaults are untouched — a real operator legitimately
 wants a live window against their own Prometheus. *Metric-driven readiness
 gates* answer "has the reference finished ingesting?": Loki is flushed
-synchronously and then gated on an empty flush queue, zero in-memory chunks, a
-chunks-flushed delta of at least one per pushed stream and a fresh TSDB index
-upload, all in a single poll; Tempo on a completed live-store block that the
+synchronously and then gated on an empty flush queue, zero in-memory chunks and
+a chunks-flushed delta of at least one per pushed stream, all in a single poll,
+and then data-side, on a log range query over the whole fixture returning, per
+stream, exactly the entry timestamps this run pushed; Tempo on a completed live-store block that the
 querier's blocklist has picked up *and* `/api/search` returning, per service,
 exactly the trace identities this run pushed — the live store cuts blocks on
 second-scale timers, so the block counters say nothing about whether the whole

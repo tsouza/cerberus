@@ -39,7 +39,6 @@ const (
 	expectedPath    = "archetypes/three-signal/expected/tier1.json"
 	manifestEnvKey  = "TIER1_MANIFEST"
 	defaultManifest = ".out/manifest.json"
-	lokiEntryLimit  = "5000"
 )
 
 // expectedTier1 is the archetype's declared cardinality. It is the anti-hollow
@@ -621,71 +620,34 @@ func sortLogEntries(entries []logEntry) {
 	})
 }
 
-// queryLogStream reads one fixture stream back from a side, returning its
-// entries and the label sets they arrived under.
+// queryLogStream reads one fixture stream back from a side over the verify
+// window, returning its entries and the label sets they arrived under.
 func queryLogStream(t *testing.T, ctx context.Context, baseURL string, stream seed.LogStream, tc tier1Context) ([]logEntry, map[seriesKey]map[string]string) {
 	t.Helper()
 
-	selector := logSelector(stream)
-	// The end bound is exclusive on the Loki query API, so it is pushed one
-	// nanosecond past the last fixture record; without that the closing
-	// record of the window would be missing from both sides and the oracle
-	// would have to be weakened to match.
-	target := strings.TrimRight(baseURL, "/") + "/loki/api/v1/query_range?" + url.Values{
-		"query":     {selector},
-		"start":     {strconv.FormatInt(tc.manifest.VerifyStart.UnixNano(), 10)},
-		"end":       {strconv.FormatInt(tc.manifest.VerifyEnd.UnixNano()+1, 10)},
-		"limit":     {lokiEntryLimit},
-		"direction": {"forward"},
-	}.Encode()
-
-	var got struct {
-		Status string `json:"status"`
-		Data   struct {
-			ResultType string `json:"resultType"`
-			Result     []struct {
-				Stream map[string]string `json:"stream"`
-				Values [][]string        `json:"values"`
-			} `json:"result"`
-		} `json:"data"`
-	}
-	if err := fetchJSON(ctx, target, &got); err != nil {
-		t.Fatalf("GET %s: %v", target, err)
-	}
-	if got.Status != "success" {
-		t.Fatalf("%s returned status %q, want %q", target, got.Status, "success")
+	selector := seed.LogSelector(stream.Labels)
+	got, err := seed.QueryLogRange(ctx, baseURL, selector, tc.window.VerifyStart, tc.window.LogQueryEnd())
+	if err != nil {
+		t.Fatalf("%s: query %s: %v", baseURL, selector, err)
 	}
 
 	var entries []logEntry
 	labelSets := map[seriesKey]map[string]string{}
-	for _, r := range got.Data.Result {
-		labelSets[makeSeriesKey(r.Stream)] = r.Stream
+	for _, r := range got {
+		labelSets[makeSeriesKey(r.Labels)] = r.Labels
 		for _, v := range r.Values {
 			if len(v) < 2 {
-				t.Fatalf("%s: entry has %d fields, want at least 2", target, len(v))
+				t.Fatalf("%s: %s entry has %d fields, want at least 2", baseURL, selector, len(v))
 			}
 			ns, err := strconv.ParseInt(v[0], 10, 64)
 			if err != nil {
-				t.Fatalf("%s: parse entry timestamp %q: %v", target, v[0], err)
+				t.Fatalf("%s: %s: parse entry timestamp %q: %v", baseURL, selector, v[0], err)
 			}
 			entries = append(entries, logEntry{unixNano: ns, line: v[1]})
 		}
 	}
 	sortLogEntries(entries)
 	return entries, labelSets
-}
-
-func logSelector(stream seed.LogStream) string {
-	keys := make([]string, 0, len(stream.Labels))
-	for k := range stream.Labels {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		parts = append(parts, fmt.Sprintf("%s=%q", k, stream.Labels[k]))
-	}
-	return "{" + strings.Join(parts, ", ") + "}"
 }
 
 func assertLogEntriesEqual(t *testing.T, side, stream string, got, want []logEntry) {

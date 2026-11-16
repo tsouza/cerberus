@@ -85,6 +85,40 @@ stops meaning anything.
 That was observed on the first live Tier-2 run as a landed sample of `0.05`
 against a re-evaluation of `-27.8`, a negative CPU utilisation.
 
+## Why the fixture anchor avoids the whole hour, and Loki is gated data-side
+
+One Tier-1 run read every reference-Loki stream of the three-signal archetype
+one record short: 80 entries against the declared 81, on all nine streams at
+once. Of 89 consecutive Tier-1 runs it was the only failure, and the only run
+whose three-signal anchor — the last record of every stream — fell on a whole
+hour (`12:00:00`). Two other runs anchored the kube-prometheus-stack seed on a
+whole hour and stayed green, because the parity test reads only the
+three-signal archetype's logs back.
+
+A Loki range query, or any sub-query of one, whose start is exactly the
+timestamp of a flushed chunk's last entry does not return that entry: against
+`grafana/loki:3.7.0` with the reference config, `[t, t+1ns)` returns nothing for
+such an entry, while `[t-1ns, t+1ns)` returns it, and an entry at the same kind
+of instant in the middle of a chunk comes back either way. While the chunk is
+still in ingester memory, the entry comes back too. Metric queries count it. The
+lane's queries never start at the anchor themselves, but the query frontend
+splits every range query at each whole multiple of `split_queries_by_interval`
+(1h), and the sub-query starting at that cut does start there. A stream whose
+last entry sits on the hour therefore reads back one short over any range
+crossing it once its chunk is flushed; the same stream ending seven minutes off
+the hour reads back whole. Pushing the query's end bound further past the record
+does not help, because the cut is still there. The fix moves the anchor, not
+the query. The reference config sets the split interval explicitly, and a test
+pins it to the seeder's constant, so neither a config edit nor a change of
+upstream's default can move the cut back onto the anchor unnoticed.
+
+The counter gate could not have caught this. The chunk was flushed and counted;
+what was missing was one entry of a range-query answer. The data-side gate reads
+every stream back over the whole fixture, the same way the Prometheus and Tempo
+gates read their data back, and names the first pushed entry that did not come
+back. Its range starts earlier than the parity query's, so every split cut the
+parity query can meet lies inside it too.
+
 ## The phased build order the lane landed in
 
 The harness code, compose files, seeders and workflow landed in follow-up build
