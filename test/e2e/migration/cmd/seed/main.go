@@ -119,10 +119,10 @@ func run(logger *slog.Logger) error {
 	if *windowOffset < 0 {
 		return fmt.Errorf("--window-offset is %s, want a non-negative duration: it shifts the window into the past, never the future", *windowOffset)
 	}
-	if *windowOffset+seed.SeedWindow >= tempoIngestionSlack {
-		return fmt.Errorf("--window-offset %s pushes the fixture window's start %s before now, at or past "+
+	if lead := *windowOffset + seed.MaxSeedLead; lead >= tempoIngestionSlack {
+		return fmt.Errorf("--window-offset %s pushes the fixture window's start up to %s before now, at or past "+
 			"reference tempo's %s ingestion slack; spans that far back would be clamped out of their block "+
-			"and never become searchable", *windowOffset, *windowOffset+seed.SeedWindow, tempoIngestionSlack)
+			"and never become searchable", *windowOffset, lead, tempoIngestionSlack)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), runBudget)
@@ -226,7 +226,8 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	logger.Info("pushing the fixture into reference loki", "url", *lokiAddr)
-	if err := seed.PushStreams(ctx, *lokiAddr, fixture.LokiStreams()); err != nil {
+	lokiStreams := fixture.LokiStreams()
+	if err := seed.PushStreams(ctx, *lokiAddr, lokiStreams); err != nil {
 		return err
 	}
 	logger.Info("pushing the fixture into reference tempo", "addr", *tempoOTLP)
@@ -243,6 +244,10 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("waiting for the reference loki index to settle", "streams", manifest.Streams)
 	if err := seed.WaitLokiSettled(ctx, *lokiAddr, manifest.Streams, lokiBaseline, settleWait); err != nil {
+		return err
+	}
+	logger.Info("waiting for reference loki to hold the whole fixture", "url", *lokiAddr, "streams", manifest.Streams)
+	if err := seed.WaitLokiHoldsFixture(ctx, *lokiAddr, lokiStreams, window, settleWait); err != nil {
 		return err
 	}
 	logger.Info("waiting for reference tempo to hold the whole fixture",
