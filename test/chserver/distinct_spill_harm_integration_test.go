@@ -353,7 +353,6 @@ func (s *server) harmLogRow(ctx context.Context, t *testing.T, qid string, logTy
 func seedHarmProbe(ctx context.Context, t *testing.T, s *server) schema.Traces {
 	t.Helper()
 	traces := applyMaterializedTracesDDL(ctx, t, s)
-	unique := harmUniqueValue
 	s.exec(ctx, t, fmt.Sprintf(`
 INSERT INTO otel_traces
     (Timestamp, TraceId, SpanId, ParentSpanId, SpanName, SpanKind, ServiceName,
@@ -374,10 +373,10 @@ SELECT
     '' AS StatusMessage, '' AS ScopeName, '' AS ScopeVersion, '' AS TraceState
 FROM numbers(%[11]d)`,
 		metadataSpillWindowStart.Unix(),
-		unique("n"), unique("k"),
-		harmResourceKey, unique("r"), unique("R"),
-		harmSpanKey, unique("m"), unique("S"),
-		unique("s"),
+		harmUniqueValue("n"), harmUniqueValue("k"),
+		harmResourceKey, harmUniqueValue("r"), harmUniqueValue("R"),
+		harmSpanKey, harmUniqueValue("m"), harmUniqueValue("S"),
+		harmUniqueValue("s"),
 		harmSpans))
 	s.exec(ctx, t, "OPTIMIZE TABLE otel_traces FINAL")
 	return traces

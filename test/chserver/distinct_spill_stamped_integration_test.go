@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -17,32 +18,28 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// stampedProbeBudget bounds the seed and every probe of
-// TestDistinctSpill_StampedShapesAnswer.
-const stampedProbeBudget = 15 * time.Minute
-
 // stampedCapFactors are the caps, as multiples of a shape's unspilled peak,
 // that TestDistinctSpill_StampedShapesAnswer requires the request to answer
-// under: from harmCapFactors' first, just above the peak, to just under
-// twice it.
-var stampedCapFactors = []float64{1.11, 1.2, 1.4, 1.6, 1.9}
+// under: harmCapFactors, and one cap just under twice the peak.
+var stampedCapFactors = append(slices.Clone(harmCapFactors), 1.9)
 
 // stampedAttempt is what system.query_log records of one run of a
-// statement: how it ended, the DISTINCT threshold it carried, and its peak.
+// statement: how it ended, the parts its DISTINCT spilled, its peak, and the
+// DISTINCT threshold, memory limit and thread count it ran with.
 type stampedAttempt struct {
 	logType  string
-	distinct string
+	code     int32
+	parts    uint64
 	memory   uint64
+	distinct string
+	limit    string
+	threads  string
 }
 
-// stampedShape is one Tempo tag-discovery request that keeps the DISTINCT
-// spill threshold over String values.
-type stampedShape struct {
-	name   string
-	path   string
-	params url.Values
-	// answers decodes the response body into the number of values it lists.
-	answers func(t *testing.T, body string) int
+func (a stampedAttempt) String() string {
+	return fmt.Sprintf("%s (code %d, %s = %d, peak %d bytes, %s = %q, %s = %q, %s = %q)",
+		a.logType, a.code, externalDistinctWritePart, a.parts, a.memory,
+		chopt.SettingMaxBytesBeforeExternalDistinct, a.distinct, settingMaxMemoryUsage, a.limit, settingMaxThreads, a.threads)
 }
 
 // TestDistinctSpill_StampedShapesAnswer drives the two Tempo tag-discovery
@@ -54,18 +51,19 @@ type stampedShape struct {
 // harmProbeThreads threads. For each it measures the statement's unspilled
 // peak P, the largest of harmCalibrationRuns runs under harmCalibrationCap,
 // and then requires, under every cap in stampedCapFactors x P, the request
-// to answer every seeded value from one run of the statement, carrying the
-// DISTINCT threshold at half the cap.
+// to answer every seeded value from one run of the statement that carried
+// the cap, the thread count and the DISTINCT threshold at half the cap, and
+// whose DISTINCT spilled (ExternalDistinctWritePart).
 func TestDistinctSpill_StampedShapesAnswer(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), stampedProbeBudget)
+	ctx, cancel := context.WithTimeout(context.Background(), harmProbeBudget)
 	defer cancel()
 	s := startServer(ctx, t, metadataSpillImage)
 	rules := resolveDistinctSpillRules(t, s)
 	traces := seedStampedProbe(ctx, t, s)
 
-	for _, shape := range []stampedShape{
-		{"auto-scope values", "/api/v2/search/tag/." + harmSpanKey + "/values", url.Values{}, tagValuesAnswers},
-		{"event tag names", "/api/search/tags", url.Values{"scope": {"event"}}, tagNamesAnswers},
+	for _, shape := range []harmedShape{
+		{"auto-scope values", "/api/v2/search/tag/." + harmSpanKey + "/values", url.Values{}, tagValuesAnswers, harmSpans},
+		{"event tag names", "/api/search/tags", url.Values{"scope": {"event"}}, tagNamesAnswers, harmSpans},
 	} {
 		t.Run(shape.name, func(t *testing.T) {
 			// run sends the request under memCap and returns its status, body
@@ -81,7 +79,14 @@ func TestDistinctSpill_StampedShapesAnswer(t *testing.T) {
 				if len(attempts) != 1 {
 					t.Fatalf("under the %d-byte cap the request ran its statement %d times (%v); want once", memCap, len(attempts), attempts)
 				}
-				return code, body, attempts[0]
+				a := attempts[0]
+				if want := strconv.FormatInt(memCap, 10); a.limit != want {
+					t.Fatalf("under the %d-byte cap the statement ran with %s = %q; want %s", memCap, settingMaxMemoryUsage, a.limit, want)
+				}
+				if want := strconv.Itoa(harmProbeThreads); a.threads != want {
+					t.Fatalf("under the %d-byte cap the statement ran with %s = %q; want %s", memCap, settingMaxThreads, a.threads, want)
+				}
+				return code, body, a
 			}
 
 			peak := int64(0)
@@ -90,29 +95,32 @@ func TestDistinctSpill_StampedShapesAnswer(t *testing.T) {
 				if code != http.StatusOK {
 					t.Fatalf("under the %d-byte calibration cap the probe answered HTTP %d: %.500s", harmCalibrationCap, code, body)
 				}
-				if got := shape.answers(t, body); got != harmSpans {
-					t.Fatalf("under the calibration cap the probe returned %d values; want %d", got, harmSpans)
+				if got := shape.answers(t, body); got != shape.want {
+					t.Fatalf("under the calibration cap the probe returned %d values; want %d", got, shape.want)
+				}
+				if a.parts != 0 {
+					t.Fatalf("under the calibration cap the DISTINCT spilled (%v), so its peak is not the unspilled one", a)
 				}
 				peak = max(peak, int64(a.memory))
+				t.Logf("calibration: unspilled peak %d bytes", a.memory)
 			}
 
 			for _, factor := range stampedCapFactors {
 				memCap := int64(factor * float64(peak))
 				code, body, a := run(memCap, "band")
 				if code != http.StatusOK {
-					t.Errorf("under the %d-byte cap (%.2f x the %d-byte unspilled peak) the probe answered HTTP %d: %.300s",
-						memCap, factor, peak, code, body)
+					t.Errorf("under the %d-byte cap (%.2f x the %d-byte unspilled peak) the probe answered HTTP %d after %v: %.300s",
+						memCap, factor, peak, code, a, body)
 					continue
 				}
-				if got := shape.answers(t, body); got != harmSpans {
-					t.Errorf("under the %d-byte cap the probe returned %d values; want %d", memCap, got, harmSpans)
+				if got := shape.answers(t, body); got != shape.want {
+					t.Errorf("under the %d-byte cap the probe returned %d values; want %d", memCap, got, shape.want)
 				}
-				if want := strconv.FormatInt(memCap/2, 10); a.logType != queryLogFinished[0] || a.distinct != want {
-					t.Errorf("under the %d-byte cap the statement ran as %s with %s = %q; want %s with %s",
-						memCap, a.logType, chopt.SettingMaxBytesBeforeExternalDistinct, a.distinct, queryLogFinished[0], want)
+				if want := strconv.FormatInt(memCap/2, 10); !slices.Contains(queryLogFinished, a.logType) || a.distinct != want || a.parts == 0 {
+					t.Errorf("under the %d-byte cap the statement ran %v; want it finished, spilled, with %s = %s",
+						memCap, a, chopt.SettingMaxBytesBeforeExternalDistinct, want)
 				}
-				t.Logf("%.2f x the %d-byte unspilled peak (%d bytes): answered, threshold %s, peak %d bytes",
-					factor, peak, memCap, a.distinct, a.memory)
+				t.Logf("%.2f x the %d-byte unspilled peak (%d bytes): answered after %v", factor, peak, memCap, a)
 			}
 		})
 	}
@@ -125,9 +133,9 @@ func (s *server) stampedAttempts(ctx context.Context, t *testing.T, qid string) 
 	s.flushLogs(ctx, t)
 	types := append(append([]string{}, queryLogFinished...), queryLogFailed...)
 	rows, err := s.admin.Conn().Query(ctx,
-		"SELECT toString(type), Settings[?], memory_usage FROM system.query_log "+
+		"SELECT toString(type), exception_code, ProfileEvents[?], memory_usage, Settings[?], Settings[?], Settings[?] FROM system.query_log "+
 			"WHERE type IN ? AND query_id = ? ORDER BY event_time_microseconds",
-		chopt.SettingMaxBytesBeforeExternalDistinct, types, qid)
+		externalDistinctWritePart, chopt.SettingMaxBytesBeforeExternalDistinct, settingMaxMemoryUsage, settingMaxThreads, types, qid)
 	if err != nil {
 		t.Fatalf("read query_log for %s: %v", qid, err)
 	}
@@ -135,7 +143,7 @@ func (s *server) stampedAttempts(ctx context.Context, t *testing.T, qid string) 
 	var out []stampedAttempt
 	for rows.Next() {
 		var a stampedAttempt
-		if err := rows.Scan(&a.logType, &a.distinct, &a.memory); err != nil {
+		if err := rows.Scan(&a.logType, &a.code, &a.parts, &a.memory, &a.distinct, &a.limit, &a.threads); err != nil {
 			t.Fatalf("scan query_log for %s: %v", qid, err)
 		}
 		out = append(out, a)

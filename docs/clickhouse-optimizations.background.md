@@ -827,30 +827,38 @@ abort did not reproduce, so neither shape is withheld.
 
 The auto-scope tag values keep the threshold too. Through the handler on
 26.9.25.15, over 1M spans whose materialized `rpc.method` span attribute
-carries a unique 256-byte value, the statement was run under caps from
-about 0.8 to 1.9 × its unspilled peak P, about 80 capped runs:
+carries a unique 256-byte value, the statement was run once with the
+threshold at half the cap and once without it, under each of nine to
+eleven caps from 360 to 700 MiB:
 
 - Seeds: `leftPad` values with and without `OPTIMIZE FINAL`, random values,
   `rightPad` values, and the same values in `ResourceAttributes` as well, so
   both arms of the `UNION ALL` carry them.
-- Threads: one, the test container's two, 16, and six on a container with no
-  CPU limit.
-- P measured 386–449 MiB.
-- With the threshold at half the cap the statement answered under every cap
-  from P to 1.9 × P. Spilled, it peaked at 225–466 MiB, at or below its
-  unspilled peak in every run but three, and those three stayed under the
-  cap.
-- Below P the threshold rescues it: under 360–440 MiB caps it aborts with
-  code 241 unspilled and completes spilled.
+- Unspilled peaks measured 400–449 MiB.
+- With the threshold the statement answered under every cap at or above its
+  unspilled peak, peaking at 281–466 MiB.
+- Of the 13 caps below the unspilled peak, it answered under 12 with the
+  threshold and under 2 without it; every other run aborted with code 241.
+  The one cap it failed under with the threshold was 400 MiB for a
+  `rightPad` seed whose unspilled peak was 401–403 MiB.
+- At the server's default thread count and at 16 threads, with unspilled
+  peaks of 386–415 MiB, it answered with the threshold under 1.11, 1.2, 1.4,
+  1.6 and 1.9 × the peak.
 
 An earlier replay of the captured statement outside the handler measured the
-opposite, an abort with the threshold at 470 and 493 MiB caps over a 440 MiB
-peak, spilled peaks of 498–525 MiB; through the handler that did not
-reproduce. `test/chserver`'s `TestDistinctSpill_StampedShapesAnswer` pins
-the auto-scope tag values and the event tag names, each over 1M unique
-256-byte values on one thread, answering every value from one run carrying
-the threshold under 1.11, 1.2, 1.4, 1.6 and 1.9 × P. One run of it measured
-P at 387 and 391 MiB and spilled peaks of 346–350 MiB under every cap.
+opposite, an abort with the threshold under 470 and 493 MiB caps over a
+440 MiB peak, with peaks of 498–525 MiB. Through the handler it did not
+reproduce, and what differed between the two was not isolated.
+
+`test/chserver`'s `TestDistinctSpill_StampedShapesAnswer` pins the auto-scope
+tag values and the event tag names, each over 1M unique 256-byte values on
+one thread. Under 1.11, 1.2, 1.4, 1.6 and 1.9 × the unspilled peak P, each
+answers every value from one run that carries the cap and the threshold at
+half of it and whose `DISTINCT` spilled.
+One local run measured P at 389 MiB for the auto-scope tag values and
+391 MiB for the event tag names, the three calibration runs of each within
+0.5% of one another; every capped run spilled nine parts and peaked at
+346 MiB.
 
 The instrumentation-scope tag names take the same Map-key `DISTINCT` as the
 span and resource tag names, but the default traces DDL carries no
