@@ -117,6 +117,19 @@ const quantileRangeFormat = "quantile must be between 0 and 1: %v"
 // `MetricsAggregate.validate`.
 const unsupportedGroupBysFormat = "metrics group by %v values not yet supported"
 
+// The two scalar-filter operand messages keep the reference's literal `(%v)`:
+// the reference builds them with `newUnsupportedError`, which takes a fixed
+// string and never formats it, so `(%v)` is what its clients read. They are
+// never passed through a format function here either.
+const (
+	scalarFilterLHSUnsupported = "scalar filter lhs of type (%v) not yet supported"
+	scalarFilterRHSUnsupported = "scalar filter rhs of type (%v) not yet supported"
+)
+
+// secondStageLimitNotPositive is the reference's wording for a `topk(N)` or
+// `bottomk(N)` second stage whose N is not positive.
+const secondStageLimitNotPositive = "limit must be greater than 0"
+
 // maxGroupBys is the reference engine's hard ceiling on the number of
 // `by(...)` keys a metrics aggregate may carry — pkg/traceql/engine_metrics.go's
 // own `maxGroupBys`, where it sizes the fixed-length `SeriesMapKey` array that
@@ -281,9 +294,9 @@ func anyOperandType(StaticType) bool { return true }
 // (references.go) node for node, down to reusing spansetFilterExpression:
 // both walks answer a question about the WHOLE query, so a node one of
 // them reaches and the other does not is a bug in whichever is the
-// shorter. The metrics second stage is absent from both for the same
-// reason — MetricsFilter, TopKBottomK and ChainedSecondStage carry no
-// expression to check.
+// shorter. The metrics second stage carries no expression, so
+// ReferencesIntrinsic does not walk it; validate checks only the topk /
+// bottomk limit there (validateSecondStage).
 func (r *RootExpr) validate() error {
 	if r == nil {
 		return nil
@@ -294,9 +307,32 @@ func (r *RootExpr) validate() error {
 	// compare() is the one metrics first stage carrying a filter, and its
 	// filter is a SpansetFilter like any other — same boolean-result rule.
 	if cmp, ok := r.MetricsPipeline.(*MetricsCompare); ok && cmp.Filter() != nil {
-		return validateSpansetFilterResult(cmp.Filter(), cmp.Filter().Expression)
+		if err := validateSpansetFilterResult(cmp.Filter(), cmp.Filter().Expression); err != nil {
+			return err
+		}
+	} else if err := validateFirstStage(r.MetricsPipeline); err != nil {
+		return err
 	}
-	return validateFirstStage(r.MetricsPipeline)
+	return validateSecondStage(r.MetricsSecondStage)
+}
+
+// validateSecondStage rejects a `topk(N)` or `bottomk(N)` second stage whose
+// N is not positive, alone or anywhere in a chain of second stages. A zero
+// limit would otherwise select no series at all.
+func validateSecondStage(ss SecondStageElement) error {
+	switch s := ss.(type) {
+	case *TopKBottomK:
+		if s.Limit() <= 0 {
+			return &ValidationError{msg: secondStageLimitNotPositive}
+		}
+	case *ChainedSecondStage:
+		for _, e := range s.Elements() {
+			if err := validateSecondStage(e); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // validateFirstStage applies the reference's metrics-aggregate rules — the
@@ -387,7 +423,7 @@ func validatePipelineElement(elem PipelineElement) error {
 	case SpansetOperation:
 		return validateSpansetExpr(e)
 	case ScalarFilter:
-		return validateScalarFilter(e.Op, e.LHS, e.RHS, e)
+		return validateScalarFilterStage(e)
 	case GroupOperation:
 		if err := validateFieldExpr(e.Expression); err != nil {
 			return err
@@ -423,7 +459,7 @@ func validateSpansetExpr(se SpansetExpression) error {
 		}
 		return validateSpansetExpr(s.RHS)
 	case ScalarFilter:
-		return validateScalarFilter(s.Op, s.LHS, s.RHS, s)
+		return validateScalarFilterStage(s)
 	case Pipeline:
 		return validatePipeline(s)
 	}
@@ -497,24 +533,62 @@ func referencesSpan(fe FieldExpression) bool {
 	return false
 }
 
-// validateScalarFilter is the shared body of the two positions carrying an
-// Op plus a scalar LHS/RHS pair — a pipeline-stage or spanset-operand
-// ScalarFilter (`| count() > 2`) and a ScalarOperation (`max(duration) + 1`)
-// — which is also why references.go handles both through one function.
-func validateScalarFilter(op Operator, lhs, rhs ScalarExpression, node Element) error {
-	if err := validateScalarExpr(lhs); err != nil {
+// validateScalarFilterStage validates a scalar filter stage: each operand's
+// own rules first, then the operand shapes a scalar filter admits — a single
+// aggregate on the left and a literal on the right, either one possibly
+// parenthesised — then the operand types. Arithmetic on either side, a
+// literal on the left, or an aggregate on the right is rejected with the
+// reference's message for that side.
+func validateScalarFilterStage(f ScalarFilter) error {
+	if err := validateScalarExpr(f.LHS); err != nil {
 		return err
 	}
-	if err := validateScalarExpr(rhs); err != nil {
+	if err := validateScalarExpr(f.RHS); err != nil {
 		return err
 	}
-	return matchOperands(op, lhs, rhs, node)
+	if !isAggregateOperand(f.LHS) {
+		return &ValidationError{msg: scalarFilterLHSUnsupported}
+	}
+	if !isStaticOperand(f.RHS) {
+		return &ValidationError{msg: scalarFilterRHSUnsupported}
+	}
+	return matchOperands(f.Op, f.LHS, f.RHS, f)
+}
+
+// isAggregateOperand reports whether a scalar operand is a single aggregate.
+func isAggregateOperand(e ScalarExpression) bool {
+	switch e.(type) {
+	case Aggregate, *Aggregate:
+		return true
+	}
+	return false
+}
+
+// isStaticOperand reports whether a scalar operand is a single literal.
+func isStaticOperand(e ScalarExpression) bool {
+	switch e.(type) {
+	case Static, *Static:
+		return true
+	}
+	return false
+}
+
+// validateScalarOperation validates arithmetic between scalar operands
+// (`max(duration) + 1`): each operand's own rules, then the operand types.
+func validateScalarOperation(o ScalarOperation) error {
+	if err := validateScalarExpr(o.LHS); err != nil {
+		return err
+	}
+	if err := validateScalarExpr(o.RHS); err != nil {
+		return err
+	}
+	return matchOperands(o.Op, o.LHS, o.RHS, o)
 }
 
 func validateScalarExpr(se ScalarExpression) error {
 	switch s := se.(type) {
 	case ScalarOperation:
-		return validateScalarFilter(s.Op, s.LHS, s.RHS, s)
+		return validateScalarOperation(s)
 	case Aggregate:
 		return validateAggregate(s)
 	case Pipeline:

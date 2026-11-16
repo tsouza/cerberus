@@ -2,7 +2,7 @@ package traceql_test
 
 import (
 	"context"
-	"strings"
+	"errors"
 	"testing"
 
 	tempo "github.com/tsouza/cerberus/internal/traceql/ast"
@@ -15,25 +15,19 @@ import (
 // TestLowerScalarFilter_RejectsUnsupportedOperandShapes pins #1984: the
 // scalar-filter operand surface cerberus accepts is exactly the surface
 // reference Tempo accepts — a single aggregate on the left, a literal on
-// the right (pkg/traceql/ast_validate.go's two switches).
+// the right. Every other shape is rejected by ast.Parse's validation, with
+// Tempo's own message, so none reaches lowering: the Tempo head answers the
+// parse-stage rejection with 400, as Tempo's query frontend does.
 //
-// #1708 / #1981 briefly widened cerberus past that, lowering arithmetic
-// between aggregates and an aggregate on the RHS. Reference Tempo answers
-// 400 for every query below, so cerberus answering them made it a strict
-// super-set on a shape no Tempo-targeting client can send. These cases are
-// the cerberus half of the parity claim; the reference half is asserted
-// live, on every compat run, by the rejection-parity catalogue entries for
-// the two error sites (test/rejection-parity/, class=rejection — the driver
-// requires BOTH backends to reject).
-//
-// Every query here PARSES — cerberus's TraceQL grammar accepts the shape,
-// exactly as upstream's does — so each case proves the rejection lives in
-// lowering and is reachable from the wire, not smuggled in at parse time.
+// `{}|0>0` is the input the retired weekly fuzz lane found (#324): a literal
+// on the left once reached an unchecked type assertion in lowering.
 func TestLowerScalarFilter_RejectsUnsupportedOperandShapes(t *testing.T) {
 	t.Parallel()
 
-	s := schema.DefaultOTelTraces()
-
+	const (
+		lhs = "invalid TraceQL query: scalar filter lhs of type (%v) not yet supported"
+		rhs = "invalid TraceQL query: scalar filter rhs of type (%v) not yet supported"
+	)
 	cases := []struct {
 		name    string
 		query   string
@@ -42,27 +36,32 @@ func TestLowerScalarFilter_RejectsUnsupportedOperandShapes(t *testing.T) {
 		{
 			name:    "arithmetic_between_aggregates_lhs",
 			query:   `{ resource.service.name = "frontend" } | max(duration) - min(duration) >= 0`,
-			wantErr: "scalar filter lhs of type",
+			wantErr: lhs,
 		},
 		{
 			name:    "nested_arithmetic_lhs",
 			query:   `{ resource.service.name = "frontend" } | max(duration) - min(duration) / avg(duration) >= 0.5`,
-			wantErr: "scalar filter lhs of type",
+			wantErr: lhs,
 		},
 		{
 			name:    "literal_lhs",
 			query:   `{ resource.service.name = "frontend" } | 1 > 2`,
-			wantErr: "scalar filter lhs of type",
+			wantErr: lhs,
+		},
+		{
+			name:    "literal_lhs_fuzz_324",
+			query:   `{}|0>0`,
+			wantErr: lhs,
 		},
 		{
 			name:    "aggregate_on_rhs",
 			query:   `{ resource.service.name = "frontend" } | max(duration) > avg(duration)`,
-			wantErr: "scalar filter rhs of type",
+			wantErr: rhs,
 		},
 		{
 			name:    "arithmetic_on_rhs",
 			query:   `{ resource.service.name = "frontend" } | count() > max(duration) - min(duration)`,
-			wantErr: "scalar filter rhs of type",
+			wantErr: rhs,
 		},
 	}
 
@@ -70,18 +69,14 @@ func TestLowerScalarFilter_RejectsUnsupportedOperandShapes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			expr, err := tempo.Parse(tc.query)
-			if err != nil {
-				t.Fatalf("Parse(%q): %v — the shape must PARSE for this rejection to be a lowering "+
-					"rejection reachable from the wire", tc.query, err)
+			_, err := tempo.Parse(tc.query)
+			var verr *tempo.ValidationError
+			if !errors.As(err, &verr) {
+				t.Fatalf("Parse(%q) error = %T (%v), want *ast.ValidationError — reference Tempo rejects this "+
+					"shape in Validate, so cerberus must reject it before lowering", tc.query, err, err)
 			}
-			plan, err := traceql.Lower(context.Background(), expr, s)
-			if err == nil {
-				t.Fatalf("Lower(%q) succeeded (plan %T) — reference Tempo answers 400 for this shape, so "+
-					"accepting it makes cerberus a strict super-set of the reference (#1984)", tc.query, plan)
-			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("Lower(%q) error = %q, want it to contain %q", tc.query, err.Error(), tc.wantErr)
+			if got := verr.Error(); got != tc.wantErr {
+				t.Fatalf("Parse(%q) error = %q, want %q", tc.query, got, tc.wantErr)
 			}
 		})
 	}

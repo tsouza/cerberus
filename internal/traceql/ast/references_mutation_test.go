@@ -36,9 +36,10 @@ func TestReferencesIntrinsic_ScalarFilterSide(t *testing.T) {
 // TestReferencesIntrinsic_ScalarOperationSide pins the recursion through
 // scalar arithmetic: `max(duration) + 1` is a ScalarOperation whose left
 // operand is the aggregate naming the intrinsic and whose right operand is a
-// literal.
+// literal. Validation rejects arithmetic in a scalar filter, so the tree is
+// the grammar's.
 func TestReferencesIntrinsic_ScalarOperationSide(t *testing.T) {
-	expr := mustParse(t, `{ } | max(duration) + 1 > 2`)
+	expr := mustParseTree(t, `{ } | max(duration) + 1 > 2`)
 	if !expr.ReferencesIntrinsic(IntrinsicDuration) {
 		t.Errorf("`max(duration) + 1 > 2` should reference duration through the scalar operation's left operand")
 	}
