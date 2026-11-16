@@ -4,13 +4,17 @@
       "head": "logql",
       "site": "internal/logql/log_rows.go:lowerLogQuery#6e0c0981",
       "message": "logql: log query is %T (not MatchersExpr or PipelineExpr)",
-      "class": "",
+      "class": "internal",
+      "rationale": "unreachable: lower calls lowerLogQuery only from its *syntax.MatchersExpr and *syntax.PipelineExpr cases, so sel is always one of the two types the switch handles",
       "evidence": {
         "guard": [
           "default of switch e := sel.(type) over [case *syntax.MatchersExpr; case *syntax.PipelineExpr; default]"
         ],
         "callers": [
           "lower"
+        ],
+        "cited": [
+          "lowerLogQuery"
         ]
       }
     }
