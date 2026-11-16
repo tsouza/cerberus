@@ -93,16 +93,18 @@ func TestParseAcceptsCompatibleOperands(t *testing.T) {
 		// Unary operands are walked through to the expression beneath.
 		`{ !(kind = server) }`,
 		`{ -duration > 1s }`,
-		// Scalar filters and aggregates, including a bare aggregate stage
-		// with no comparison after it.
-		`{ } | count()`,
-		`{ } | avg(duration)`,
+		// Scalar filters over aggregates. An aggregate stage with no
+		// comparison after it is a syntax error
+		// (TestParseRejectsBareAggregateStage).
 		`{ } | count() > 2`,
 		`{ } | avg(duration) > 1s`,
 		`{ } | count() > -1`,
-		// A parenthesised pipeline as a spanset operand. One followed by
-		// `|` is a syntax error (TestParseRejectsPipeAfterWrappedPipeline).
-		`({ .a = 1 } | count() > 1) >> { .b = 2 }`,
+		// Parenthesised pipelines as the operands of a spanset operation.
+		// Both operands are parenthesised
+		// (TestParseRejectsMixedSpansetOperands), and one followed by `|`
+		// is a syntax error (TestParseRejectsPipeAfterWrappedPipeline).
+		`({ .a = 1 } | count() > 1) >> ({ .b = 2 })`,
+		`({ .a = 1 } | count() > 1) && ({ .b = 2 } | count() > 1)`,
 		// Metrics pipelines.
 		`{ duration > 1s } | rate() by (resource.service.name)`,
 		`{ } | compare({ status = error })`,
@@ -234,7 +236,7 @@ func assertValidationError(t *testing.T, query string, err error, wantSubstr str
 func TestParseRejectsAggregateNonNumeric(t *testing.T) {
 	cases := []string{
 		`{ } | max(name) > "a"`,
-		`{ } | avg(name)`,
+		`{ } | avg(name) > "a"`,
 		`{ } | min(name) > "a"`,
 		`{ } | sum(name) > "a"`,
 	}
@@ -340,9 +342,9 @@ func TestParseAcceptsNewRuleEdgeCases(t *testing.T) {
 		`{ parent = "fedcba9876543210" }`,
 		// Aggregates over a dynamic (query-time-typed) attribute, or a
 		// genuinely numeric intrinsic, stay accepted.
-		`{ } | max(span.foo)`,
-		`{ } | avg(duration)`,
-		`{ } | sum(span:childCount)`,
+		`{ } | max(span.foo) > 1`,
+		`{ } | avg(duration) > 1s`,
+		`{ } | sum(span:childCount) > 1`,
 		// `&&` / `||` composing two boolean sub-expressions, including
 		// dynamic attribute operands on either side.
 		`{ name = "GET" && duration > 1s }`,

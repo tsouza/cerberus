@@ -2,5 +2,7 @@
   "schema_version": 1,
   "head": "tempo",
   "bucket": "0c",
-  "cases": []
+  "cases": [
+    "search | wrapped_pipeline_then_spanset_filter_rejected"
+  ]
 }

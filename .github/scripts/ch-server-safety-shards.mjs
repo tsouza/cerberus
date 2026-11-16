@@ -5,10 +5,12 @@
 // TestCancellation_CPUBoundEmittedShapesAcrossBuilds, behind the
 // condition-cache and fleet tests. The lane splits that work across parallel
 // jobs without editing the package: each build of the test's
-// `cancellationBuilds` table is its own shard, selected with `go test -run`,
-// and one `rest` shard runs everything else, selected as the complement with
-// `go test -skip`. A test, build or shape the shard table does not name
-// therefore always lands in `rest`; no selection can drop it.
+// `cancellationBuilds` table is its own shard, selected with `go test -run`;
+// each family of FAMILY_SHARDS (the top-level tests sharing a name prefix) is
+// its own shard, selected the same way; and one `rest` shard runs everything
+// else, selected as the complement with `go test -skip`. A test, build or
+// shape the shard table does not name therefore always lands in `rest`; no
+// selection can drop it.
 //
 // Subcommands:
 //
@@ -19,8 +21,10 @@
 //   images <shard> <image>...
 //     Prints the images the shard boots, out of <image>..., every image the
 //     package pins (the recipe passes them from just/common.just): a
-//     cancellation shard's own build; for `rest`, the images the package's
-//     sources name outside the cancellation table; every image for `all`.
+//     cancellation shard's own build; for a family shard, the images the
+//     sources defining its tests name, directly or through a single-line
+//     image constant; for `rest`, the images the package's sources name
+//     outside the cancellation table; every image for `all`.
 //
 //   go test <args>...
 //     Runs that go test command with the selection of the shard named by
@@ -30,8 +34,8 @@
 //     pass as an empty run. The shards of `plan` together run the whole
 //     command; `all` runs it unselected.
 //
-//   <shard> is `all` (the whole package), `rest`, or a cancellation shard id
-//   from `plan`.
+//   <shard> is `all` (the whole package), `rest`, or a cancellation or family
+//   shard id from `plan`.
 //
 //   dump
 //     Prints the matrix rows `plan` emits as a JSON array, for the workflow
@@ -67,7 +71,21 @@ export const SHARD_ALL = 'all';
 export const SHARD_REST = 'rest';
 export const KIND_REST = 'rest';
 export const KIND_CANCELLATION = 'cancellation';
+export const KIND_FAMILY = 'family';
 const CANCELLATION_PREFIX = `${KIND_CANCELLATION}-`;
+
+// FAMILY_SHARDS — families of top-level tests that run in a shard of their
+// own instead of in `rest`: every top-level test whose name starts with the
+// family's prefix. The classic-histogram ceiling tests seed tens of millions
+// of bucket entries per build and together take about five minutes on the
+// CI runner; in `rest` they left its go test run at 1,010 s of the recipe's
+// 1,200 s timeout. TestDistinctSpill_WithheldShapesAnswer drives seven
+// statements over 1M unique 256-byte values, each measured several times, and
+// takes four to six minutes there.
+export const FAMILY_SHARDS = [
+  { id: 'classic-histogram', prefix: 'TestClassicBucket' },
+  { id: 'distinct-spill-harm', prefix: 'TestDistinctSpill_WithheldShapesAnswer' },
+];
 
 // cancellationImages — the images of the `cancellationBuilds` table in the
 // cancellation test's source, in table order. Each row opens with the image
@@ -152,37 +170,62 @@ export function cancellationShardId(image) {
   return `${CANCELLATION_PREFIX}${imageTag(image)}`;
 }
 
-// plan — the shard matrix: one shard per cancellation build, then `rest`.
+// plan — the shard matrix: one shard per cancellation build, one per family
+// of FAMILY_SHARDS, then `rest`.
 export function plan(images) {
   const include = images.map((image) => ({
     id: cancellationShardId(image),
     name: `${KIND_CANCELLATION} ${imageTag(image)}`,
     kind: KIND_CANCELLATION,
   }));
+  for (const family of FAMILY_SHARDS) include.push({ id: family.id, name: family.id, kind: KIND_FAMILY });
   include.push({ id: SHARD_REST, name: SHARD_REST, kind: KIND_REST });
   return { include };
+}
+
+// familyTests — the top-level tests of `tests` in family, in order.
+export function familyTests(family, tests) {
+  return tests.filter((name) => name.startsWith(family.prefix));
+}
+
+// familyPattern — the `go test -run`/`-skip` pattern selecting family's
+// top-level tests (and with them every subtest).
+export function familyPattern(family) {
+  return `^${family.prefix.replace(regexMeta, '\\$&')}`;
 }
 
 // selection — what one shard runs: its `-run` and `-skip` patterns, the tests
 // that must report a pass, and the images it boots (none named for `all`,
 // which boots every pinned image).
-export function selection(shard, { cancellation, tests, rest }) {
+export function selection(shard, { cancellation, tests, rest, families }) {
   if (!tests.includes(CANCELLATION_TEST)) {
     throw new Error(`${PACKAGE_DIR} has no ${CANCELLATION_TEST}; the shard table is stale`);
   }
   const buildTest = (image) => `${CANCELLATION_TEST}/${image}`;
+  const owned = new Map(FAMILY_SHARDS.map((family) => [family.id, familyTests(family, tests)]));
+  for (const [id, names] of owned) {
+    if (names.length === 0) throw new Error(`${PACKAGE_DIR} has no test of family ${id}; FAMILY_SHARDS is stale`);
+  }
   if (shard === SHARD_ALL) return { run: '', skip: '', expect: tests };
   if (shard === SHARD_REST) {
+    const inFamily = new Set([...owned.values()].flat());
     return {
       run: '',
-      skip: cancellation.map((image) => exactNamePattern(buildTest(image))).join('|'),
-      expect: tests,
+      skip: [
+        ...cancellation.map((image) => exactNamePattern(buildTest(image))),
+        ...FAMILY_SHARDS.map(familyPattern),
+      ].join('|'),
+      expect: tests.filter((name) => !inFamily.has(name)),
       images: rest,
     };
   }
+  const family = FAMILY_SHARDS.find((candidate) => candidate.id === shard);
+  if (family !== undefined) {
+    return { run: familyPattern(family), skip: '', expect: owned.get(family.id), images: families[family.id] };
+  }
   const image = cancellation.find((candidate) => cancellationShardId(candidate) === shard);
   if (image === undefined) {
-    const known = [SHARD_ALL, SHARD_REST, ...cancellation.map(cancellationShardId)];
+    const known = [SHARD_ALL, SHARD_REST, ...FAMILY_SHARDS.map((f) => f.id), ...cancellation.map(cancellationShardId)];
     throw new Error(`unknown shard ${JSON.stringify(shard)}; known: ${known.join(', ')}`);
   }
   return { run: exactNamePattern(buildTest(image)), skip: '', expect: [buildTest(image)], images: [image] };
@@ -245,8 +288,53 @@ export function builtUnderIntegration(source) {
   return constraint === null || constraint[1].trim() === 'integration';
 }
 
-// readPackage — the cancellation builds, the top-level tests and the images
-// of the `rest` shard, of the package as `-tags=integration` compiles it.
+// imageConstants — every single-line Go constant across sources whose value
+// is an image literal, `const name = "clickhouse/clickhouse-server:<tag>"`,
+// by name.
+export function imageConstants(sources) {
+  const constants = new Map();
+  for (const source of sources) {
+    for (const m of source.matchAll(/^const\s+(\w+)\s*=\s*"(clickhouse\/clickhouse-server:[^"]+)"/gm)) {
+      constants.set(m[1], m[2]);
+    }
+  }
+  return constants;
+}
+
+// familyImages — for each family of FAMILY_SHARDS, the images the sources
+// that define one of its tests name, as a literal or through a single-line
+// image constant (imageConstants) any source of the package defines. It
+// resolves no other indirection, so a family boots only images named one of
+// those two ways. A family whose tests name no image at all is an error.
+export function familyImages(sources) {
+  const constants = imageConstants(sources);
+  const images = {};
+  for (const family of FAMILY_SHARDS) {
+    const named = new Set();
+    let defined = false;
+    for (const source of sources) {
+      if (familyTests(family, topLevelTests([source])).length === 0) continue;
+      defined = true;
+      for (const image of namedImages(source)) named.add(image);
+      const code = source
+        .split('\n')
+        .filter((line) => !line.trimStart().startsWith('//'))
+        .join('\n');
+      for (const [name, image] of constants) {
+        if (new RegExp(`\\b${name}\\b`).test(code)) named.add(image);
+      }
+    }
+    if (defined && named.size === 0) {
+      throw new Error(`${PACKAGE_DIR}: family ${family.id} names no image; its shard would pull none`);
+    }
+    images[family.id] = [...named];
+  }
+  return images;
+}
+
+// readPackage — the cancellation builds, the top-level tests, the images of
+// the `rest` shard and of each family shard, of the package as
+// `-tags=integration` compiles it.
 export function readPackage(root) {
   const dir = join(root, PACKAGE_DIR);
   const sources = readdirSync(dir)
@@ -258,6 +346,7 @@ export function readPackage(root) {
     cancellation: cancellationImages(cancellationSource),
     tests: topLevelTests(sources),
     rest: restImages(sources, cancellationSource),
+    families: familyImages(sources),
   };
 }
 

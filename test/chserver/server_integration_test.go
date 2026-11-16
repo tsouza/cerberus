@@ -42,6 +42,8 @@ const serverBootBudget = 5 * time.Minute
 type server struct {
 	image string
 	addr  string
+	// httpAddr is the server's HTTP interface.
+	httpAddr string
 	// containerID is the server's container, which a probe can pause.
 	containerID string
 	version     chopt.Version
@@ -83,7 +85,11 @@ func startServer(ctx context.Context, t *testing.T, image string, extra ...testc
 	if err != nil {
 		t.Fatalf("%s port: %v", image, err)
 	}
-	s := &server{image: image, addr: host + ":" + port.Port(), containerID: ctr.GetContainerID()}
+	httpPort, err := ctr.MappedPort(bootCtx, "8123/tcp")
+	if err != nil {
+		t.Fatalf("%s http port: %v", image, err)
+	}
+	s := &server{image: image, addr: host + ":" + port.Port(), httpAddr: host + ":" + httpPort.Port(), containerID: ctr.GetContainerID()}
 	s.admin = s.client(t, adminUser, adminPassword, chclient.Config{})
 	s.version, err = s.admin.ProbeVersion(ctx)
 	if err != nil {

@@ -1,7 +1,7 @@
 GAP-3 (#1109): a structural `>>` search windows the L (seed) and R leaf scans,
 AND the recursive closure's bare `t`-scan. That `t`-scan is emitter-synthetic
 (not a chplan leaf), so the leaf-window pass cannot reach it; it is stamped
-directly by windowRecursiveScans, which lands a bare `Timestamp >= ... AND <= ...`
+directly by StampRecursiveScanWindow, which lands a bare `Timestamp >= ... AND <= ...`
 conjunct on the physical `otel_traces` scan inside the recursive arm. This is the
 partition prune the inert `t.TraceId IN (<seed>)` membership can never deliver:
 only a Timestamp predicate sitting on the scan prunes the toDate(Timestamp)

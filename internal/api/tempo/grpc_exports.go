@@ -243,10 +243,12 @@ func (h *Handler) ExecMetricsRange(ctx context.Context, query string, start, end
 	if perr != nil {
 		return ExecMetricsRangeResult{}, fmt.Errorf("%w: %w", errParseStage, perr)
 	}
-	// Thread the request window onto ctx so the universal recursive-arm window
-	// stamp (traceql.stampRecursiveScanWindow) bounds the EMITTER-SYNTHETIC
-	// recursive spans scans of a metrics-over-structural / nested-set source; the
-	// RangeWindow wrap below cannot reach below a WITH RECURSIVE.
+	// Thread the request window onto ctx so lowering arms the window of the
+	// EMITTER-SYNTHETIC recursive spans scans of a metrics-over-structural /
+	// nested-set source (traceql.stampRecursiveScanWindow): no predicate reaches
+	// a scan inside a WITH RECURSIVE. The metrics emitter then sets that window
+	// to the span the RangeWindow below reads
+	// (chplan.BoundMetricsPerTraceSubqueries).
 	ctx = traceql_lower.WithSearchWindow(ctx, start, end)
 	lowerT := telemetry.ObserveStage(telemetry.StageLower, telemetry.QLTraceQL)
 	plan, lerr := traceql_lower.Lower(ctx, expr, h.Schema)
@@ -306,10 +308,12 @@ func (h *Handler) ExecMetricsInstant(ctx context.Context, query string, start, e
 	if perr != nil {
 		return ExecMetricsInstantResult{}, fmt.Errorf("%w: %w", errParseStage, perr)
 	}
-	// Thread the request window onto ctx so the universal recursive-arm window
-	// stamp (traceql.stampRecursiveScanWindow) bounds the EMITTER-SYNTHETIC
-	// recursive spans scans of a metrics-over-structural / nested-set source; the
-	// RangeWindow wrap below cannot reach below a WITH RECURSIVE.
+	// Thread the request window onto ctx so lowering arms the window of the
+	// EMITTER-SYNTHETIC recursive spans scans of a metrics-over-structural /
+	// nested-set source (traceql.stampRecursiveScanWindow): no predicate reaches
+	// a scan inside a WITH RECURSIVE. The metrics emitter then sets that window
+	// to the span the RangeWindow below reads
+	// (chplan.BoundMetricsPerTraceSubqueries).
 	ctx = traceql_lower.WithSearchWindow(ctx, start, end)
 	lowerT := telemetry.ObserveStage(telemetry.StageLower, telemetry.QLTraceQL)
 	plan, lerr := traceql_lower.Lower(ctx, expr, h.Schema)

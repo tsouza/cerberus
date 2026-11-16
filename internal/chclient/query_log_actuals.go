@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ClickHouse/clickhouse-go/v2"
-
 	"github.com/tsouza/cerberus/internal/chopt"
 )
 
@@ -249,28 +247,59 @@ func (c *Client) queryLogActualsErr(ctx context.Context, union bool, err error) 
 // union section), the reader lacks the grant, or a member lacks a selected
 // column.
 func isQueryLogUnionRefusal(err error) bool {
-	var ex *clickhouse.Exception
-	if !errors.As(err, &ex) {
-		return false
-	}
-	switch ex.Code {
-	case chCodeUnknownTable, chCodeAccessDenied, chCodeUnknownIdentifier, chCodeNoSuchColumnInTable:
-		return true
-	default:
-		return false
-	}
+	return exceptionCodeIn(err, chCodeUnknownTable, chCodeAccessDenied, chCodeUnknownIdentifier, chCodeNoSuchColumnInTable)
 }
 
 // ProbeQueryLogUnionCapability runs the reader's own record-selection query
 // against system.all_query_log for an empty page, so the verdict covers what
 // the server checks before it reads a row: the table exists, its columns are
-// the ones selected, and cerberus's user may SELECT it. A nil error is
-// Available, a typed server rejection is Forbidden, and a transport failure
-// is Unreachable (classifyCapabilityFromProbeErr). Never returns an error.
+// the ones selected, and cerberus's user may SELECT it. The verdict is
+// queryLogUnionErrAnswer's. Never returns an error.
 func (c *Client) ProbeQueryLogUnionCapability(ctx context.Context) chopt.Capability {
+	return c.queryLogUnionAnswer(ctx).verdict
+}
+
+// queryLogUnionAnswer runs the query-log union canary on c.
+func (c *Client) queryLogUnionAnswer(ctx context.Context) canaryAnswer {
 	_, err := c.QueryLogActuals(withCapabilityCanary(ctx), QueryLogActualsRequest{
 		Union: true,
 		After: QueryLogCursor{EventTime: time.Now()},
 	})
-	return classifyCapabilityFromProbeErr(err)
+	return queryLogUnionErrAnswer(err)
+}
+
+// queryLogUnionErrAnswer is the answer of a query-log union canary whose read
+// failed with err. A nil err is Available; the server refusing the read
+// (isQueryLogUnionRefusal) or a setting it carries (isSettingsRefusal) is
+// Forbidden; a failure with no server answer is Unreachable; and any other
+// server exception, a condition of the moment included, is Forbidden for the
+// pass that read it only.
+//
+// Unlike a settings canary, which runs a trivial statement, the union canary
+// runs the read the feature itself runs, so a lasting timeout or memory limit
+// on it is one the reader hits too. Read as Unreachable, it would keep a
+// permit in force over either protocol — the server's remembered verdict over
+// the native protocol, the held unattributed one over HTTP — while every union
+// read failed; as a pass-only Forbidden it turns the feature off until a pass
+// reads the union cleanly. A momentary condition costs the same: the feature
+// off until the next probe, as when every server exception was a refusal and
+// nothing was remembered.
+func queryLogUnionErrAnswer(err error) canaryAnswer {
+	_, answered := serverExceptionCode(err)
+	switch {
+	case err == nil:
+		return canaryAnswer{verdict: chopt.CapabilityAvailable}
+	case isQueryLogUnionCanaryRefusal(err):
+		return canaryAnswer{verdict: chopt.CapabilityForbidden}
+	case !answered:
+		return canaryAnswer{verdict: chopt.CapabilityUnreachable}
+	default:
+		return canaryAnswer{verdict: chopt.CapabilityForbidden, passOnly: true}
+	}
+}
+
+// isQueryLogUnionCanaryRefusal reports whether err refuses the query-log
+// union canary: the union read itself, or a setting the read carries.
+func isQueryLogUnionCanaryRefusal(err error) bool {
+	return isQueryLogUnionRefusal(err) || isSettingsRefusal(err)
 }

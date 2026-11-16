@@ -1150,16 +1150,19 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   `ch-server-safety-setup`, `ch-server-safety-shard` and `ch-server-safety`
   jobs, and `just/test.just`'s `ch-server-safety-integration SHARD` recipe.
   `plan` emits one shard per build of test/chserver's `cancellationBuilds`
-  table plus a `rest` shard, and `dump` prints the same rows for the workflow
-  meta-tests' check-name index; `images` prints the images a shard boots (a
-  cancellation shard's own build; for `rest`, the images the package's sources
-  name outside the cancellation table; every pinned image for `all`);
+  table, one per test family of `FAMILY_SHARDS` (the top-level tests sharing a
+  name prefix), plus a `rest` shard, and `dump` prints the same rows for the
+  workflow meta-tests' check-name index; `images` prints the images a shard
+  boots (a cancellation shard's own build; for a family shard, the images the
+  sources defining its tests name, directly or through a single-line image
+  constant; for `rest`, the images the package's
+  sources name outside the cancellation table; every pinned image for `all`);
   `go test ...` runs the recipe's go test command with the selection of the
   shard named by `CH_SERVER_SAFETY_SHARD` (`-json` / `-run` / `-skip`) appended
   and fails when any test the shard owns did not pass, so an empty selection
   cannot pass; `aggregate` is the `ch-server-safety` verdict, green without
   work on a docs-only change. `rest` is the complement of the cancellation
-  shards (`-skip`), so a test or build no shard names runs there.
+  and family shards (`-skip`), so a test or build no shard names runs there.
   `ch-server-safety-shards.test.mjs` is the `node --test` guard, run first in
   `ch-server-safety-setup`.
   - Env: `CH_SERVER_SAFETY_SHARD` (`go test`); `CHANGES_RESULT`, `DOCS_ONLY`,

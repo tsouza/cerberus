@@ -390,7 +390,7 @@ func TestNestedSetAnnotate_TraceLimit_WindowedNumberingMatchesLeafGate(t *testin
 	n.TraceLimit = 200
 	n.WindowStartNano = startNano
 	n.WindowEndNano = endNano
-	// Production's windowRecursiveScans (traceql/search_limit.go) stamps the
+	// Production's chplan.StampRecursiveScanWindow stamps the
 	// window on EVERY recursive scan in the tree — the outer NestedSetAnnotate
 	// AND the structural-union row source's own closure. Mirror that here on the
 	// inner StructuralJoin so the emitted statement is fully partition-bounded: a

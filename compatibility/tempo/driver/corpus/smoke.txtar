@@ -1779,6 +1779,89 @@ metrics_range
 400
 
 -- name --
+wrapped_pipeline_then_spanset_filter_rejected
+# Both operands of a spanset operation come from the same family: spanset
+# expressions, or parenthesised pipelines. After a parenthesised pipeline
+# the next operand must open with `(`, so both backends reject a bare
+# spanset filter there at parse ("syntax error: unexpected {, expecting
+# (").
+#
+# Carries the gRPC sibling: both backends map a search parse failure to
+# codes.InvalidArgument (the reference's newCombiner in
+# modules/frontend/search_handlers.go, cerberus's grpcCodeFor in
+# internal/api/tempo/grpc/errclass.go).
+-- query --
+({ } | count() > 1) && { }
+-- endpoint --
+search
+-- expect_status --
+400
+-- expect_grpc_code --
+InvalidArgument
+
+-- name --
+spanset_filter_then_wrapped_pipeline_rejected
+# The mirror of wrapped_pipeline_then_spanset_filter_rejected: after a
+# spanset expression, a parenthesis holds a spanset expression, so the
+# `|` inside it is a syntax error on both backends ("syntax error:
+# unexpected |").
+-- query --
+{ } && ({ } | count() > 1)
+-- endpoint --
+search
+-- expect_status --
+400
+-- expect_grpc_code --
+InvalidArgument
+
+-- name --
+bare_aggregate_stage_rejected
+# An aggregate leading a pipeline stage begins a scalar filter, which goes
+# on to a comparison; both backends reject `| count()` with nothing after
+# it at parse ("syntax error: unexpected $end").
+-- query --
+{ } | count()
+-- endpoint --
+search
+-- expect_status --
+400
+-- expect_grpc_code --
+InvalidArgument
+
+-- name --
+bare_aggregate_stage_then_metrics_rejected
+# The metrics form of bare_aggregate_stage_rejected: the `|` after the
+# aggregate is the syntax error ("syntax error: unexpected |").
+#
+# HTTP only: the reference's streaming MetricsQueryRange returns its failed
+# combiner build unwrapped, which gRPC reports as codes.Unknown, while
+# cerberus answers codes.InvalidArgument as it does for every other parse
+# error (parenthesised_pipeline_then_metrics_rejected is the same case).
+-- query --
+{ } | count() | rate()
+-- endpoint --
+metrics_range
+-- step --
+60s
+-- expect_status --
+400
+
+-- name --
+parenthesised_scalar_filter_stage_rejected
+# After a pipe, a parenthesis followed by an aggregate opens the
+# parenthesised scalar expression a scalar filter begins with, so a
+# comparison inside it is a syntax error at its operator on both backends
+# ("syntax error: unexpected >").
+-- query --
+{ } | (count() > 1)
+-- endpoint --
+search
+-- expect_status --
+400
+-- expect_grpc_code --
+InvalidArgument
+
+-- name --
 scalar_filter_arithmetic_lhs_rejected
 # Both backends parse a scalar filter with arithmetic on its left side and
 # reject it at validation, which admits a single aggregate on the left and a

@@ -8,7 +8,10 @@ import (
 	"testing"
 	"time"
 
+	chproto "github.com/ClickHouse/ch-go/proto"
 	"github.com/ClickHouse/clickhouse-go/v2"
+
+	"github.com/tsouza/cerberus/internal/chopt"
 )
 
 // TestQueryLogActualsSQL_DifferOnlyInTable pins the two record-selection
@@ -79,6 +82,32 @@ func TestIsQueryLogUnionRefusal(t *testing.T) {
 				t.Fatalf("isQueryLogUnionRefusal(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestCanaryErrAnswer_QueryLogUnionShapes pins the query-log
+// union canary's refusals: the union read refused as not provisioned, or a
+// setting the read carries refused, is Forbidden.
+func TestCanaryErrAnswer_QueryLogUnionShapes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		err  error
+		want chopt.Capability
+	}{
+		{"nil", nil, chopt.CapabilityAvailable},
+		{"unknown table", &clickhouse.Exception{Code: chCodeUnknownTable}, chopt.CapabilityForbidden},
+		{"access denied", &clickhouse.Exception{Code: chCodeAccessDenied}, chopt.CapabilityForbidden},
+		{"unknown identifier", &clickhouse.Exception{Code: chCodeUnknownIdentifier}, chopt.CapabilityForbidden},
+		{"no such column", &clickhouse.Exception{Code: chCodeNoSuchColumnInTable}, chopt.CapabilityForbidden},
+		{"refused as not provisioned", fmt.Errorf("%w: %w", ErrQueryLogUnionRefused, &clickhouse.Exception{Code: chCodeUnknownTable}), chopt.CapabilityForbidden},
+		{"readonly profile", &clickhouse.Exception{Code: int32(chproto.ErrReadonly)}, chopt.CapabilityForbidden},
+		{"settings constraint", &clickhouse.Exception{Code: chCodeSettingConstraintViolation}, chopt.CapabilityForbidden},
+		{"unknown setting", &clickhouse.Exception{Code: chCodeUnknownSetting}, chopt.CapabilityForbidden},
+	} {
+		if got := queryLogUnionErrAnswer(tc.err).verdict; got != tc.want {
+			t.Errorf("%s: classified %v; want %v", tc.name, got, tc.want)
+		}
 	}
 }
 

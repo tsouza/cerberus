@@ -148,7 +148,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2  # v2.90.2
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39  # v2.90.3
         with:
           tool: just@1.46.0
       - uses: ./.github/actions/registry-login
@@ -563,7 +563,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2  # v2.90.2
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39  # v2.90.3
         with:
           tool: just@1.46.0
       - uses: ./.github/actions/registry-login
@@ -607,7 +607,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2  # v2.90.2
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39  # v2.90.3
         with:
           tool: just@1.46.0
       - uses: ./.github/actions/registry-login
@@ -630,10 +630,12 @@ jobs:
   # the other's.
   #
   # The cancellation builds run one after another inside their test, and
-  # dominate the package's run time, so each build is its own parallel shard,
-  # and a `rest` shard runs everything else (the condition-cache builds and
-  # the fleet probe) as the complement of those selections. The shard plan is
-  # derived from test/chserver's own build table by
+  # dominate the package's run time, so each build is its own parallel shard.
+  # Each test family the planner's FAMILY_SHARDS names (the classic-histogram
+  # ceiling tests, the DISTINCT spill harm probe) is a shard of its own too,
+  # and a `rest` shard runs every other test as the complement of those
+  # selections. The shard plan is derived from test/chserver's own build
+  # table and test names by
   # .github/scripts/ch-server-safety-shards.mjs, so a new test or build is
   # never left unselected. `ch-server-safety` is the one status context; it
   # aggregates the shards.
@@ -659,7 +661,7 @@ jobs:
       # empty selection or a failed shard cannot pass.
       - name: Guard the shard planner
         run: node .github/scripts/run-node-tests.mjs .github/scripts/ch-server-safety-shards.test.mjs
-      - name: Plan the shards from test/chserver's build table
+      - name: Plan the shards from test/chserver's build table and test names
         id: plan
         run: node .github/scripts/ch-server-safety-shards.mjs plan
 
@@ -695,13 +697,14 @@ jobs:
       # `rest` boots every pinned image: fourteen ClickHouse images plus their
       # running containers outgrow the runner's ~14 GB of free root fs.
       # Reclaim the unused pre-baked toolchains first; Docker's own images are
-      # kept. A cancellation shard boots one image and needs no reclaim.
+      # kept. A cancellation shard boots one image and a family shard only the
+      # images its own tests name, so neither needs the reclaim.
       - if: matrix.kind == 'rest'
         uses: ./.github/actions/free-disk-space
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2  # v2.90.2
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39  # v2.90.3
         with:
           tool: just@1.46.0
       - uses: ./.github/actions/registry-login

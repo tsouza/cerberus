@@ -64,9 +64,8 @@ func PushLeafPredicate(n Node, pred Expr) Node {
 // The generic recurse descends NestedSetAnnotate.Input (the row source) so a
 // `select(nestedSet*)` compound search gets its leaves gated/windowed; the
 // numbering CTE the emitter synthesises from NestedSetAnnotate is NOT a chplan
-// child, so this leaf pass never reaches it — the traceql
-// stampRecursiveScanWindow pass windows that synthetic anchor/step scan
-// directly instead.
+// child, so this leaf pass never reaches it — StampRecursiveScanWindow windows
+// that synthetic anchor/step scan directly instead.
 func PushLeafWindow(n Node, rows, perTrace Expr) Node {
 	switch v := n.(type) {
 	case *Scan:

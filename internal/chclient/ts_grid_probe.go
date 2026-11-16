@@ -2,9 +2,9 @@ package chclient
 
 import (
 	"context"
-	"errors"
+	"slices"
 
-	"github.com/ClickHouse/clickhouse-go/v2"
+	chproto "github.com/ClickHouse/ch-go/proto"
 
 	"github.com/tsouza/cerberus/internal/chopt"
 )
@@ -34,14 +34,14 @@ import (
 const capabilityCanarySQL = nodeSQL
 
 // probeCanaryNode runs capabilityCanarySQL under ctx's canary settings and
-// returns the server that accepted them, or the verdict the refusal implies
-// (classifyCapabilityFromProbeErr) with ok=false.
-func (c *Client) probeCanaryNode(ctx context.Context) (node FleetNode, verdict chopt.Capability, ok bool) {
+// answers with the server that accepted them, or with what its error implies
+// (canaryErrAnswer over isSettingsRefusal).
+func (c *Client) probeCanaryNode(ctx context.Context) canaryAnswer {
 	nodes, err := c.probeNodes(withCapabilityCanary(ctx), capabilityCanarySQL)
 	if err != nil {
-		return FleetNode{}, classifyCapabilityFromProbeErr(err), false
+		return canaryErrAnswer(err, isSettingsRefusal)
 	}
-	return nodes[0], chopt.CapabilityAvailable, true
+	return canaryAnswer{verdict: chopt.CapabilityAvailable, node: nodes[0], identified: true}
 }
 
 // ProbeTSGridCapability runs the boot-time capability canary once and classifies
@@ -58,12 +58,16 @@ func (c *Client) probeCanaryNode(ctx context.Context) (node FleetNode, verdict c
 // tri-state:
 //
 //   - success                         -> CapabilityAvailable
-//   - typed server rejection          -> CapabilityForbidden (constrained /
-//     readonly profile refused the setting; SETTING_CONSTRAINT_VIOLATION 452 or
-//     READONLY 164 are the canonical codes, but any typed answer to `SELECT 1`
-//     means the server refused the stamped setting)
-//   - transport / connectivity failure -> CapabilityUnreachable (conservative:
-//     do NOT enable native, matching the version probe's connectivity fallback)
+//   - the server refusing the setting  -> CapabilityForbidden (a constrained
+//     or readonly profile, or a build that does not know the setting:
+//     isSettingsRefusal)
+//   - a transport failure, or a server
+//     exception reporting a condition
+//     of the moment                    -> CapabilityUnreachable (conservative:
+//     do NOT enable native, matching the version probe's connectivity
+//     fallback)
+//   - any other server exception       -> CapabilityForbidden for the pass
+//     that read it only (canaryErrAnswer)
 //
 // It never returns an error: a probe failure is a verdict (Forbidden /
 // Unreachable), not a fatal. The resolver decides what an inconclusive verdict
@@ -73,26 +77,79 @@ func (c *Client) ProbeTSGridCapability(ctx context.Context) chopt.Capability {
 	return TSGridCanary().probe(ctx, c).verdict
 }
 
-// classifyCapabilityFromProbeErr maps ANY boot capability canary's error into
-// the tri-state chopt.Capability verdict shared by every probe in this
-// package (probeCanaryNode, ProbeQueryLogUnionCapability): a nil error is
-// Available. A typed *clickhouse.Exception means the server ANSWERED with a
-// rejection -- since every settings canary body is a trivial constant SELECT
-// (capabilityCanarySQL) that cannot
-// fail on its own, a server-side exception means it refused the stamped
-// setting, so it is Forbidden (the ts-grid canary's constraint 452 / readonly
-// 164 codes are the expected shapes, and any other typed answer is treated
-// the same: the server will not run the setting). Anything else is a
-// transport failure with no server verdict -- Unreachable, which keeps the
-// verdict the fleet memory remembers for the server and, when it remembers
-// none, leaves the gated feature off until a later re-probe gets a verdict.
-func classifyCapabilityFromProbeErr(err error) chopt.Capability {
-	if err == nil {
-		return chopt.CapabilityAvailable
+// isSettingsRefusal reports whether err is the server refusing a setting the
+// statement carries: a setting the build does not know, a readonly profile
+// (READONLY: readonly=1 refuses every setting a statement carries), a
+// settings constraint, a workload the server cannot resolve, or the query
+// cache refusing a statement whose profile sets an overflow mode other than
+// throw (result_overflow_mode='break', for one).
+//
+// The workload refusal is RESOURCE_ACCESS_DENIED: under the server setting
+// throw_on_unknown_workload, a `workload` that names no defined WORKLOAD.
+// Read off a live 26.6 server reloaded with throw_on_unknown_workload=true,
+// `SELECT 1 SETTINGS workload='nonexistent'` answers `Code: 673
+// (RESOURCE_ACCESS_DENIED): Could not access resource 'cpu'. Please check
+// throw_on_unknown_workload setting.`
+func isSettingsRefusal(err error) bool {
+	return exceptionCodeIn(err, chCodeUnknownSetting, chproto.ErrReadonly, chCodeSettingConstraintViolation,
+		chproto.ErrResourceAccessDenied, chproto.ErrQueryCacheUsedWithNonThrowOverflowMode)
+}
+
+// exceptionCodeIn reports whether err is a server exception whose code is one
+// of codes.
+func exceptionCodeIn(err error, codes ...chproto.Error) bool {
+	code, answered := serverExceptionCode(err)
+	return answered && slices.Contains(codes, code)
+}
+
+// canaryConditionCodes are the server exceptions a canary's statement can
+// fail with that report a resource or load condition of the moment rather
+// than whether the server accepts the capability: a per-query limit, a
+// cancellation, a quota. With the server conditions the breaker counts
+// (breakerServerHealthCodes), they are what canaryErrAnswer reads as no
+// verdict.
+var canaryConditionCodes = []chproto.Error{
+	chproto.ErrTimeoutExceeded,
+	chproto.ErrMemoryLimitExceeded,
+	chproto.ErrQueryWasCancelled,
+	chproto.ErrQuotaExceeded,
+}
+
+// isCanaryCondition reports whether err says nothing about whether the
+// server accepts a capability: no server answer at all, or a server exception
+// that reports a condition of the moment (canaryConditionCodes,
+// breakerServerHealthCodes).
+func isCanaryCondition(err error) bool {
+	code, answered := serverExceptionCode(err)
+	if !answered {
+		return true
 	}
-	var ex *clickhouse.Exception
-	if errors.As(err, &ex) {
-		return chopt.CapabilityForbidden
+	_, serverCondition := breakerServerHealthCodes[code]
+	return serverCondition || slices.Contains(canaryConditionCodes, code)
+}
+
+// canaryErrAnswer is the answer of a canary whose statement failed with err;
+// a nil err is Available. refused names the codes the server answers with
+// for refusing the capability:
+//
+//   - A refusal is Forbidden.
+//   - A transport failure, or a server exception reporting a condition of the
+//     moment (isCanaryCondition), is Unreachable: it keeps the verdict the
+//     fleet memory remembers for the server and, when it remembers none,
+//     leaves the gated feature off for the pass that read it.
+//   - Any other server exception is Forbidden for the pass that read it only
+//     (passOnly): the server answered the canary with an error, so the
+//     capability stays off, but an error that is neither a known refusal nor
+//     a known condition is not held as one.
+func canaryErrAnswer(err error, refused func(error) bool) canaryAnswer {
+	switch {
+	case err == nil:
+		return canaryAnswer{verdict: chopt.CapabilityAvailable}
+	case refused(err):
+		return canaryAnswer{verdict: chopt.CapabilityForbidden}
+	case isCanaryCondition(err):
+		return canaryAnswer{verdict: chopt.CapabilityUnreachable}
+	default:
+		return canaryAnswer{verdict: chopt.CapabilityForbidden, passOnly: true}
 	}
-	return chopt.CapabilityUnreachable
 }

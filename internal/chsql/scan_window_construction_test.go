@@ -31,12 +31,14 @@ import (
 // and wraps it in the chplan.RangeWindow that /api/metrics/query_range builds
 // (mirroring api/tempo/grpc_exports.go). searchWindowed controls whether the
 // request window is threaded onto the lowering ctx via WithSearchWindow — i.e.
-// whether stampRecursiveScanWindow bounds the emitter-synthetic recursive arm.
+// whether lowering arms the emitter-synthetic recursive arm's window (its
+// TimestampColumn), which the emit chokepoint then sets to the RangeWindow's
+// input span.
 //
 // With searchWindowed=false the RangeWindow grid still carries the request window
-// (rendered as toDateTime64), but the inner recursive otel_traces scan is
-// windowless — exactly the metrics-path F1 hole (a future edit dropping the
-// WithSearchWindow line in the handler).
+// (rendered as toDateTime64), but the recursive arm has no TimestampColumn, so
+// its inner otel_traces scan is windowless — exactly the metrics-path F1 hole (a
+// future edit dropping the WithSearchWindow line in the handler).
 func lowerMetricsRangeWindow(t *testing.T, q string, searchWindowed bool) chplan.Node {
 	t.Helper()
 	s := schema.DefaultOTelTraces()
