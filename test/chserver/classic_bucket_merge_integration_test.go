@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -17,37 +16,32 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopttest"
 	"github.com/tsouza/cerberus/internal/choptwire"
-	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
 
-// classicMergeBuilds are the builds the classic-histogram bucket-merge
-// ceiling is pinned on: the bundled 26.8 LTS build and a 26.6 build, the
-// oldest line the ceiling's calibration covers.
-var classicMergeBuilds = []string{
-	"clickhouse/clickhouse-server:26.8.36.3-alpine",
-	"clickhouse/clickhouse-server:26.6.1.1193-alpine",
-}
+// classicBuild268 is the bundled 26.8 LTS build, one of the two builds the
+// classic-histogram quantile's memory behaviour is pinned on. Each build is
+// its own single-line constant, the form ch-server-safety-shards.mjs resolves
+// a family shard's images from.
+const classicBuild268 = "clickhouse/clickhouse-server:26.8.36.3-alpine"
+
+// classicBuild266 is a 26.6 build, the oldest supported line, the other build
+// the classic-histogram quantile's memory behaviour is pinned on.
+const classicBuild266 = "clickhouse/clickhouse-server:26.6.1.1193-alpine"
+
+// classicMergeBuilds are classicBuild268 and classicBuild266.
+var classicMergeBuilds = []string{classicBuild268, classicBuild266}
 
 // classicMergeQueryMemoryBytes is the per-query memory cap every probe runs
-// under: CERBERUS_CH_QUERY_MAX_MEMORY's 1 GiB default, the cap the merge
-// ceiling is calibrated against.
+// under: CERBERUS_CH_QUERY_MAX_MEMORY's 1 GiB default, the cap the
+// classic-histogram calibration is measured against.
 const classicMergeQueryMemoryBytes = 1 << 30
 
 // classicMergeEvalTime is the instant every probe evaluates at; each series'
 // samples sit inside the five minutes before it.
 var classicMergeEvalTime = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
-
-// classicMergeRejectedPeakBytes bounds the peak memory of a refused probe
-// whose refusal is checked for timing. The guard counts the merge's entries
-// before the merge Aggregate reads a row, so a shape just past the ceiling
-// is refused after the scan and the per-series stage but before any merge
-// work: such shapes peak at 125-200 MiB on both builds, while the sumMap
-// merge on the same data, refused only after its aggregate, peaks above
-// 700 MiB. A quarter of the cap separates the two.
-const classicMergeRejectedPeakBytes = classicMergeQueryMemoryBytes / 4
 
 // classicMergeSampleSpacing separates one series' consecutive samples, so a
 // series of up to fourteen samples stays inside the [5m] window.
@@ -60,49 +54,60 @@ const classicMergeSampleSpacing = 20 * time.Second
 // in-window samples of one observation per bucket. Series i carries the
 // label grp=i%groups; a shape with groups > 1 is queried `by (le, grp)`, one
 // merge group per value. sumMap selects the classic_bucket_merge_summap
-// merge. checkPeak marks a refused shape whose peak memory must sit under
-// classicMergeRejectedPeakBytes.
+// merge. want is how the handler answers it on each build under the 1 GiB
+// cap.
 type classicMergeShape struct {
 	name                           string
 	series, width, samples, groups int
-	sumMap, checkPeak              bool
+	sumMap                         bool
+	want                           map[string]classicWindowOutcome
 }
 
-// classicMergeAdmitted are admitted shapes, each under the 2,982,616-entry
-// ceiling: single-sample at 58,000 x 51 entries through both merge
-// constructions, the fullest window a series carries (fourteen samples) at
-// 20,000 x 50, and 57,600 x 51 entries split over six merge groups. Each must
-// answer with the quantile the seed implies.
-var classicMergeAdmitted = []classicMergeShape{
-	{name: "single-sample", series: 58_000, width: 50, samples: 1, groups: 1},
-	{name: "multi-sample", series: 20_000, width: 50, samples: 14, groups: 1},
-	{name: "multi-group", series: 57_600, width: 50, samples: 1, groups: 6},
-	{name: "summap", series: 58_000, width: 50, samples: 1, groups: 1, sumMap: true},
+// classicMergeShapes are the merges pinned on each build, at two threads. No
+// ceiling bounds the merge, so each either answers with the quantile the
+// seed implies or fails at the per-query cap with the classic-histogram
+// memory-limit 422 and code 241. The first four sit within the
+// 2,982,616-entry ceiling the merge once carried; the rest are past it:
+//   - 60,000 x 51 = 3,060,000 entries, single- and two-sample, answer on
+//     both builds (554-654 MiB, 3 runs each). Through the sumMap merge it
+//     answers on 26.8 (712-713 MiB) and on 26.6 peaks at 948-964 MiB, above
+//     90% of the cap, so 26.6 is pinned inside the band (the rule of
+//     classicWindowSeriesProbes);
+//   - 100,000 x 51 through the sumMap merge runs out of memory on both
+//     builds (3 of 3 runs);
+//   - sixty merge groups of 5,000 x 51 entries, 15,300,000 in all, five
+//     times the old ceiling, answer on both builds (665-702 MiB on 26.8,
+//     551-579 MiB on 26.6, 3 runs each).
+var classicMergeShapes = []classicMergeShape{
+	{name: "single-sample", series: 58_000, width: 50, samples: 1, groups: 1, want: classicWindowOnBoth(classicWindowAnswered)},
+	{name: "multi-sample", series: 20_000, width: 50, samples: 14, groups: 1, want: classicWindowOnBoth(classicWindowAnswered)},
+	{name: "multi-group", series: 57_600, width: 50, samples: 1, groups: 6, want: classicWindowOnBoth(classicWindowAnswered)},
+	{name: "summap", series: 58_000, width: 50, samples: 1, groups: 1, sumMap: true, want: classicWindowOnBoth(classicWindowAnswered)},
+	{name: "single-sample-60000", series: 60_000, width: 50, samples: 1, groups: 1, want: classicWindowOnBoth(classicWindowAnswered)},
+	{name: "multi-sample-60000", series: 60_000, width: 50, samples: 2, groups: 1, want: classicWindowOnBoth(classicWindowAnswered)},
+	{
+		name: "summap-60000", series: 60_000, width: 50, samples: 1, groups: 1, sumMap: true,
+		want: map[string]classicWindowOutcome{classicBuild268: classicWindowAnswered, classicBuild266: classicWindowInBand},
+	},
+	{name: "summap-100000", series: 100_000, width: 50, samples: 1, groups: 1, sumMap: true, want: classicWindowOnBoth(classicWindowFailsAtCap)},
+	{name: "multi-group-300000", series: 300_000, width: 50, samples: 1, groups: 60, want: classicWindowOnBoth(classicWindowAnswered)},
 }
 
-// classicMergeRejected are shapes past the ceiling, each of which must be
-// refused with the merge guard's own message rather than by the server:
-// 60,000 x 51 = 3,060,000 entries single- and two-sample and through the
-// sumMap merge; 100,000 x 51 through the sumMap merge, which the server
-// cannot merge under the cap; and six merge groups of 40,000 x 51 entries
-// each, every group under the ceiling while the query is four times past it.
-var classicMergeRejected = []classicMergeShape{
-	{name: "single-sample", series: 60_000, width: 50, samples: 1, groups: 1, checkPeak: true},
-	{name: "multi-sample", series: 60_000, width: 50, samples: 2, groups: 1, checkPeak: true},
-	{name: "summap", series: 60_000, width: 50, samples: 1, groups: 1, sumMap: true, checkPeak: true},
-	{name: "summap-large", series: 100_000, width: 50, samples: 1, groups: 1, sumMap: true},
-	{name: "multi-group", series: 240_000, width: 50, samples: 1, groups: 6},
-}
-
-// TestClassicBucketMerge_DisjointLayoutCeilingAcrossBuilds drives
+// TestClassicBucketMerge_DisjointLayoutAcrossBuilds drives
 // `histogram_quantile(0.5, sum by (le) (sum_over_time(<bucket>[5m])))` (or
 // `by (le, grp)`) through the production Prometheus handler, under the 1 GiB
-// query memory cap and the default merge ceiling, on each build. An admitted
-// shape must answer with the quantile the disjoint seed implies; a shape
-// past the ceiling must be refused by the bucket-merge guard, not by the
-// server running out of memory, and a shape just past it before the merge
-// runs.
-func TestClassicBucketMerge_DisjointLayoutCeilingAcrossBuilds(t *testing.T) {
+// query memory cap and the default resource bounds, on each build. Each shape
+// gets the outcome it pins for the build: the quantile the disjoint seed
+// implies, or HTTP 422 with the classic-histogram memory-limit message and
+// ClickHouse's code 241 in query_log.
+func TestClassicBucketMerge_DisjointLayoutAcrossBuilds(t *testing.T) {
+	for _, shape := range classicMergeShapes {
+		for _, image := range classicMergeBuilds {
+			if want, ok := shape.want[image]; !ok || want == classicWindowRefusedPerSeries {
+				t.Fatalf("%s on %s: outcome %v; want an answer or the per-query cap's 422", shape.name, image, want)
+			}
+		}
+	}
 	for _, image := range classicMergeBuilds {
 		t.Run(image, func(t *testing.T) {
 			ctx := context.Background()
@@ -114,32 +119,20 @@ func TestClassicBucketMerge_DisjointLayoutCeilingAcrossBuilds(t *testing.T) {
 				false: classicMergeMux(ctx, t, s, "auto"),
 				true:  classicMergeMux(ctx, t, s, "auto,classic_bucket_merge_summap"),
 			}
-			for _, shape := range classicMergeAdmitted {
-				t.Run("admitted/"+shape.name, func(t *testing.T) {
-					metric := s.seedClassicMergeShape(ctx, t, shape)
-					code, body := serveClassicMerge(ctx, muxes[shape.sumMap], metric, shape)
-					if code != http.StatusOK {
-						t.Fatalf("%s %+v: HTTP %d: %s; want the admitted shape answered", s.version, shape, code, body)
-					}
-					assertClassicMergeQuantile(t, shape, body)
-				})
-			}
-			for _, shape := range classicMergeRejected {
-				t.Run("rejected/"+shape.name, func(t *testing.T) {
+			for _, shape := range classicMergeShapes {
+				want := shape.want[image]
+				t.Run(want.String()+"/"+shape.name, func(t *testing.T) {
 					metric := s.seedClassicMergeShape(ctx, t, shape)
 					qid := classicMergeQueryID(s, shape)
 					code, body := serveClassicMerge(chclient.WithQueryID(ctx, qid), muxes[shape.sumMap], metric, shape)
-					if code != http.StatusUnprocessableEntity || !strings.Contains(body, chplan.ClassicBucketMergeBudgetMessage) {
-						t.Fatalf("%s %+v: HTTP %d: %s; want 422 carrying the bucket-merge guard's message",
-							s.version, shape, code, body)
-					}
-					if !shape.checkPeak {
+					if want == classicWindowAnswered || (want == classicWindowInBand && code == http.StatusOK) {
+						if code != http.StatusOK {
+							t.Fatalf("%s %+v: HTTP %d: %s; want the shape answered", s.version, shape, code, body)
+						}
+						assertClassicMergeQuantile(t, shape, body)
 						return
 					}
-					if peak := s.exceptionPeakMemory(ctx, t, qid); peak >= classicMergeRejectedPeakBytes {
-						t.Fatalf("%s %+v: refused at peak memory_usage %d bytes; want the guard to refuse before the merge, below %d bytes",
-							s.version, shape, peak, classicMergeRejectedPeakBytes)
-					}
+					assertClassicWindowRefusal(ctx, t, s, qid, classicWindowOutOfMemory, code, body)
 				})
 			}
 		})

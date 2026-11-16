@@ -7,10 +7,9 @@ import (
 	"strings"
 )
 
-// resource_bounds_env.go closes cerberus issue #2667: the two cross-series
-// histogram-merge resource-bound cost ceilings
-// (maxHistogramMergeCostUnits, histogram_merge_bound.go; the classic
-// bucket-merge ceiling, classic_bucket_merge_bound.go) were
+// resource_bounds_env.go closes cerberus issue #2667: the histogram
+// resource-bound cost ceilings (maxHistogramMergeCostUnits,
+// histogram_merge_bound.go, among them) were
 // hardcoded Go constants with no operator-facing override, the same problem
 // class #2651/#2653/#2665 fixed for internal/chsql's
 // range_bucket_grid_native_bound.go: a wrong calibration for real production
@@ -40,21 +39,16 @@ const (
 	// own doc for the calibration the shipped default protects.
 	EnvHistogramMergeMaxCostUnits = "CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS"
 
-	// EnvClassicBucketMergeMaxEntries pins the classic-histogram
-	// across-series merge ceiling (classic_bucket_merge_bound.go): the most
-	// bucket entries one query's merge may read. Unset, the ceiling is
-	// DERIVED from CERBERUS_CH_QUERY_MAX_MEMORY by
-	// [ClassicBucketMergeEntriesForMemory]; setting a positive value pins it
-	// and opts out of the derivation. An explicit non-positive value is
-	// rejected at startup, as for every ceiling in this file.
-	EnvClassicBucketMergeMaxEntries = "CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES"
+	// EnvClassicBucketMergeMaxEntriesRetired pinned the classic-histogram
+	// bucket-merge ceiling, which no longer exists. The setting is still
+	// accepted, in cerberus.yaml and in the environment, and its value is
+	// ignored: [ResourceBoundsFrom] never reads it, and
+	// [RetiredSettingWarnings] reports it so the boot path warns once.
+	EnvClassicBucketMergeMaxEntriesRetired = "CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES"
 
-	// EnvClassicBucketMergeMaxCostUnitsRetired is the name the classic
-	// bucket-merge ceiling had while it counted merge width times bucket
-	// volume. Its values are not entry counts, so [ResourceBoundsFrom]
-	// ignores it, and [RetiredSettingWarnings] reports it so the boot path
-	// can warn that it is ignored and name
-	// [EnvClassicBucketMergeMaxEntries] as the replacement.
+	// EnvClassicBucketMergeMaxCostUnitsRetired is the name the same ceiling
+	// had while it counted merge width times bucket volume. It is accepted
+	// and ignored exactly as [EnvClassicBucketMergeMaxEntriesRetired] is.
 	EnvClassicBucketMergeMaxCostUnitsRetired = "CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS"
 
 	// EnvClassicBucketWindowSeriesMaxEntries pins the classic-histogram
@@ -70,7 +64,7 @@ const (
 	// samples-per-series-per-window pre-rejection's ceiling
 	// (exp_histogram_window_sample_bound.go, cerberus issue #3252).
 	//
-	// Like the classic bucket-merge ceiling above it has no fixed default:
+	// Like the classic per-series window ceiling above it has no fixed default:
 	// unset, the ceiling is DERIVED from CERBERUS_CH_QUERY_MAX_MEMORY by
 	// [ExpHistogramWindowCostUnitsForMemory], because the units count a
 	// proxy for BYTES and the byte ceiling is itself configurable — the
@@ -91,14 +85,14 @@ const (
 )
 
 // ResourceBounds carries the operator-tunable cost ceilings for promql's
-// cross-series histogram-merge resource-bound guards. The zero value is NOT
+// histogram resource-bound guards. The zero value is NOT
 // a safe "unlimited" sentinel — histogramMergeCostOverBudgetExpr and
-// classicBucketMergeInputGate both reject whenever the emitted cost
+// classicBucketWindowSeriesGuard both reject whenever the emitted cost
 // EXCEEDS the configured ceiling, so a zero-valued field rejects nearly
-// every real merge rather than admitting every one. Callers should build a
+// every real query rather than admitting every one. Callers should build a
 // ResourceBounds through [DefaultResourceBounds] or
 // [ResourceBoundsFromEnv] rather than a bare literal. Neither fills
-// ClassicBucketMergeMaxEntries, ClassicBucketWindowSeriesMaxEntries or
+// ClassicBucketWindowSeriesMaxEntries or
 // ExpHistogramWindowMaxCostUnits unless an override pins it — those fields
 // are derived from CHQueryMaxMemory, not shipped as constants — so every
 // lowering entry point ([Lower] / [LowerAt] / [LowerAtRange] / [LowerAtRangeOpts] /
@@ -113,16 +107,6 @@ type ResourceBounds struct {
 	// for the real-ClickHouse calibration behind the default, and cerberus
 	// issue #2385's 19-real-OOM history the default must not regress.
 	HistogramMergeMaxCostUnits int64
-
-	// ClassicBucketMergeMaxEntries bounds the bucket entries (every
-	// per-series row's finite bounds plus its +Inf rung) one query's
-	// classic-histogram across-series bucket merge may read, summed across
-	// every merge group and step (classicBucketMergeInputGate,
-	// classic_bucket_merge_bound.go). Its default is not a constant:
-	// [withDefaults] derives it from [ResourceBounds.CHQueryMaxMemory]
-	// through [ClassicBucketMergeEntriesForMemory] — see that file's header
-	// for the real-ClickHouse calibration behind the derivation.
-	ClassicBucketMergeMaxEntries int64
 
 	// ClassicBucketWindowSeriesMaxEntries bounds the bucket entries one
 	// series' window may collect on the instant classic-histogram path,
@@ -145,15 +129,14 @@ type ResourceBounds struct {
 	// CHQueryMaxMemory is the ClickHouse per-query memory cap the
 	// deployment stamps, in bytes, and it is an INPUT to this struct
 	// rather than a bound of its own: it is what
-	// ClassicBucketMergeMaxEntries, ClassicBucketWindowSeriesMaxEntries and
-	// ExpHistogramWindowMaxCostUnits are derived from when no explicit
-	// override is set. Zero means the
+	// ClassicBucketWindowSeriesMaxEntries and ExpHistogramWindowMaxCostUnits
+	// are derived from when no explicit override is set. Zero means the
 	// deployment stamps no cap, which each derivation answers for.
 	CHQueryMaxMemory int64
 }
 
 // DefaultResourceBounds returns the shipped constant default —
-// maxHistogramMergeCostUnits. The three cap-derived ceilings are left unset
+// maxHistogramMergeCostUnits. The two cap-derived ceilings are left unset
 // for [ResourceBounds.withDefaults] to derive from CHQueryMaxMemory. Every
 // caller that does not opt into [ResourceBoundsFromEnv] (the spec harness,
 // [Lower] / [LowerAt] / [LowerAtRange], and any [LowerOpts] built by hand
@@ -176,10 +159,6 @@ func (b ResourceBounds) withDefaults() ResourceBounds {
 	def := DefaultResourceBounds()
 	if b.HistogramMergeMaxCostUnits == 0 {
 		b.HistogramMergeMaxCostUnits = def.HistogramMergeMaxCostUnits
-	}
-	if b.ClassicBucketMergeMaxEntries == 0 {
-		// Derived, not defaulted: see [EnvClassicBucketMergeMaxEntries].
-		b.ClassicBucketMergeMaxEntries = ClassicBucketMergeEntriesForMemory(b.CHQueryMaxMemory)
 	}
 	if b.ClassicBucketWindowSeriesMaxEntries == 0 {
 		// Derived, not defaulted: see [EnvClassicBucketWindowSeriesMaxEntries].
@@ -219,12 +198,9 @@ func ResourceBoundsFrom(get func(string) string) (ResourceBounds, error) {
 	if cfg.HistogramMergeMaxCostUnits, err = settingInt64(get, EnvHistogramMergeMaxCostUnits, cfg.HistogramMergeMaxCostUnits); err != nil {
 		return ResourceBounds{}, err
 	}
-	// The next three are left at 0 unless explicitly pinned: [withDefaults]
+	// The next two are left at 0 unless explicitly pinned: [withDefaults]
 	// derives them from CHQueryMaxMemory, which the caller fills from the
 	// loaded config.
-	if cfg.ClassicBucketMergeMaxEntries, err = settingInt64(get, EnvClassicBucketMergeMaxEntries, 0); err != nil {
-		return ResourceBounds{}, err
-	}
 	if cfg.ExpHistogramWindowMaxCostUnits, err = settingInt64(get, EnvExpHistogramWindowMaxCostUnits, 0); err != nil {
 		return ResourceBounds{}, err
 	}
@@ -234,20 +210,31 @@ func ResourceBoundsFrom(get func(string) string) (ResourceBounds, error) {
 	return cfg, nil
 }
 
+// retiredSettings are the settings cerberus accepts and ignores, each with
+// one startup warning.
+var retiredSettings = []string{
+	EnvClassicBucketMergeMaxEntriesRetired,
+	EnvClassicBucketMergeMaxCostUnitsRetired,
+}
+
 // RetiredSettingWarnings returns one warning per retired setting get
 // resolves to a non-empty value. A retired setting is never read:
-// [ResourceBoundsFrom] applies its replacement, or the default when the
-// replacement is unset. The caller logs each warning at startup.
+// [ResourceBoundsFrom] resolves the same bounds whether it is set or not. The
+// caller logs each warning at startup.
 func RetiredSettingWarnings(get func(string) string) []string {
-	if get(EnvClassicBucketMergeMaxCostUnitsRetired) == "" {
-		return nil
+	var warnings []string
+	for _, name := range retiredSettings {
+		if get(name) == "" {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"%s is ignored: the classic-histogram bucket-merge ceiling was removed in v1.25.0; "+
+				"a classic-histogram quantile too large for CERBERUS_CH_QUERY_MAX_MEMORY fails at that cap "+
+				"with the classic-histogram memory-limit HTTP 422",
+			name,
+		))
 	}
-	return []string{fmt.Sprintf(
-		"%s is ignored: the classic-histogram bucket-merge ceiling now counts merged bucket entries, "+
-			"not merge width times bucket volume, so its old values do not carry over; "+
-			"the ceiling comes from %s, or is derived from CERBERUS_CH_QUERY_MAX_MEMORY when that is unset",
-		EnvClassicBucketMergeMaxCostUnitsRetired, EnvClassicBucketMergeMaxEntries,
-	)}
+	return warnings
 }
 
 // settingInt64 parses a 64-bit int setting through get, returning def when
@@ -258,8 +245,8 @@ func RetiredSettingWarnings(get func(string) string) []string {
 // for cerberus issue #2667's chsql-side siblings
 // (CERBERUS_CH_*_MAX_ROWS): a cost-unit ceiling of zero or less is never a
 // legitimate operator override — histogramMergeCostOverBudgetExpr /
-// classicBucketMergeInputGate both reject once the emitted cost
-// EXCEEDS the ceiling, so zero would reject nearly every real merge and a
+// classicBucketWindowSeriesGuard both reject once the emitted cost
+// EXCEEDS the ceiling, so zero would reject nearly every real query and a
 // negative value would reject all of them — so an operator who sets one to
 // 0 or below almost certainly meant something else, and this fails fast at
 // startup rather than silently bricking the histogram-quantile query path.

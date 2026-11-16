@@ -1313,9 +1313,10 @@ const (
 	// lower per entry on 26.8 and 11-16% higher on 26.6 on the larger
 	// disjoint layouts, and far lower on a shared one; whether that earns
 	// AutoSelect is
-	// https://github.com/tsouza/cerberus/issues/4079. The bucket-merge
-	// guard (promql's ResourceBounds.ClassicBucketMergeMaxEntries) bounds this path too, so no
-	// second, sumMap-specific ceiling exists. The feature is reachable by
+	// https://github.com/tsouza/cerberus/issues/4079. No ceiling bounds
+	// either merge construction: a merge too large for the per-query cap
+	// fails at ClickHouse's memory limit, which the Prometheus head answers
+	// with its classic-histogram memory-limit 422. The feature is reachable by
 	// explicit CERBERUS_CH_OPTIMIZATIONS=classic_bucket_merge_summap listing.
 	//
 	// The NaN asymmetry #2756 documented as a second, accepted risk is gone

@@ -17,12 +17,12 @@ import (
 // finite bounds plus its +Inf rung — and refuses the query when one series
 // holds more than its ceiling, after the stage has collected that series and
 // before the fold reads it. The fold's working set grows with the entries of
-// the series it is folding, on each thread folding one at once, so one long
-// series can exhaust the cap on its own while the rest of the query is
-// small. The ceiling is sized so the fold of the largest admitted series, on
-// every folding thread at once, uses at most
-// classicBucketWindowFoldHeadroomPercent of the part of the cap
-// classicBucketWindowStageSharePercent leaves free.
+// the series it is folding, so one long series can exhaust the cap on its
+// own while the rest of the query is small. For a series of many samples the
+// ceiling refuses only where one series of that many entries runs out of
+// memory on every run without the check, on both builds and at every thread
+// count; a one-sample series millions of bounds wide is the one measured
+// exception (# The per-series ceiling).
 //
 // No check bounds the stage as a whole. A query whose stage exceeds the
 // ClickHouse per-query memory cap across many series fails when ClickHouse
@@ -48,7 +48,6 @@ import (
 //	series × samples                       E        26.8   26.6
 //	58,000 × 14                            41.4M    689    638
 //	58,000 × 28                            82.8M    775    638
-//	58,000 × 56                            165.6M   840    OOM
 //	58,000 × 112 (shared or disjoint;      331.3M   OOM    OOM
 //	  rate, increase, sum_over_time, bare)
 //	1,000,000 × 1, disjoint, sum_over_time 51.0M    OOM    OOM
@@ -56,32 +55,15 @@ import (
 //	2,000 × 620                            63.2M    749    574
 //	200 × 3,100                            31.6M    586    567
 //	200 × 6,200                            63.2M    OOM    661
+//	  (single-read statement, answered 5 of 5 runs on each build:
+//	   871-1,004 MiB on 26.8, 601-690 MiB on 26.6)
 //	60 × 9,800                             30.0M    597    574
 //	120 × 9,800                            60.0M    952    575
-//	1 × 7,500                              0.38M    158    -
-//	1 × 30,000                             1.53M    624    -
-//	1 × 60,000                             3.06M    OOM    1004
-//
-// classicBucketWindowFoldEntryBytes is the fold of one long series, fitted
-// on 26.8, which peaks higher than 26.6 at these shapes: 1 × 7,500 peaks at
-// 433 B per entry of the series, 1 × 30,000 at 428 B, rounded up to 440. Two
-// series fold at once on two threads: 2 × 6,200 peaks at 276 MiB, and
-// 200 × 6,200 runs out of memory where 2,000 × 620 of the same E peaks at
-// 749 MiB.
-//
-// With the shipped constants (per-series ceiling 152,520 entries at the
-// 1 GiB cap), peaks on 26.8 / 26.6:
-//
-//	1 × 3,000 (153,000 entries in one series)           refused, 20 / 16
-//	1 × 60,000 (3,060,000 entries in one series)        refused, 169 / 166
-//	2 × 2,950 (150,450 entries per series)              answers, 111 / 117
 //
 // Many short series under the shipped constants, measured at max_threads 2
 // (the thread count of the 2-CPU containers) with every sample of a series
 // inside the [5m] range: the peak range over the runs in parentheses, or OOM
-// where every run ended in code 241. 58,000 × 56 answers on both builds here,
-// while the table without the check records it running out of memory on
-// 26.6.
+// where every run ended in code 241.
 //
 //	series × samples   E        26.8                 26.6
 //	58,000 × 28        82.8M    683-822 (4 runs)     638-642 (4 runs)
@@ -91,35 +73,64 @@ import (
 //	58,000 × 84        248.5M   OOM (2 runs)         922-952 (2 runs)
 //	58,000 × 96        284.0M   OOM (8 runs)         OOM (8 runs)
 //
-// The fold runs one series per thread, so these figures hold for two
-// threads: 145 × 5,900, which peaks at 784 MiB on two threads, runs out of
-// memory at max_threads 8 on 26.8
-// (https://github.com/tsouza/cerberus/issues/4128).
-const (
-	// classicBucketWindowFoldEntryBytes is the measured working set of the
-	// fold per bucket entry of the series it is folding.
-	classicBucketWindowFoldEntryBytes = 440
+// Many series fold on several threads at once, so their peak grows with the
+// thread count: 145 × 5,900, which peaks at 784 MiB on two threads, runs out
+// of memory at max_threads 8 on 26.8. No ceiling bounds them; the cap does.
+//
+// # The per-series ceiling
+//
+// One series folds on one thread, so its peak does not depend on the thread
+// count. One 50-bucket series (51 entries per sample) under `rate`, without
+// the per-series check, at max_threads 2 (the 2-CPU containers' auto(2)) and
+// 16 (a users.d default profile): answered runs over all runs, and the peak
+// range of the answered runs in MiB. Each shape gives the same outcome at
+// both thread counts, and its peaks at the two agree to within 1%. In one
+// data part:
+//
+//	samples  entries    26.8                 26.6
+//	30,000   1,530,000  10/10 (651-653)      10/10 (536-555)
+//	45,000   2,295,000  0/20                 20/20 (936-976)
+//	60,000   3,060,000  0/18                 1/19 (1,004)
+//	74,900   3,819,900  0/6                  0/6
+//	75,000   3,825,000  0/16                 0/16
+//
+// Spread over 16 data parts, with merges stopped, so ClickHouse reads the
+// series on several threads (4 at auto(2), 7 at max_threads 16), 3 runs at
+// each thread count:
+//
+//	samples  entries    26.8                 26.6
+//	30,000   1,530,000  6/6 (623-646)        6/6 (504-523)
+//	45,000   2,295,000  0/6                  6/6 (871-878)
+//	60,000   3,060,000  0/6                  6/6 (1,002-1,009)
+//	74,900   3,819,900  0/6                  0/6
+//
+// The largest series measured to answer at all is 60,000 samples, on 26.6
+// (once in one part, on every run in sixteen); 26.8 answers none from
+// 45,000. The ceiling is set so that 75,000
+// samples, which runs out of memory on every run on both builds at both
+// thread counts, is the first series refused: 74,924 samples is the largest
+// admitted, 0.1% below 75,000 and 25% above 60,000. An admitted series that
+// does not fit (74,900 samples runs out of memory on every run as well)
+// reaches the server, which fails it at the cap with code 241.
+//
+// The ceiling counts entries, measured at 51 per sample. One series of a
+// single sample with millions of bounds folds in less memory per entry on
+// 26.6: under `sum_over_time`, 3,000,000 and 3,825,000 entries answer there
+// at 862 and 969 MiB and 4,500,000 runs out of memory (2 runs each), while
+// all three run out of memory on 26.8. On 26.6 the ceiling therefore refuses
+// a one-row series of about 3.82M to under 4.5M entries that would answer;
+// the bucket-merge ceiling it replaces refused every one of them as well.
 
-	// classicBucketWindowFoldConcurrency is the number of series the
-	// calibration server folds at once: one per ClickHouse thread of the
-	// two-CPU calibration containers.
-	classicBucketWindowFoldConcurrency = 2
-
-	// classicBucketWindowStageSharePercent is the share of the query cap
-	// set aside for the rest of the window stage — the series it groups and
-	// the bucket entries it collects. The remainder of the cap is the
-	// headroom the fold of the largest admitted series is sized against.
-	classicBucketWindowStageSharePercent = 75
-
-	// classicBucketWindowFoldHeadroomPercent is the share of that headroom
-	// the fold of the largest series the per-series ceiling admits may use,
-	// on every folding thread at once.
-	classicBucketWindowFoldHeadroomPercent = 50
-)
+// classicBucketWindowSeriesCapBytesPerEntry is the per-query cap, in bytes,
+// per bucket entry one series' window may collect: the cap over the entries
+// of the series set to be the first refused (75,000 samples x 51 entries =
+// 3,825,000 at 1 GiB is 280.7 bytes per entry), rounded up so that series is
+// refused.
+const classicBucketWindowSeriesCapBytesPerEntry = 281
 
 // classicBucketRowEntryCountExpr is one classic-histogram row's bucket entries:
-// its finite bounds plus the +Inf rung its trailing count carries. Both the
-// window guard and the bucket-merge guard count in this unit.
+// its finite bounds plus the +Inf rung its trailing count carries. The
+// per-series window guard counts in this unit.
 func classicBucketRowEntryCountExpr(s schema.Metrics) chplan.Expr {
 	return addExpr(
 		&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ExplicitBoundsColumn}}},
@@ -169,17 +180,16 @@ func classicBucketWindowSeriesGuard(group chplan.Node, maxEntries int64) chplan.
 }
 
 // ClassicBucketWindowSeriesEntriesForMemory derives the per-series window
-// ceiling from a ClickHouse per-query memory cap: the largest series whose
-// fold, on every concurrently folding thread at once, fits in
-// classicBucketWindowFoldHeadroomPercent of the cap left once
-// classicBucketWindowStageSharePercent of it is set aside. A non-positive cap
-// derives the one-GiB ceiling, the shipped default, as
-// [ClassicBucketMergeEntriesForMemory] does.
+// ceiling from a ClickHouse per-query memory cap: the cap over
+// classicBucketWindowSeriesCapBytesPerEntry, rounded down, so 3,821,145
+// entries at CERBERUS_CH_QUERY_MAX_MEMORY's 1 GiB default, linear in the cap.
+// One series folds on one thread, so the ceiling does not depend on the
+// server's thread count. A non-positive cap means cerberus stamps no
+// `max_memory_usage`, and the ceiling is the one the 1 GiB default derives,
+// as [ExpHistogramWindowCostUnitsForMemory] does for its own ceiling.
 func ClassicBucketWindowSeriesEntriesForMemory(chQueryMaxMemory int64) int64 {
 	if chQueryMaxMemory <= 0 {
 		chQueryMaxMemory = bytesPerGiB
 	}
-	headroom := chQueryMaxMemory - percentOf(chQueryMaxMemory, classicBucketWindowStageSharePercent)
-	return percentOf(headroom, classicBucketWindowFoldHeadroomPercent) /
-		(classicBucketWindowFoldEntryBytes * classicBucketWindowFoldConcurrency)
+	return chQueryMaxMemory / classicBucketWindowSeriesCapBytesPerEntry
 }

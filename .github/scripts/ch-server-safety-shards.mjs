@@ -76,14 +76,17 @@ const CANCELLATION_PREFIX = `${KIND_CANCELLATION}-`;
 
 // FAMILY_SHARDS — families of top-level tests that run in a shard of their
 // own instead of in `rest`: every top-level test whose name starts with the
-// family's prefix. The classic-histogram ceiling tests seed tens of millions
-// of bucket entries per build and together take about five minutes on the
-// CI runner; in `rest` they left its go test run at 1,010 s of the recipe's
-// 1,200 s timeout. TestDistinctSpill_WithheldShapesAnswer drives seven
-// statements over 1M unique 256-byte values, each measured several times, and
-// takes four to six minutes there.
+// family's prefix. No prefix is a prefix of another, so no test runs in two
+// shards. The classic-histogram tests seed tens of millions of bucket entries
+// per build: the window-stage outcome tests (TestClassicWindow_*) and the
+// merge and range tests (TestClassicBucket*) each take several minutes on the
+// CI runner, and in one shard they approach the recipe's 1,200 s timeout.
+// TestDistinctSpill_WithheldShapesAnswer drives seven statements over 1M
+// unique 256-byte values, each measured several times, and takes four to six
+// minutes there.
 export const FAMILY_SHARDS = [
   { id: 'classic-histogram', prefix: 'TestClassicBucket' },
+  { id: 'classic-histogram-window', prefix: 'TestClassicWindow' },
   { id: 'distinct-spill-harm', prefix: 'TestDistinctSpill_WithheldShapesAnswer' },
 ];
 
