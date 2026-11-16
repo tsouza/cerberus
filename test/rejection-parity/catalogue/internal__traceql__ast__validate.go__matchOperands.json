@@ -1,0 +1,40 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/ast/validate.go:matchOperands#7d7c9b7a",
+      "message": "illegal operation for the given types: %s",
+      "class": "rejection",
+      "trigger_query": "{ .foo \u0026\u0026 3 }",
+      "evidence": {
+        "guard": [
+          "past returning if !lhsT.comparableWith(rhsT)",
+          "past returning if isParentMarker(lhs) || isParentMarker(rhs)",
+          "if !op.binaryTypesValid(lhsT, rhsT)"
+        ],
+        "callers": [
+          "validateFieldExpr",
+          "validateScalarFilterStage",
+          "validateScalarOperation"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/ast/validate.go:matchOperands#f8d746cc",
+      "message": "binary operations must operate on the same type: %s",
+      "class": "rejection",
+      "trigger_query": "{ status = 3 }",
+      "evidence": {
+        "guard": [
+          "if !lhsT.comparableWith(rhsT)"
+        ],
+        "callers": [
+          "validateFieldExpr",
+          "validateScalarFilterStage",
+          "validateScalarOperation"
+        ]
+      }
+    }
+  ]
+}

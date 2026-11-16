@@ -3,6 +3,7 @@
   "head": "tempo",
   "bucket": "08",
   "cases": [
+    "metrics_range | metrics_topk_zero_rejected",
     "search | parenthesised_pipeline_then_spanset_rejected",
     "search | scoped_instrumentation_version",
     "tags_v2 | tags_v2_intrinsic"

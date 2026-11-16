@@ -59,10 +59,12 @@ func TestSpansetOperatorAssociativity(t *testing.T) {
 	}
 }
 
-// findScalarFilter returns the ScalarFilter stage of a parsed query.
+// findScalarFilter returns the ScalarFilter stage of a query's grammar tree.
+// It reads the tree before validation, which rejects the scalar arithmetic
+// these tests inspect.
 func findScalarFilter(t *testing.T, q string) ScalarFilter {
 	t.Helper()
-	expr := mustParse(t, q)
+	expr := mustParseTree(t, q)
 	for _, e := range expr.Pipeline.Elements {
 		if sf, ok := e.(ScalarFilter); ok {
 			return sf
