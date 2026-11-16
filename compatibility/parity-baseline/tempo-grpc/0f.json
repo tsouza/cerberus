@@ -3,6 +3,7 @@
   "head": "tempo-grpc",
   "bucket": "0f",
   "cases": [
+    "search | bare_aggregate_stage_rejected",
     "search | cross_scope_attribute_never_equal",
     "search | scoped_trace_root_service",
     "tags_v1 | tags_v1_malformed_query"

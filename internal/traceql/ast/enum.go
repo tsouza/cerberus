@@ -366,8 +366,8 @@ func (k Kind) String() string {
 	}
 }
 
-// AggregateOp is the pipeline aggregate function (count / min / max / sum /
-// avg) applied by an `| count()`-style stage.
+// AggregateOp is the aggregate function (count / min / max / sum / avg) of
+// an Aggregate, as in `{ } | count() > 1`.
 type AggregateOp int
 
 const (
