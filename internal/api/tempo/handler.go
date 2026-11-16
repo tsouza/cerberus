@@ -1565,29 +1565,44 @@ func refsNameIntrinsicFromMeta(meta engine.Meta) bool {
 // trace. A per-trace aggregate (`| count() > 0`, `| avg(...) > X`) already
 // groups by TraceId alone and passes through. `by(...)` and `coalesce()`
 // group by TraceId plus a group key (or the span identity), so they emit
-// several rows per trace; this folds those into one envelope row per trace
-// — the earliest start, the latest end, a representative span — so
-// boundNewestTraces' LIMIT counts traces rather than groups, and each trace's
-// duration spans every group rather than whichever group's row is read last.
+// several rows per trace; this folds those into one envelope row per trace,
+// carrying every column of the inner aggregate's envelope, so
+// boundNewestTraces' LIMIT counts traces rather than groups and each trace's
+// envelope spans every group: the earliest start, the latest end, the summed
+// Value, and a representative of every other column.
 func spansetRowsPerTrace(plan chplan.Node) chplan.Node {
-	if a := spansetAggregateRoot(plan); a == nil || len(a.GroupBy) == 1 {
+	inner := spansetAggregateRoot(plan)
+	if inner == nil || len(inner.GroupBy) == 1 {
 		return plan
 	}
-	col := func(name string) []chplan.Expr { return []chplan.Expr{&chplan.ColumnRef{Name: name}} }
+	merged := make([]chplan.AggFunc, 0, len(inner.AggFuncs))
+	for _, af := range inner.AggFuncs {
+		merged = append(merged, chplan.AggFunc{
+			Fn:    envelopeMergeFn(af.Alias),
+			Args:  []chplan.Expr{&chplan.ColumnRef{Name: af.Alias}},
+			Alias: af.Alias,
+		})
+	}
 	return &chplan.Aggregate{
 		Input:          plan,
-		GroupBy:        col("TraceId"),
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "TraceId"}},
 		GroupByAliases: []string{"TraceId"},
-		AggFuncs: []chplan.AggFunc{
-			{Fn: chplan.FnSum, Args: col("Value"), Alias: "Value"},
-			{Fn: chplan.FnAny, Args: col(sampleMetricNameCol), Alias: sampleMetricNameCol},
-			{Fn: chplan.FnAny, Args: col("ResourceAttrs"), Alias: "ResourceAttrs"},
-			{Fn: chplan.FnAny, Args: col("ParentSpanId"), Alias: "ParentSpanId"},
-			{Fn: chplan.FnMin, Args: col(sampleTimeUnixCol), Alias: sampleTimeUnixCol},
-			{Fn: chplan.FnMin, Args: col("TraceStartNs"), Alias: "TraceStartNs"},
-			{Fn: chplan.FnMax, Args: col("TraceEndNs"), Alias: "TraceEndNs"},
-		},
+		AggFuncs:       merged,
 	}
+}
+
+// envelopeMergeFn is the aggregate that folds one spanset-envelope column
+// across a trace's group rows.
+func envelopeMergeFn(alias string) chplan.Fn {
+	switch alias {
+	case sampleTimeUnixCol, "TraceStartNs":
+		return chplan.FnMin
+	case "TraceEndNs":
+		return chplan.FnMax
+	case "Value":
+		return chplan.FnSum
+	}
+	return chplan.FnAny
 }
 
 // spansetAggregateRoot returns the Aggregate at the root of a spanset-

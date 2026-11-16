@@ -20,6 +20,9 @@
 #
 # by() groups within each trace, so traces 01 and 04 stay two groups though
 # they share a key. Groups: 6s (trace 01), 4s (02), 2s (03), 6s (04).
+# The search response folds each trace's groups into one summary row, so
+# -- expected_rows -- holds one row per trace and the group key itself is
+# pinned by the -- sql -- / -- chplan -- sections.
 -- query.traceql --
 { } | by(traceDuration * 2)
 -- seed --

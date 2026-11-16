@@ -22,6 +22,9 @@
 #
 # by() groups within each trace. Groups: 'm' (trace 01), '' (rootless trace
 # 02), 'n' (03), 'q' (04).
+# The search response folds each trace's groups into one summary row, so
+# -- expected_rows -- holds one row per trace and the group key itself is
+# pinned by the -- sql -- / -- chplan -- sections.
 -- query.traceql --
 { } | by(rootName)
 -- seed --

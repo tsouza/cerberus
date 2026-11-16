@@ -1353,13 +1353,6 @@ func fieldExprAttribute(e traceql.FieldExpression) (traceql.Attribute, bool) {
 	return traceql.Attribute{}, false
 }
 
-// lowerAttributeExpr wraps lowerAttribute with a guard: link- /
-// event-scoped attributes can only appear inside a comparison
-// (lowerBinaryOperation intercepts them and returns a
-// NestedArrayExists). Reaching this path means the attribute is being
-// used as a scalar value (e.g. `| select(link.span_id)`) which would
-// silently dereference the wrong CH column — error out so the operator
-// can surface the gap rather than ship wrong SQL.
 // lowerAttributeValue is lowerAttributeExpr for an attribute in value
 // position. A trace-scoped intrinsic (rootName, rootServiceName,
 // traceDuration) reads its trace's value from the joined lookup column (see
@@ -1377,6 +1370,13 @@ func lowerAttributeValue(a traceql.Attribute, s schema.Traces) (chplan.Expr, err
 	return lowerAttributeExpr(a, s)
 }
 
+// lowerAttributeExpr wraps lowerAttribute with a guard: link- /
+// event-scoped attributes can only appear inside a comparison
+// (lowerBinaryOperation intercepts them and returns a
+// NestedArrayExists). Reaching this path means the attribute is being
+// used as a scalar value (e.g. `| select(link.span_id)`) which would
+// silently dereference the wrong CH column — error out so the operator
+// can surface the gap rather than ship wrong SQL.
 func lowerAttributeExpr(a traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
 	if a.Scope == traceql.AttributeScopeLink || a.Scope == traceql.AttributeScopeEvent {
 		// A bare event-/link-scoped attribute as the whole filter

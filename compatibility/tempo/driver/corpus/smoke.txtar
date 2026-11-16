@@ -1962,3 +1962,82 @@ metrics_range
 4
 -- expected_max_series --
 5000
+
+# --- by() and coalesce() search summaries ---
+#
+# by() splits each trace's spans into groups of its own, so traces sharing a
+# key value stay separate summaries, and the search limit counts traces.
+# A by() / coalesce() stage returns fresh spansets whose trace-level fields
+# Tempo fills from its second fetch pass, which skips a trace intrinsic the
+# first pass already read for every span: with no predicate, or with any
+# predicate when every condition must hold (coalesce() alone keeps that).
+
+-- name --
+group_by_resource_service_name
+-- query --
+{ } | by(resource.service.name)
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+group_by_name_filtered_root_name
+# rootName carries a predicate here, so the second pass still reads it and
+# every summary keeps its rootTraceName.
+-- query --
+{ rootName =~ "GET.*" } | by(name)
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+coalesce_all_spans
+-- query --
+{ } | coalesce()
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+coalesce_root_name_exists
+# Every condition must hold, so the first pass's existence read of rootName
+# keeps it out of the second pass: rootTraceName comes back empty.
+-- query --
+{ rootName != nil } | coalesce()
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+coalesce_trace_duration_filtered
+-- query --
+{ traceDuration > 1ms } | coalesce()
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
+
+-- name --
+coalesce_root_service_name_eq
+-- query --
+{ rootServiceName = "checkout" } | coalesce()
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500

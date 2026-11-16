@@ -12,18 +12,21 @@ package ast
 // predicate (OpNone), or any of them when every condition must hold
 // (AllConditions). See SearchMetaConditionsWithout in Tempo's
 // pkg/traceql/storage.go and the rebatch copy in vparquet5's
-// block_traceql.go. So a regrouped search that reads such an intrinsic
-// reports its field empty.
+// block_traceql.go. A `select(...)` stage, and every stage after it, reads
+// in the second pass instead, and a second-pass read of the intrinsic fills
+// the field again. So a regrouped search that reads such an intrinsic in the
+// first pass, and not in the second, reports its field empty.
 //
 // The walk below mirrors Tempo's extractConditions (pkg/traceql/ast.go,
 // ast_conditions.go) for the parts that decide that outcome: which
-// attributes reach the first pass with which operator, and when
-// AllConditions is cleared.
+// attributes reach each pass with which operator, and when AllConditions
+// is cleared.
 
 // RegroupLeavesTraceFieldUnset reports whether reference Tempo's search
 // response leaves the trace-level field backed by intrinsic in empty for this
-// query: the pipeline regroups its spansets (`by(...)` or `coalesce()`) and
-// the first fetch pass already read in for every candidate span.
+// query: the pipeline regroups its spansets (`by(...)` or `coalesce()`), the
+// first fetch pass already read in for every candidate span, and the second
+// pass does not read it.
 //
 // Only the trace-level intrinsics that back a search-summary field
 // (IntrinsicTraceRootService, IntrinsicTraceRootSpan,
@@ -42,6 +45,11 @@ func (r *RootExpr) RegroupLeavesTraceFieldUnset(in Intrinsic) bool {
 	}
 	c := fetchConditions{all: true}
 	c.pipeline(r.Pipeline)
+	for _, fc := range c.secondPass {
+		if fc.intrinsic == in {
+			return false
+		}
+	}
 	for _, fc := range c.conds {
 		if fc.intrinsic == in && (fc.op == OpNone || c.all) {
 			return true
@@ -73,18 +81,20 @@ func elemRegroups(elem any) bool {
 	return false
 }
 
-// fetchCondition is one first-pass condition: the intrinsic it reads
+// fetchCondition is one fetch condition: the intrinsic it reads
 // (IntrinsicNone for an ordinary attribute) and its operator.
 type fetchCondition struct {
 	intrinsic Intrinsic
 	op        Operator
 }
 
-// fetchConditions accumulates the first-pass conditions and the
-// AllConditions flag the way Tempo's FetchSpansRequest does.
+// fetchConditions accumulates the first-pass conditions (conds), the
+// second-pass ones (secondPass) and the AllConditions flag the way Tempo's
+// FetchSpansRequest does.
 type fetchConditions struct {
-	conds []fetchCondition
-	all   bool
+	conds      []fetchCondition
+	secondPass []fetchCondition
+	all        bool
 }
 
 func (c *fetchConditions) add(a Attribute, op Operator) {
@@ -92,14 +102,45 @@ func (c *fetchConditions) add(a Attribute, op Operator) {
 }
 
 // pipeline mirrors Pipeline.extractConditions: after a select() stage every
-// remaining stage goes to the second pass, which this walk does not track.
+// remaining stage goes to the second pass (extractToSecondPass).
 func (c *fetchConditions) pipeline(p Pipeline) {
+	afterSelect := false
 	for _, elem := range p.Elements {
-		c.element(elem)
+		if afterSelect {
+			c.toSecondPass(elem)
+		} else {
+			c.element(elem)
+		}
 		if _, ok := elem.(SelectOperation); ok {
-			return
+			afterSelect = true
 		}
 	}
+}
+
+// toSecondPass mirrors extractToSecondPass: the stage's conditions go to the
+// second pass, except one whose attribute either pass already reads with no
+// predicate. Its AllConditions effect stays with its own throwaway request.
+func (c *fetchConditions) toSecondPass(elem any) {
+	stage := fetchConditions{}
+	stage.element(elem)
+	for _, fc := range append(stage.conds, stage.secondPass...) {
+		if !c.readsUnfiltered(fc.intrinsic) {
+			c.secondPass = append(c.secondPass, fc)
+		}
+	}
+}
+
+// readsUnfiltered reports whether either pass already reads in with no
+// predicate (HasAttributeWithOp(_, OpNone)).
+func (c *fetchConditions) readsUnfiltered(in Intrinsic) bool {
+	for _, list := range [][]fetchCondition{c.conds, c.secondPass} {
+		for _, fc := range list {
+			if fc.intrinsic == in && fc.op == OpNone {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (c *fetchConditions) element(elem any) {
@@ -118,11 +159,16 @@ func (c *fetchConditions) element(elem any) {
 	case ScalarFilter:
 		c.scalar(e.LHS)
 		c.scalar(e.RHS)
+	case SelectOperation:
+		// SelectOperation.extractConditions: every selected attribute is
+		// read, with no predicate, in the second pass.
+		for _, a := range e.Attrs() {
+			c.secondPass = append(c.secondPass, fetchCondition{intrinsic: a.Intrinsic, op: OpNone})
+		}
 	case Pipeline:
 		c.pipeline(e)
 	}
-	// SelectOperation reads only in the second pass; CoalesceOperation
-	// reads nothing.
+	// CoalesceOperation reads nothing.
 }
 
 func (c *fetchConditions) scalar(se ScalarExpression) {

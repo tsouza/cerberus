@@ -4,12 +4,16 @@ import "testing"
 
 // TestRegroupLeavesTraceFieldUnset pins, for each of the three trace-level
 // search-summary fields, which queries reference Tempo answers with the field
-// empty. Every row is a query sent to reference Tempo's /api/search, with the
-// field's observed state recorded in want: true means every returned trace
-// carried rootTraceName "" / durationMs 0 / rootServiceName
-// "<root span not yet received>" for the field named, false means every
-// returned trace carried the real value. The false rows matter as much as the
-// true ones: an over-reporting walk would blank a field Tempo fills.
+// empty. Every row outside the second-pass group is a query sent to
+// reference Tempo's /api/search, with the field's observed state recorded in
+// want: true means every returned trace carried rootTraceName "" /
+// durationMs 0 / rootServiceName "<root span not yet received>" for the field
+// named, false means every returned trace carried the real value. The
+// compatibility corpus replays a sample of each kind (the group_by_* /
+// coalesce_* search cases). The second-pass rows follow Tempo's source:
+// cerberus cannot yet answer a stage after a regrouping one (#4290), so no
+// reference run compares them. The false rows matter as much as the true
+// ones: an over-reporting walk would blank a field Tempo fills.
 func TestRegroupLeavesTraceFieldUnset(t *testing.T) {
 	t.Parallel()
 
@@ -52,11 +56,19 @@ func TestRegroupLeavesTraceFieldUnset(t *testing.T) {
 		{`{ rootName =~ "GET.*" } | count() > 0 | coalesce()`, rootName, false, "an aggregate clears AllConditions"},
 		{`{ rootName =~ "GET.*" } && { } | coalesce()`, rootName, false, "a spanset operation clears AllConditions"},
 
+		// A second-pass read refills the field: select() reads its attributes
+		// there, and so does every later stage whose attribute the first pass
+		// does not already read with no predicate.
+		{`{ } | by(rootName) | select(rootName)`, rootName, false, "select() reads rootName in the second pass"},
+		{`{ rootName =~ "GET.*" } | coalesce() | select(rootName)`, rootName, false, "select() reads rootName in the second pass"},
+		{`{ rootName =~ "GET.*" } | coalesce() | select(name) | by(rootName)`, rootName, false, "the later by() reads rootName in the second pass"},
+		{`{ } | by(rootName) | select(name) | by(rootName)`, rootName, true, "the first pass already reads rootName with no predicate, so the later read stays out of the second pass"},
+
 		// No regrouping stage: the pipeline returns the first pass's spansets,
 		// which carry every trace-level field.
 		{`{ } | select(rootName)`, rootName, false, "select() does not regroup"},
 		{`{ rootName = name }`, rootName, false, "a plain filter does not regroup"},
-		{`{ } | avg(traceDuration) > 1s`, traceDur, false, "an aggregate filter does not regroup"},
+		{`{ } | avg(traceDuration) > 100ms`, traceDur, false, "an aggregate filter does not regroup"},
 	}
 	for _, tc := range cases {
 		expr, err := Parse(tc.query)

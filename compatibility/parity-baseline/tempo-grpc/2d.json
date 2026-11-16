@@ -3,6 +3,7 @@
   "head": "tempo-grpc",
   "bucket": "2d",
   "cases": [
-    "metrics_range | metrics_compare_root_name_eq_name"
+    "metrics_range | metrics_compare_root_name_eq_name",
+    "search | coalesce_trace_duration_filtered"
   ]
 }
