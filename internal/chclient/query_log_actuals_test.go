@@ -105,7 +105,7 @@ func TestCanaryErrAnswer_QueryLogUnionShapes(t *testing.T) {
 		{"settings constraint", &clickhouse.Exception{Code: chCodeSettingConstraintViolation}, chopt.CapabilityForbidden},
 		{"unknown setting", &clickhouse.Exception{Code: chCodeUnknownSetting}, chopt.CapabilityForbidden},
 	} {
-		if got := canaryErrAnswer(tc.err, isQueryLogUnionCanaryRefusal).verdict; got != tc.want {
+		if got := queryLogUnionErrAnswer(tc.err).verdict; got != tc.want {
 			t.Errorf("%s: classified %v; want %v", tc.name, got, tc.want)
 		}
 	}

@@ -253,11 +253,8 @@ func isQueryLogUnionRefusal(err error) bool {
 // ProbeQueryLogUnionCapability runs the reader's own record-selection query
 // against system.all_query_log for an empty page, so the verdict covers what
 // the server checks before it reads a row: the table exists, its columns are
-// the ones selected, and cerberus's user may SELECT it. A nil error is
-// Available; the server refusing the read (isQueryLogUnionRefusal) or a
-// setting it carries (isSettingsRefusal) is Forbidden; a transport failure,
-// a timeout, a memory or concurrency limit is Unreachable; any other server
-// error is Forbidden (canaryErrAnswer). Never returns an error.
+// the ones selected, and cerberus's user may SELECT it. The verdict is
+// queryLogUnionErrAnswer's. Never returns an error.
 func (c *Client) ProbeQueryLogUnionCapability(ctx context.Context) chopt.Capability {
 	return c.queryLogUnionAnswer(ctx).verdict
 }
@@ -268,7 +265,28 @@ func (c *Client) queryLogUnionAnswer(ctx context.Context) canaryAnswer {
 		Union: true,
 		After: QueryLogCursor{EventTime: time.Now()},
 	})
-	return canaryErrAnswer(err, isQueryLogUnionCanaryRefusal)
+	return queryLogUnionErrAnswer(err)
+}
+
+// queryLogUnionErrAnswer is the answer of a query-log union canary whose read
+// failed with err. A nil err is Available; the server refusing the read
+// (isQueryLogUnionRefusal) or a setting it carries (isSettingsRefusal) is
+// Forbidden; a failure with no server answer is Unreachable; and any other
+// server exception, a condition of the moment included, is Forbidden for the
+// pass that read it only.
+//
+// Unlike a settings canary, which runs a trivial statement, the union canary
+// runs the read the feature itself runs, so a timeout or a memory limit on it
+// is one the reader would hit too. Read as Unreachable, it would keep a
+// remembered permit in force over the native protocol while every union read
+// failed; as a pass-only Forbidden it turns the feature off until a pass
+// reads the union cleanly.
+func queryLogUnionErrAnswer(err error) canaryAnswer {
+	answer := canaryErrAnswer(err, isQueryLogUnionCanaryRefusal)
+	if _, answered := serverExceptionCode(err); answered && answer.verdict == chopt.CapabilityUnreachable {
+		return canaryAnswer{verdict: chopt.CapabilityForbidden, passOnly: true}
+	}
+	return answer
 }
 
 // isQueryLogUnionCanaryRefusal reports whether err refuses the query-log

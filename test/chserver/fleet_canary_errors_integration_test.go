@@ -7,9 +7,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -248,8 +250,10 @@ func requireInjected(ctx context.Context, t *testing.T, cfg chclient.Config, wan
 // leaves the fleet held:
 //
 //   - MEMORY_LIMIT_EXCEEDED, a condition of the moment, on both canaries:
-//     after a pass that read the capability available it stays available,
-//     and on a memory with no verdict yet it reads unreachable for that pass.
+//     the ts_grid capability, after a pass that read it available, stays
+//     available, and on a memory with no verdict yet reads unreachable for
+//     that pass; the query-log union capability, whose canary runs the
+//     feature's own read, reads forbidden for that pass only.
 //   - TOO_BIG_AST, a server error that is neither a known refusal nor a known
 //     condition, on both canaries: it reads forbidden for that pass, and the
 //     next pass reads the capability available again.
@@ -277,8 +281,8 @@ func TestFleetProbe_TransientCanaryErrorDoesNotHoldACapabilityOff(t *testing.T) 
 		name   string
 		passes []pass
 	}{
-		{"memory limit after a verdict", []pass{{nil, available, available}, {nil, available, available}, {&memoryLimitSettings, available, available}, {nil, available, available}}},
-		{"memory limit before any verdict", []pass{{&memoryLimitSettings, unreachable, unreachable}, {nil, available, available}, {nil, available, available}}},
+		{"memory limit after a verdict", []pass{{nil, available, available}, {nil, available, available}, {&memoryLimitSettings, available, forbidden}, {nil, available, available}}},
+		{"memory limit before any verdict", []pass{{&memoryLimitSettings, unreachable, forbidden}, {nil, available, available}, {nil, available, available}}},
 		{"unrecognised server error after a verdict", []pass{{nil, available, available}, {&astLimitSettings, forbidden, forbidden}, {nil, available, available}, {nil, available, available}}},
 	} {
 		memory := chclient.NewFleetMemory()
@@ -332,4 +336,132 @@ func TestFleetProbe_ProfileChangeTurnsACapabilityOff(t *testing.T) {
 			t.Errorf("over %s, after the profile change: %s %s; want %s", protocol, chclient.CanaryResultCache, got, chopt.CapabilityForbidden)
 		}
 	}
+}
+
+// unionMemoryLimitCeiling is a per-query memory limit far above what either
+// the identity read or the empty-page union read needs, the upper end of
+// unionOnlyMemoryLimit's search.
+const unionMemoryLimitCeiling = 64 << 20
+
+// unionMemoryLimitPrecision bounds unionOnlyMemoryLimit's search: it stops
+// once the bracket is narrower than 1/unionMemoryLimitPrecision of its upper
+// end.
+const unionMemoryLimitPrecision = 64
+
+// unionMemoryLimitStabilityRuns is how many times unionOnlyMemoryLimit
+// requires the chosen limit to pass the identity read and fail the union
+// read, over each protocol, before the test relies on it.
+const unionMemoryLimitStabilityRuns = 3
+
+// setCanaryMemoryLimit gives the canary user a per-query memory limit of
+// limit bytes, tracked from the first byte; 0 clears every setting on it.
+func setCanaryMemoryLimit(ctx context.Context, t *testing.T, srv *server, limit int64) {
+	t.Helper()
+	if limit == 0 {
+		srv.exec(ctx, t, "ALTER USER "+canaryUser+" SETTINGS NONE")
+		return
+	}
+	srv.exec(ctx, t, "ALTER USER "+canaryUser+" SETTINGS max_memory_usage = "+strconv.FormatInt(limit, 10)+", max_untracked_memory = 0")
+}
+
+// unionStatementCode runs the identity read (union false) or the query-log
+// union canary's read (union true) as the canary user over protocol, and
+// returns the server exception code it failed with, 0 on success.
+func unionStatementCode(ctx context.Context, t *testing.T, srv *server, protocol clickhouse.Protocol, union bool) int32 {
+	t.Helper()
+	addr := srv.addr
+	if protocol == clickhouse.HTTP {
+		addr = srv.httpAddr
+	}
+	cfg := canaryConfig(addr)
+	cfg.Protocol = protocol
+	c, err := chclient.New(cfg)
+	if err != nil {
+		t.Fatalf("connect %s: %v", addr, err)
+	}
+	defer func() { _ = c.Close() }()
+	if union {
+		_, err = c.QueryLogActuals(ctx, chclient.QueryLogActualsRequest{Union: true, After: chclient.QueryLogCursor{EventTime: time.Now()}})
+	} else {
+		_, err = c.ProbeNode(ctx)
+	}
+	var ex *clickhouse.Exception
+	switch {
+	case err == nil:
+		return 0
+	case errors.As(err, &ex):
+		return ex.Code
+	default:
+		t.Fatalf("%s statement over %s failed without a server exception: %v", map[bool]string{false: "identity", true: "union"}[union], protocol, err)
+		return 0
+	}
+}
+
+// unionOnlyMemoryLimit finds a per-query memory limit under which, over
+// protocol, the identity read succeeds and the query-log union read fails
+// with MEMORY_LIMIT_EXCEEDED: for each statement it searches the smallest
+// limit it succeeds under, takes the geometric mean of the two, and requires
+// the bracket to hold unionMemoryLimitStabilityRuns times.
+func unionOnlyMemoryLimit(ctx context.Context, t *testing.T, srv *server, protocol clickhouse.Protocol) int64 {
+	t.Helper()
+	defer setCanaryMemoryLimit(ctx, t, srv, 0)
+	smallestPassing := func(union bool) int64 {
+		lo, hi := int64(1), int64(unionMemoryLimitCeiling)
+		for hi-lo > hi/unionMemoryLimitPrecision {
+			mid := lo + (hi-lo)/2
+			setCanaryMemoryLimit(ctx, t, srv, mid)
+			if unionStatementCode(ctx, t, srv, protocol, union) == 0 {
+				hi = mid
+			} else {
+				lo = mid
+			}
+		}
+		return hi
+	}
+	identity, union := smallestPassing(false), smallestPassing(true)
+	limit := int64(math.Sqrt(float64(identity) * float64(union)))
+	t.Logf("over %s the identity read needs %d bytes, the union read %d; limiting the canary user to %d", protocol, identity, union, limit)
+	setCanaryMemoryLimit(ctx, t, srv, limit)
+	for range unionMemoryLimitStabilityRuns {
+		if got := unionStatementCode(ctx, t, srv, protocol, false); got != 0 {
+			t.Fatalf("under a %d-byte limit the identity read over %s failed with %d; want success", limit, protocol, got)
+		}
+		if got := unionStatementCode(ctx, t, srv, protocol, true); got != chCodeMemoryLimitExceeded {
+			t.Fatalf("under a %d-byte limit the union read over %s answered %d; want %d", limit, protocol, got, chCodeMemoryLimitExceeded)
+		}
+	}
+	return limit
+}
+
+// TestFleetProbe_LastingUnionConditionTurnsTheFeatureOffForItsPass reads the
+// query-log union capability available on a server over the native protocol,
+// then gives the canary user a memory limit the identity read fits under and
+// the union read does not, for two passes, then lifts it. Every pass under the
+// limit reads the capability forbidden, though the server's remembered verdict
+// is available, since the union reads the feature runs would fail the same
+// way; the first pass after it reads it available again: the condition counts
+// for the pass that read it only. Over HTTP, where every pass reads the
+// union unattributed, TestFleetProbe_TransientCanaryErrorDoesNotHoldACapabilityOff
+// pins the same answer.
+func TestFleetProbe_LastingUnionConditionTurnsTheFeatureOffForItsPass(t *testing.T) {
+	ctx := context.Background()
+	srv := startHTTPCanaryServer(ctx, t, false)
+	const passesUnderTheLimit = 2
+	limit := unionOnlyMemoryLimit(ctx, t, srv, clickhouse.Native)
+	cfg := canaryConfig(srv.addr)
+	memory := chclient.NewFleetMemory()
+	probe := func(step string, want chopt.Capability) {
+		t.Helper()
+		fv := memory.Observe(chclient.ProbeFleet(ctx, cfg, "", memory.CanaryOrder, chclient.QueryLogUnionCanary()))
+		if got := fv.Capability(chclient.CanaryQueryLogUnion); got != want {
+			t.Errorf("%s: %s %s; want %s", step, chclient.CanaryQueryLogUnion, got, want)
+		}
+	}
+	probe("before the limit", chopt.CapabilityAvailable)
+	setCanaryMemoryLimit(ctx, t, srv, limit)
+	for range passesUnderTheLimit {
+		probe("under the limit", chopt.CapabilityForbidden)
+	}
+	setCanaryMemoryLimit(ctx, t, srv, 0)
+	probe("after the limit", chopt.CapabilityAvailable)
 }

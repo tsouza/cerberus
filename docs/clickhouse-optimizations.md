@@ -1056,11 +1056,10 @@ at boot and on every [re-probe](#re-probe).
   (`UNKNOWN_TABLE`: ClickHouse older than 26.8, or no
   `<create_union_system_log_tables>` section), the `SELECT` is not granted
   (`ACCESS_DENIED`), a member lacks a selected column (`UNKNOWN_IDENTIFIER`,
-  `NO_SUCH_COLUMN_IN_TABLE`), the server refused a setting the read carries
-  (the settings canaries' refusals), or it answered with another server error
-  that is not a condition of the moment.
-- **unreachable** — no server verdict: a transport failure, or a server error
-  reporting a condition of the moment, as for the settings canaries.
+  `NO_SUCH_COLUMN_IN_TABLE`), or the server refused a setting the read carries
+  (the settings canaries' refusals). Any other server error, a timeout or a
+  memory limit included, is **forbidden** for the probe that read it only.
+- **unreachable** — no server verdict: a transport failure.
 
 Unlike every other capability-gated feature, a non-`available` verdict is
 **never fatal**, in `enforcing` as in `permissive`: the feature resolves out
