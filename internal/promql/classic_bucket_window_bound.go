@@ -76,6 +76,21 @@ import (
 //	1 × 60,000 (3,060,000 entries in one series)        refused, 169 / 166
 //	2 × 2,950 (150,450 entries per series)              answers, 111 / 117
 //
+// Many short series under the shipped constants, measured at max_threads 2
+// (the thread count of the 2-CPU containers) with every sample of a series
+// inside the [5m] range: the peak range over the runs in parentheses, or OOM
+// where every run ended in code 241. 58,000 × 56 answers on both builds here,
+// while the table without the check records it running out of memory on
+// 26.6.
+//
+//	series × samples   E        26.8                 26.6
+//	58,000 × 28        82.8M    683-822 (4 runs)     638-642 (4 runs)
+//	58,000 × 30        88.7M    684-798 (4 runs)     638-643 (4 runs)
+//	58,000 × 56        165.6M   823-828 (2 runs)     723-744 (2 runs)
+//	58,000 × 72        213.0M   961-1,011 (2 runs)   839-853 (2 runs)
+//	58,000 × 84        248.5M   OOM (2 runs)         922-952 (2 runs)
+//	58,000 × 96        284.0M   OOM (8 runs)         OOM (8 runs)
+//
 // The fold runs one series per thread, so these figures hold for two
 // threads: 145 × 5,900, which peaks at 784 MiB on two threads, runs out of
 // memory at max_threads 8 on 26.8
