@@ -81,11 +81,11 @@ func sortedSelectList(t *testing.T, sql string) string {
 		}
 		if depth == 0 {
 			sub := strings.TrimPrefix(sql[i+1:end], "SELECT ")
-			from := strings.Index(sub, " FROM ")
-			if from < 0 {
+			before, _, ok := strings.Cut(sub, " FROM ")
+			if !ok {
 				t.Fatalf("sorted subquery %q has no FROM", sub)
 			}
-			return sub[:from]
+			return before
 		}
 	}
 	t.Fatalf("unbalanced parentheses before the ORDER BY in %s", sql)
