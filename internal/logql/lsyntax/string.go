@@ -31,29 +31,27 @@ func (e *PipelineExpr) String() string {
 	return sb.String()
 }
 
+// String renders the chain the filter closes, then its own operator (or
+// `or` for an alternate), its quoted operand, and its next alternate.
 func (e *LineFilterExpr) String() string {
-	var sb strings.Builder
+	var words []string
 	if e.Left != nil {
-		sb.WriteString(e.Left.String())
-		sb.WriteString(" ")
+		words = append(words, e.Left.String())
 	}
 	if e.IsOrChild {
-		sb.WriteString("or ")
+		words = append(words, OpTypeOr)
 	} else {
-		// LineMatchType.String() renders `|=`, `!=`, `|~`, `!~`, `|>`, `!>`.
-		sb.WriteString(e.Ty.String())
-		sb.WriteString(" ")
+		words = append(words, e.Ty.String())
 	}
+	operand := strconv.Quote(e.Match)
 	if e.Op == OpFilterIP {
-		fmt.Fprintf(&sb, "%s(%q)", OpFilterIP, e.Match)
-	} else {
-		fmt.Fprintf(&sb, "%q", e.Match)
+		operand = OpFilterIP + "(" + operand + ")"
 	}
+	words = append(words, operand)
 	if e.Or != nil {
-		sb.WriteString(" ")
-		sb.WriteString(e.Or.String())
+		words = append(words, e.Or.String())
 	}
-	return sb.String()
+	return strings.Join(words, " ")
 }
 
 func (e *LogfmtParserExpr) String() string {
@@ -171,18 +169,18 @@ func (e *OffsetExpr) String() string {
 	return fmt.Sprintf(" %s %s", OpOffset, model.Duration(e.Offset).String())
 }
 
+// String renders the selector, any unwrap, the bracketed range, and any
+// offset.
 func (e *LogRangeExpr) String() string {
-	var sb strings.Builder
-	sb.WriteString(e.Left.String())
+	rendered := e.Left.String()
 	if e.Unwrap != nil {
-		sb.WriteString(e.Unwrap.String())
+		rendered += e.Unwrap.String()
 	}
-	fmt.Fprintf(&sb, "[%v]", model.Duration(e.Interval))
-	if e.Offset != 0 {
-		off := OffsetExpr{Offset: e.Offset}
-		sb.WriteString(off.String())
+	rendered += "[" + model.Duration(e.Interval).String() + "]"
+	if e.Offset == 0 {
+		return rendered
 	}
-	return sb.String()
+	return rendered + newOffsetExpr(e.Offset).String()
 }
 
 // String renders ` by (a,b)` or ` without (a,b)`.

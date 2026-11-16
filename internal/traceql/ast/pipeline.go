@@ -12,21 +12,17 @@ type RootExpr struct {
 	Hints              *Hints
 }
 
+// String renders the spanset pipeline and each metrics stage present,
+// separated by ` | `, then the hints.
 func (r RootExpr) String() string {
-	var b strings.Builder
-	b.WriteString(r.Pipeline.String())
+	stages := []string{r.Pipeline.String()}
 	if r.MetricsPipeline != nil {
-		b.WriteString(" | ")
-		b.WriteString(r.MetricsPipeline.String())
+		stages = append(stages, r.MetricsPipeline.String())
 	}
 	if r.MetricsSecondStage != nil {
-		b.WriteString(" | ")
-		b.WriteString(r.MetricsSecondStage.String())
+		stages = append(stages, r.MetricsSecondStage.String())
 	}
-	if r.Hints != nil {
-		b.WriteString(r.Hints.String())
-	}
-	return b.String()
+	return strings.Join(stages, " | ") + r.Hints.String()
 }
 
 // Hints carries `with(...)` query hints. cerberus does not act on any hint
