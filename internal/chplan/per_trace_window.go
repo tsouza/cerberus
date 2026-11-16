@@ -25,6 +25,15 @@ import "time"
 // one) carries the unwidened input span: the spans the metric counts are the
 // spans inside it, and the MergeTree read under the join or the membership
 // test is pruned to it.
+//
+// The recursive spans scans of a structural relation or of the nested-set
+// numbering (StructuralJoin, NestedSetAnnotate) are synthesised by the
+// emitter inside a WITH RECURSIVE, where no predicate reaches either. Each
+// carries its own window, which is set to the same input span
+// (windowMetricsRecursiveScans), and to that span widened by the lookback
+// inside a per-trace subquery, so the closure and the numbering read every
+// span the metric's anchors read: a child inside the span whose parent
+// precedes start keeps its parent.
 
 // rangeWindowInputSpan returns the instants of rw's input span,
 // (lower, upper], and whether rw carries a request window. A zero Range reads
@@ -80,9 +89,10 @@ func PerTraceWindowBound(rw *RangeWindow, tsCol string, lookback time.Duration) 
 // WindowMetricsPerTraceSubqueries of it. root is never modified; when no
 // RangeWindow needs it, root itself is returned.
 //
-// The chsql emit chokepoint runs it on every plan, so the bound is derived
-// from the RangeWindow the emitter renders and every metrics entry point —
-// range, instant, histogram, compare, explain — carries it.
+// The chsql emit chokepoint runs it on every plan, so the bound and the
+// window of every recursive spans scan are derived from the RangeWindow the
+// emitter renders and every metrics entry point — range, instant, histogram,
+// compare, explain — carries them.
 func BoundMetricsPerTraceSubqueries(root Node) Node {
 	if root == nil {
 		return nil
@@ -106,9 +116,11 @@ func BoundMetricsPerTraceSubqueries(root Node) Node {
 // replaced by WindowPerTraceSubqueries of it: rw's input bound
 // (RangeWindowInputBound over the node's own input timestamp column) on the
 // plain row sources, and that bound widened by the node's PerTraceLookback
-// (PerTraceWindowBound) on the per-trace subqueries. metrics is never
+// (PerTraceWindowBound) on the per-trace subqueries, and rw's input span on
+// its recursive spans scans (windowMetricsRecursiveScans). metrics is never
 // modified; any other node type, a window with no request span, or an Inner
-// with no per-trace subquery returns metrics itself.
+// with neither a per-trace subquery nor a recursive spans scan returns
+// metrics itself.
 func WindowMetricsPerTraceSubqueries(rw *RangeWindow, metrics Node) Node {
 	switch m := metrics.(type) {
 	case *MetricsAggregate:
@@ -165,9 +177,11 @@ func windowCohortSubqueries(e, window Expr) (Expr, bool) {
 
 // windowMetricsInner is WindowPerTraceSubqueries of a metrics node's inner
 // under rw's input bound over tsCol, widened by lookback for the per-trace
-// subqueries, and whether that changed it.
+// subqueries, with its recursive spans scans reading the same spans
+// (windowMetricsRecursiveScans), and whether that changed it.
 func windowMetricsInner(rw *RangeWindow, inner Node, tsCol string, lookback time.Duration) (Node, bool) {
 	bounded := WindowPerTraceSubqueries(inner, RangeWindowInputBound(rw, tsCol), PerTraceWindowBound(rw, tsCol, lookback))
+	bounded = windowMetricsRecursiveScans(rw, bounded, lookback)
 	return bounded, bounded != inner
 }
 

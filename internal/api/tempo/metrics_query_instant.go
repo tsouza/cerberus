@@ -98,10 +98,12 @@ func (h *Handler) handleMetricsQueryInstant(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "", "", perr)
 		return
 	}
-	// Thread the request window onto ctx so the universal recursive-arm window
-	// stamp (traceql.stampRecursiveScanWindow) bounds the EMITTER-SYNTHETIC
-	// recursive spans scans of a metrics-over-structural / nested-set source; the
-	// RangeWindow wrap below cannot reach below a WITH RECURSIVE.
+	// Thread the request window onto ctx so lowering arms the window of the
+	// EMITTER-SYNTHETIC recursive spans scans of a metrics-over-structural /
+	// nested-set source (traceql.stampRecursiveScanWindow): no predicate reaches
+	// a scan inside a WITH RECURSIVE. The metrics emitter then sets that window
+	// to the span the RangeWindow below reads
+	// (chplan.BoundMetricsPerTraceSubqueries).
 	ctx = traceql_lower.WithSearchWindow(ctx, start, end)
 	lowerT := telemetry.ObserveStage(telemetry.StageLower, telemetry.QLTraceQL)
 	plan, lerr := traceql_lower.Lower(ctx, expr, h.Schema)
