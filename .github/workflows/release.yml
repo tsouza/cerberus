@@ -107,7 +107,7 @@ jobs:
         run: node .github/scripts/chart-publish.mjs --self-test
 
       # helm is needed for the chart gate's `helm show chart oci://…` probe.
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e  # v5
         with:
           version: v3.21.1
 
@@ -799,7 +799,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e  # v5
         with:
           version: v3.21.1
 
