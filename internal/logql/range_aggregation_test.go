@@ -232,15 +232,14 @@ func TestLowerRangeAggregationMatrixShapeUnwrap(t *testing.T) {
 // PR #574 — see the upstream LogQL compatibility corpus's
 // {regression/metric-queries.yaml,exhaustive/unwrap-aggregations.yaml}.
 //
-// The fix materialises the parser-merged labels into the
-// `_logql_merged_labels` intermediate column (see [lowerRangeAggregation])
-// and strips the unwrap target via `MapWithoutKeys{..., [unwrapIdent]}`
-// against that materialised column reference. CH's "Recursive lambda
-// (UNSUPPORTED_METHOD)" error fires when the strip's `mapFilter` source
-// is itself a `mapApply`-bearing expression (e.g. `logfmtMergeLabels`),
-// so the two-stage Project is load-bearing — pin both the IR shape
-// (intermediate column present, identity strips the target) and the
-// downstream-SQL invariant (no recursive lambda at the strip site).
+// The fix strips the unwrap target via `MapWithoutKeys{...,
+// [unwrapIdent]}` against the parser-merged labels, which the row stage
+// defines as a column of its own (see [mergedLabelsColumn]). CH's
+// "Recursive lambda (UNSUPPORTED_METHOD)" error fires when the strip's
+// `mapFilter` source is itself a `mapApply`-bearing expression (e.g.
+// `logfmtMergeLabels`), so reading a column there is load-bearing — pin
+// both the identity strip and the downstream-SQL invariant (the strip's
+// source is a column reference, never an inline map expression).
 func TestLowerRangeAggregationUnwrapStripsTargetFromIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -326,13 +325,12 @@ func TestLowerRangeAggregationUnwrapStripsTargetFromIdentity(t *testing.T) {
 			if !strings.Contains(sqlStr, "mapFilter((k, v) -> NOT (k IN") {
 				t.Errorf("%q: emitted SQL missing strip-via-mapFilter shape\nsql=%s", tc.query, sqlStr)
 			}
-			// Materialised intermediate column: the two-stage
-			// Project rewrite is load-bearing — without it, the
-			// outer `mapFilter` sees a `mapApply`-bearing source
-			// (logfmt's rename-on-collision shape) and CH rejects
-			// with `Recursive lambda (UNSUPPORTED_METHOD)`.
-			if tc.wantMergedColumn && !strings.Contains(sqlStr, "_logql_merged_labels") {
-				t.Errorf("%q: emitted SQL missing _logql_merged_labels materialised column (two-stage Project lost)\nsql=%s", tc.query, sqlStr)
+			// The strip reads a column: without it, the outer
+			// `mapFilter` sees a `mapApply`-bearing source (logfmt's
+			// rename-on-collision shape) and CH rejects with
+			// `Recursive lambda (UNSUPPORTED_METHOD)`.
+			if tc.wantMergedColumn && !strings.Contains(sqlStr, "mapFilter((k, v) -> NOT (k IN (?)), `"+unwrapLabelsAlias+"`)") {
+				t.Errorf("%q: the identity strip does not read the %s column\nsql=%s", tc.query, unwrapLabelsAlias, sqlStr)
 			}
 		})
 	}
@@ -527,62 +525,20 @@ func TestLowerRangeAggregationExtendsMatcherWindowByIntervalPlusOffset(t *testin
 	}
 }
 
-// TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn pins the
-// `!=` invariant in [hasParserMergedLabels], reached through the
-// second of [materialiseParserMergedLabels]'s two guards:
-//
-//	if !hasUnwrap && !outerByNeedsParsedLabels {
-//		return inner, nil
-//	}
-//	if !hasParserMergedLabels(labelsExpr, s) {
-//		return inner, nil
-//	}
-//
-//	func hasParserMergedLabels(...) bool {
-//	    ...
-//	    return col.Name != s.ResourceAttributesColumn
-//	}
+// TestLowerRangeAggregationOuterByWithoutParserReadsRawColumn pins that
+// an outer `by (...)` over a pipeline with no parser stage resolves its
+// key off the raw ResourceAttributes column.
 //
 // The fixture is `sum by (category) (count_over_time({app="api"}[5m]))`:
-// NO parser stage and NO unwrap, so `labelsExpr` is the bare
-// `ColumnRef(ResourceAttributes)` and [hasParserMergedLabels] must
-// return false; the outer `by (category)` names a non-top-level label,
-// which makes `outerByNeedsParsedLabels` true so the FIRST guard does
-// not short-circuit and execution actually reaches the second. The SQL
-// must then never reference the `_logql_merged_labels` intermediate
-// alias.
-//
-// It used to be a bare-unwrap query, and that no longer discriminates:
-// every unwrap conversion now stamps a SampleExtractionErr mark (bare
-// `| unwrap x` models convertFloat's ParseFloat failure — cerberus
-// issue #3183), so an unwrap's `labelsExpr` is always a mark wrap
-// rather than a bare ColumnRef and [hasParserMergedLabels] is true for
-// EVERY unwrap query. The outer-by route is the remaining one that
-// reaches the guard with a bare column, and it exercises the same
-// return.
-//
-// The mutant this fixture kills:
-//
-//   - CONDITIONALS_NEGATION on
-//     range_aggregation.go:`col.Name != s.ResourceAttributesColumn`:
-//     `!=` → `==`. With labelsExpr = `ColumnRef(ResourceAttributes)`,
-//     hasParserMergedLabels returns true instead of false, so the
-//     second guard stops returning early and the materialised-column
-//     branch fires, carrying the `_logql_merged_labels` alias into the
-//     SQL. Applying that rewrite by hand fails this test; reverting it
-//     passes.
-//
-// The INVERT_LOGICAL mutant on the FIRST guard's `&&` is NOT killed
-// here: with `hasUnwrap` false and `outerByNeedsParsedLabels` true, the
-// original reads `!false && !true` → false and the `||` mutant reads
-// `!false || !true` → true and returns `inner` immediately. Both leave
-// the alias ABSENT. That mutant dies in
-// [TestLowerRangeAggregationParserUnwrapMaterialisesIntermediateColumn]
-// instead, whose `| logfmt` fixture makes [hasParserMergedLabels] true.
-//
-// Assert the alias's absence — the original code path keeps the SQL
-// lean.
-func TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn(t *testing.T) {
+// NO parser stage and NO unwrap, so the labels map is the bare
+// `ColumnRef(ResourceAttributes)`; the outer `by (category)` names a
+// non-top-level label, which carries execution past the first guard of
+// [mergedLabelsColumn] to the second. The guard mutants themselves die
+// in the direct [mergedLabelsColumn] tests
+// (parser_merge_materialise_mutation_test.go): on this fixture the
+// merged map and the raw column are the same column, so the emitted SQL
+// cannot tell them apart.
+func TestLowerRangeAggregationOuterByWithoutParserReadsRawColumn(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelLogs()
@@ -618,61 +574,18 @@ func TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn(t *testing.T) {
 		t.Fatalf("chsql.Emit: %v", err)
 	}
 
-	// The materialised-column alias `_logql_merged_labels` is the
-	// fingerprint of the two-stage Project path. If it appears in the
-	// emitted SQL for a bare-unwrap query, the
-	// `col.Name != s.ResourceAttributesColumn` invariant flipped to
-	// `==` and hasParserMergedLabels reported true for a bare
-	// ResourceAttributes ColumnRef.
-	if strings.Contains(sqlStr, "_logql_merged_labels") {
-		t.Errorf("SQL unexpectedly carries the `_logql_merged_labels` alias\n"+
-			"  → CONDITIONALS_NEGATION on range_aggregation.go:`col.Name != s.ResourceAttributesColumn` (`!=` → `==`) lived\nsql=%s", sqlStr)
-	}
-
-	// Companion positive assertion: the bare-unwrap path MUST surface
-	// the `MapWithoutKeys` strip via the `mapFilter((k, v) -> NOT (k IN
-	// (?)), ...)` shape compiled from the non-materialised path. Without
-	// it the test only checks one direction of the toggle.
-	// Companion positive assertion: the non-materialised path must still
-	// resolve the by-clause key off the raw ResourceAttributes column.
-	// Without it the test only checks one direction of the toggle.
 	if !strings.Contains(sqlStr, "`ResourceAttributes`[?] AS `gkey_0`") {
-		t.Errorf("SQL missing the non-materialised path's raw-column key resolution "+
-			"(the by-clause key must resolve off `ResourceAttributes`, not off the "+
-			"materialised alias)\nsql=%s", sqlStr)
+		t.Errorf("SQL missing the raw-column key resolution (the by-clause key must "+
+			"resolve off `ResourceAttributes`)\nsql=%s", sqlStr)
 	}
 }
 
-// TestLowerRangeAggregationParserUnwrapMaterialisesIntermediateColumn
-// is the dual of [TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn]:
-// when the unwrap query DOES carry a parser stage, the SQL MUST surface
-// the `_logql_merged_labels` materialised-column alias. Between them the
-// two fixtures pin both guards of [materialiseParserMergedLabels] — this
-// one the first guard's `&&`, the bare-unwrap one the
-// `col.Name != s.ResourceAttributesColumn` return — so a flipped
-// operator cannot pass both.
-//
-// This test is where the INVERT_LOGICAL mutant on
-// range_aggregation.go:`if !hasUnwrap && !outerByNeedsParsedLabels`
-// dies. On this fixture `hasUnwrap` is true and
-// `outerByNeedsParsedLabels` false, so the original guard reads
-// `!true && !false` → false and falls through to materialise, while the
-// `||` mutant reads `!true || !false` → true and returns `inner`
-// unmodified — dropping the very alias the assertion below requires.
-// Applying that rewrite by hand fails this test; reverting it passes.
-// The bare-unwrap dual cannot kill it: there [hasParserMergedLabels] is
-// false, so original and mutant both return `inner`.
-//
-// The CONDITIONALS_NEGATION mutant on
-// range_aggregation.go:`col.Name != s.ResourceAttributesColumn` flips
-// `!=` to `==`. With a
-// parser stage labelsExpr is a `mapConcat(...)` (not a ColumnRef), so
-// the ok-cast `col, ok := labelsExpr.(*chplan.ColumnRef)` is false and
-// hasParserMergedLabels returns true via the first return statement —
-// the mutant on the second return doesn't fire here. This test pins
-// that the parser path still materialises so the bare-unwrap test
-// above genuinely isolates the mutation.
-func TestLowerRangeAggregationParserUnwrapMaterialisesIntermediateColumn(t *testing.T) {
+// TestLowerRangeAggregationParserUnwrapIdentityReadsLabelsColumn pins
+// that an unwrap over a parser stage reads its series identity off the
+// row stage's labels column: the identity carries the conversion-error
+// bypass `if(mapContains(<labels>, '__error__'), ...)` over the
+// `_logql_unwrap_labels` column ([unwrapSeriesIdentity]).
+func TestLowerRangeAggregationParserUnwrapIdentityReadsLabelsColumn(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelLogs()
@@ -680,9 +593,6 @@ func TestLowerRangeAggregationParserUnwrapMaterialisesIntermediateColumn(t *test
 	end := start.Add(time.Hour)
 	step := time.Minute
 
-	// Parser stage `| logfmt` wraps labelsExpr in a mapConcat — the
-	// non-ColumnRef path of hasParserMergedLabels — so the materialise
-	// gate fires and the materialised intermediate column appears.
 	query := `sum_over_time({app="api"} | logfmt | unwrap latency [5m])`
 	expr, err := syntax.ParseExpr(query)
 	if err != nil {
@@ -700,33 +610,22 @@ func TestLowerRangeAggregationParserUnwrapMaterialisesIntermediateColumn(t *test
 		t.Fatalf("chsql.Emit: %v", err)
 	}
 
-	if !strings.Contains(sqlStr, "_logql_merged_labels") {
-		t.Errorf("parser-unwrap SQL missing the `_logql_merged_labels` materialised alias\nsql=%s", sqlStr)
+	if !strings.Contains(sqlStr, "if(mapContains(`"+unwrapLabelsAlias+"`, ?)") {
+		t.Errorf("parser-unwrap identity does not carry the error bypass over the %s column\nsql=%s", unwrapLabelsAlias, sqlStr)
 	}
 }
 
 // TestLowerRangeAggregationUnwrapPostFilterPreservesStreamSelector pins
-// the `pred == nil` accumulator branch in [applyUnwrapPostFilters] —
-// the one whose then-arm is range_aggregation.go:`pred = extra`, not
-// the post-loop return guard that shares its condition:
+// that an unwrap post-filter is AND-folded onto the predicate below it,
+// never put in its place. [applyUnwrapPostFilters] hands each post-filter
+// to [rowLayers.filter], which folds it through [andFilter]; on a row
+// whose top node is already a Filter, the fold is
+// range_aggregation.go:`Predicate: &chplan.Binary{Op: chplan.OpAnd, Left: f.Predicate, Right: extra},`
 //
-//	if pred == nil {
-//	    pred = extra
-//	} else {
-//	    pred = &chplan.Binary{Op: chplan.OpAnd, Left: pred, Right: extra}
-//	}
-//
-// On entry, `pred` is initialised from the inner Filter's Predicate
-// (which carries the stream-selector matchers AND any time-window
-// clamp). The original `==` takes the AND-fold branch on the first
-// post-filter iteration when `pred` is already non-nil — preserving
-// the stream selector.
-//
-// A CONDITIONALS_NEGATION mutant flips `==` to `!=`:
-//   - With pred = P (non-nil from f.Predicate), `P != nil` is true →
-//     `pred = extra` REPLACES the accumulated predicate with just the
-//     post-filter. The stream selector ("app" = "api") and the
-//     time-window clamp are SILENTLY DROPPED from the emitted SQL.
+// That Filter's predicate carries the stream-selector matchers AND the
+// time-window clamp. A fold that kept only the post-filter would drop
+// the stream selector ("app" = "api") and the clamp from the emitted
+// SQL silently.
 //
 // The killer assertion: every component of the inner predicate MUST
 // surface in the emitted args:
@@ -735,9 +634,9 @@ func TestLowerRangeAggregationParserUnwrapMaterialisesIntermediateColumn(t *test
 //   - the formatted Start time — time-window lower bound
 //
 // The existing [TestLowerRangeAggregationAppliesUnwrapPostFilters] only
-// checks "status" survives — a `!=` mutant would still emit "status"
-// (the post-filter replaces, not omits) but would drop the stream
-// selector and the time clamp. This stricter assertion catches that.
+// checks "status" survives — a replacing fold would still emit "status"
+// but would drop the stream selector and the time clamp. This stricter
+// assertion catches that.
 func TestLowerRangeAggregationUnwrapPostFilterPreservesStreamSelector(t *testing.T) {
 	t.Parallel()
 
@@ -779,15 +678,13 @@ func TestLowerRangeAggregationUnwrapPostFilterPreservesStreamSelector(t *testing
 	}
 
 	// LOAD-BEARING: stream selector survives the post-filter AND-fold.
-	// A `==` → `!=` mutant on the accumulator branch would replace
-	// `pred` with the post-filter on its first iteration, dropping the
-	// stream selector. Both "app" (the matcher's label key) and "api"
-	// (its value) MUST surface as bound args.
+	// A fold that replaced the predicate below with the post-filter
+	// would drop the stream selector. Both "app" (the matcher's label
+	// key) and "api" (its value) MUST surface as bound args.
 	for _, want := range []string{"app", "api"} {
 		if !argsContain(args, want) {
 			t.Errorf("emitted SQL args missing stream-selector token %q "+
-				"— the accumulator branch's `pred == nil` may have flipped to `!=`, "+
-				"replacing the stream predicate with just the post-filter\nargs=%v",
+				"— the post-filter fold replaced the stream predicate instead of AND-ing onto it\nargs=%v",
 				want, args)
 		}
 	}
@@ -796,13 +693,12 @@ func TestLowerRangeAggregationUnwrapPostFilterPreservesStreamSelector(t *testing
 	// filter AND-fold. The pre-scan clamp uses the EXTENDED
 	// `innerLc.Start = start - (Interval + Offset) = start - 5m`
 	// (rendered by [timeLiteralExpr]). The formatted timestamp MUST
-	// appear in the args; an accumulator-branch mutation that drops the
-	// clamp would erase it.
+	// appear in the args; a fold that drops the clamp would erase it.
 	extendedStart := start.Add(-(ra.Left.Interval + ra.Left.Offset))
 	wantExtendedStart := extendedStart.Format("2006-01-02 15:04:05.000000000")
 	if !argsContain(args, wantExtendedStart) {
 		t.Errorf("emitted SQL args missing pre-scan clamp lower-bound %q "+
-			"— an accumulator-branch mutation may have dropped the time-window predicate\nargs=%v",
+			"— the post-filter fold dropped the time-window predicate\nargs=%v",
 			wantExtendedStart, args)
 	}
 }
@@ -948,9 +844,9 @@ func TestRangeAggregationGroupByWithoutStripsFromIdentityBase(t *testing.T) {
 	}
 
 	// The identityBase stand-in mirrors the unwrap+parser path: the
-	// materialised merged-labels column minus the unwrap target.
+	// merged-labels column minus the unwrap target.
 	identityBase := &chplan.MapWithoutKeys{
-		Map:  &chplan.ColumnRef{Name: "_logql_merged_labels"},
+		Map:  &chplan.ColumnRef{Name: unwrapLabelsAlias},
 		Keys: []string{"latency"},
 	}
 	got, err := rangeAggregationGroupBy(ra, s, identityBase,

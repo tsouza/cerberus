@@ -1,0 +1,311 @@
+-- query.logql --
+sum(count_over_time({job="api"} | json | category="auth" [5m]))
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    SeverityText LowCardinality(String) DEFAULT '',
+    SeverityNumber UInt8 DEFAULT 0,
+    ResourceAttributes Map(String, String),
+    LogAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
+    (toDateTime64('2025-12-31 23:58:00', 9), '{"msg":"login ok","category":"auth"}', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:00', 9), '{"msg":"login denied","category":"auth"}', map('job', 'api')),
+    (toDateTime64('2026-01-01 00:00:00', 9), '{"msg":"query ran","category":"db"}', map('job', 'api'));
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:01Z", 2]
+]
+-- parity --
+oracle: loki
+endpoint: /api/v1/query
+scope: full
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+[3] string = ""
+[4] string = "detected_level"
+[5] int64 = 1
+[6] string = "_extracted"
+[7] int64 = 1
+[8] int64 = 1
+[9] int64 = 1
+[10] int64 = 2
+[11] string = "\""
+[12] int64 = 2
+[13] int64 = 2
+[14] int64 = 1
+[15] string = ""
+[16] int64 = 2
+[17] string = "^[\"tf0-9-]"
+[18] int64 = 2
+[19] string = "{"
+[20] string = ""
+[21] int64 = 1
+[22] int64 = 1
+[23] string = "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$"
+[24] string = ""
+[25] int64 = 1
+[26] string = "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$"
+[27] string = ""
+[28] string = "[^A-Za-z0-9_]"
+[29] string = "_"
+[30] int64 = 1
+[31] string = "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$"
+[32] string = ""
+[33] string = "[^A-Za-z0-9_]"
+[34] string = "_"
+[35] int64 = 1
+[36] string = "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$"
+[37] string = ""
+[38] string = "[^A-Za-z0-9_]"
+[39] string = "_"
+[40] string = "_"
+[41] string = "^([0-9])"
+[42] string = "_\\1"
+[43] int64 = 2
+[44] int64 = 2
+[45] string = "{"
+[46] string = ""
+[47] string = ""
+[48] int64 = 1
+[49] string = "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$"
+[50] string = ""
+[51] int64 = 1
+[52] string = "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$"
+[53] string = ""
+[54] string = "[^A-Za-z0-9_]"
+[55] string = "_"
+[56] int64 = 1
+[57] string = "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$"
+[58] string = ""
+[59] string = "[^A-Za-z0-9_]"
+[60] string = "_"
+[61] int64 = 1
+[62] string = "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$"
+[63] string = ""
+[64] string = "[^A-Za-z0-9_]"
+[65] string = "_"
+[66] string = "_"
+[67] string = "^([0-9])"
+[68] string = "_\\1"
+[69] int64 = 2
+[70] string = "Array(Tuple(String,String))"
+[71] string = "Map(String,String)"
+[72] string = ""
+[73] string = "unknown"
+[74] string = "trace"
+[75] string = "trc"
+[76] string = "trace"
+[77] string = "debug"
+[78] string = "dbg"
+[79] string = "debug"
+[80] string = "info"
+[81] string = "inf"
+[82] string = "information"
+[83] string = "info"
+[84] string = "warn"
+[85] string = "wrn"
+[86] string = "warning"
+[87] string = "warn"
+[88] string = "error"
+[89] string = "err"
+[90] string = "error"
+[91] string = "critical"
+[92] string = "critical"
+[93] string = "fatal"
+[94] string = "fatal"
+[95] string = "detected_level"
+[96] string = ""
+[97] string = "detected_level"
+[98] string = "level"
+[99] string = ""
+[100] string = "level"
+[101] string = "log.level"
+[102] string = ""
+[103] string = "log.level"
+[104] string = "severity"
+[105] string = ""
+[106] string = "severity"
+[107] string = "severity_text"
+[108] string = ""
+[109] string = "severity_text"
+[110] string = ""
+[111] int64 = 0
+[112] string = ""
+[113] int64 = 4
+[114] string = "trace"
+[115] int64 = 8
+[116] string = "debug"
+[117] int64 = 12
+[118] string = "info"
+[119] int64 = 16
+[120] string = "warn"
+[121] int64 = 20
+[122] string = "error"
+[123] int64 = 24
+[124] string = "fatal"
+[125] string = ""
+[126] string = "job"
+[127] string = "api"
+[128] string = "category"
+[129] string = "category"
+[130] string = "category"
+[131] string = "auth"
+-- args_optimized --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+[3] string = ""
+[4] string = "detected_level"
+[5] int64 = 1
+[6] string = "_extracted"
+[7] int64 = 1
+[8] int64 = 1
+[9] int64 = 1
+[10] int64 = 2
+[11] string = "\""
+[12] int64 = 2
+[13] int64 = 2
+[14] int64 = 1
+[15] string = ""
+[16] int64 = 2
+[17] string = "^[\"tf0-9-]"
+[18] int64 = 2
+[19] string = "{"
+[20] string = ""
+[21] int64 = 1
+[22] int64 = 1
+[23] string = "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$"
+[24] string = ""
+[25] int64 = 1
+[26] string = "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$"
+[27] string = ""
+[28] string = "[^A-Za-z0-9_]"
+[29] string = "_"
+[30] int64 = 1
+[31] string = "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$"
+[32] string = ""
+[33] string = "[^A-Za-z0-9_]"
+[34] string = "_"
+[35] int64 = 1
+[36] string = "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$"
+[37] string = ""
+[38] string = "[^A-Za-z0-9_]"
+[39] string = "_"
+[40] string = "_"
+[41] string = "^([0-9])"
+[42] string = "_\\1"
+[43] int64 = 2
+[44] int64 = 2
+[45] string = "{"
+[46] string = ""
+[47] string = ""
+[48] int64 = 1
+[49] string = "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$"
+[50] string = ""
+[51] int64 = 1
+[52] string = "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$"
+[53] string = ""
+[54] string = "[^A-Za-z0-9_]"
+[55] string = "_"
+[56] int64 = 1
+[57] string = "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$"
+[58] string = ""
+[59] string = "[^A-Za-z0-9_]"
+[60] string = "_"
+[61] int64 = 1
+[62] string = "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$"
+[63] string = ""
+[64] string = "[^A-Za-z0-9_]"
+[65] string = "_"
+[66] string = "_"
+[67] string = "^([0-9])"
+[68] string = "_\\1"
+[69] int64 = 2
+[70] string = "Array(Tuple(String,String))"
+[71] string = "Map(String,String)"
+[72] string = ""
+[73] string = "unknown"
+[74] string = "trace"
+[75] string = "trc"
+[76] string = "trace"
+[77] string = "debug"
+[78] string = "dbg"
+[79] string = "debug"
+[80] string = "info"
+[81] string = "inf"
+[82] string = "information"
+[83] string = "info"
+[84] string = "warn"
+[85] string = "wrn"
+[86] string = "warning"
+[87] string = "warn"
+[88] string = "error"
+[89] string = "err"
+[90] string = "error"
+[91] string = "critical"
+[92] string = "critical"
+[93] string = "fatal"
+[94] string = "fatal"
+[95] string = "detected_level"
+[96] string = ""
+[97] string = "detected_level"
+[98] string = "level"
+[99] string = ""
+[100] string = "level"
+[101] string = "log.level"
+[102] string = ""
+[103] string = "log.level"
+[104] string = "severity"
+[105] string = ""
+[106] string = "severity"
+[107] string = "severity_text"
+[108] string = ""
+[109] string = "severity_text"
+[110] string = ""
+[111] int64 = 0
+[112] string = ""
+[113] int64 = 4
+[114] string = "trace"
+[115] int64 = 8
+[116] string = "debug"
+[117] int64 = 12
+[118] string = "info"
+[119] int64 = 16
+[120] string = "warn"
+[121] int64 = 20
+[122] string = "error"
+[123] int64 = 24
+[124] string = "fatal"
+[125] string = ""
+[126] string = "job"
+[127] string = "api"
+[128] string = "category"
+[129] string = "category"
+[130] string = "category"
+[131] string = "auth"
+-- chplan --
+Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, FnNow64(9) AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[] funcs=[FnSum(Value) AS Value] dropEmptyOnNoGroup
+    RangeWindow func=count_over_time range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
+      Project [FnMapSort(FnMapMerge(ResourceAttributes, FnMapFilter((k, v) -> (v != ""), FnMap("detected_level", _logql_detected_level)))) AS ResourceAttributes, Timestamp, 1 AS Value]
+        Filter predicate=(FnIf(FnMapContainsKey(_logql_labels_0, "category"), _logql_labels_0["category"], LogAttributes["category"]) = "auth")
+          Project [LogAttributes, ResourceAttributes, Timestamp, _logql_detected_level, FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnArrayMap(__json_entry -> FnTuple(FnTupleElement(__json_entry, 1), FnIf(FnStartsWith(FnTupleElement(__json_entry, 2), "\""), FnJSONExtractString(FnTupleElement(__json_entry, 2)), FnTupleElement(__json_entry, 2))), FnArrayFilter(__json_entry -> ((FnTupleElement(__json_entry, 1) != "") AND FnRegexMatch(FnTupleElement(__json_entry, 2), "^[\"tf0-9-]")), FnArrayFold((__json_acc, __json_step) -> FnArrayFlatten(FnArrayMap(__json_entry -> FnIf(FnStartsWith(FnTupleElement(__json_entry, 2), "{"), FnArrayMap(__json_member -> FnTuple(FnRegexReplaceFirst(FnArrayStringConcat(FnArrayFilter(__json_part -> (__json_part != ""), FnArray(FnTupleElement(__json_entry, 1), FnRegexReplaceAll(FnRegexReplaceAll(FnTupleElement(__json_member, 1), "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$", ""), "[^A-Za-z0-9_]", "_"))), "_"), "^([0-9])", "_\\1"), FnTupleElement(__json_member, 2)), FnJSONExtractKeysAndValuesRaw(FnTupleElement(__json_entry, 2))), FnArray(__json_entry)), __json_acc)), FnRange(FnCountSubstrings(Body, "{")), FnArrayMap(__json_member -> FnTuple(FnRegexReplaceFirst(FnArrayStringConcat(FnArrayFilter(__json_part -> (__json_part != ""), FnArray("", FnRegexReplaceAll(FnRegexReplaceAll(FnTupleElement(__json_member, 1), "^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$", ""), "[^A-Za-z0-9_]", "_"))), "_"), "^([0-9])", "_\\1"), FnTupleElement(__json_member, 2)), FnJSONExtractKeysAndValuesRaw(Body)))))), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))) AS _logql_labels_0]
+            Project [Body, LogAttributes, ResourceAttributes, Timestamp, FnMultiIf((FnLower(_logql_level_source) = ""), "unknown", ((FnLower(_logql_level_source) = "trace") OR (FnLower(_logql_level_source) = "trc")), "trace", ((FnLower(_logql_level_source) = "debug") OR (FnLower(_logql_level_source) = "dbg")), "debug", (((FnLower(_logql_level_source) = "info") OR (FnLower(_logql_level_source) = "inf")) OR (FnLower(_logql_level_source) = "information")), "info", (((FnLower(_logql_level_source) = "warn") OR (FnLower(_logql_level_source) = "wrn")) OR (FnLower(_logql_level_source) = "warning")), "warn", ((FnLower(_logql_level_source) = "error") OR (FnLower(_logql_level_source) = "err")), "error", (FnLower(_logql_level_source) = "critical"), "critical", (FnLower(_logql_level_source) = "fatal"), "fatal", _logql_level_source) AS _logql_detected_level]
+              Project [Body, LogAttributes, ResourceAttributes, Timestamp, FnMultiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], FnMultiIf((SeverityText != ""), SeverityText, FnMultiIf((SeverityNumber <= 0), "", (SeverityNumber <= 4), "trace", (SeverityNumber <= 8), "debug", (SeverityNumber <= 12), "info", (SeverityNumber <= 16), "warn", (SeverityNumber <= 20), "error", (SeverityNumber <= 24), "fatal", ""))) AS _logql_level_source]
+                Filter predicate=(ResourceAttributes["job"] = "api")
+                  Scan(otel_logs)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;agg=0;rw
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Value` FROM (SELECT sum(`Value`) AS `Value`, count() AS `_cerb_n` FROM (SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT mapSort(mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`)))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM (SELECT `LogAttributes`, `ResourceAttributes`, `Timestamp`, `_logql_detected_level`, mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(arrayMap(__json_entry -> tuple(tupleElement(__json_entry, ?), if(startsWith(tupleElement(__json_entry, ?), ?), JSONExtractString(tupleElement(__json_entry, ?)), tupleElement(__json_entry, ?))), arrayFilter(__json_entry -> ((tupleElement(__json_entry, ?) != ?) AND match(tupleElement(__json_entry, ?), ?)), arrayFold((__json_acc, __json_step) -> arrayFlatten(arrayMap(__json_entry -> if(startsWith(tupleElement(__json_entry, ?), ?), arrayMap(__json_member -> tuple(replaceRegexpOne(arrayStringConcat(arrayFilter(__json_part -> (__json_part != ?), array(tupleElement(__json_entry, ?), if(isValidUTF8(replaceRegexpAll(tupleElement(__json_member, ?), ?, ?)), replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, ?), ?, ?), ?, ?), arrayStringConcat(arrayMap((utf8_sub, utf8_rune) -> if(utf8_sub = utf8_rune OR utf8_rune != '�', utf8_rune, concat(char(bitOr(bitShiftLeft(bitAnd(reinterpretAsUInt8(substring(utf8_sub, 3, 1)), 3), 6), bitAnd(reinterpretAsUInt8(substring(utf8_sub, 4, 1)), 63))), substring(utf8_sub, 5))), arrayMap(utf8_chunk -> arrayStringConcat(utf8_chunk), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', replaceRegexpAll(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(if(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))) >= '􏾀' AND arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))) <= '􏿿', '􏼀', arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), arrayStringConcat(arrayMap(utf8_byte -> char(244, 143, bitOr(188, bitShiftRight(reinterpretAsUInt8(utf8_byte), 6)), bitOr(128, bitAnd(reinterpretAsUInt8(utf8_byte), 63))), arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> char(244, 143, bitOr(188, bitShiftRight(reinterpretAsUInt8(utf8_byte), 6)), bitOr(128, bitAnd(reinterpretAsUInt8(utf8_byte), 63))), arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', replaceRegexpAll(tupleElement(__json_member, ?), ?, ?))))), ?, ?)))), arrayMap(utf8_chunk -> arrayStringConcat(utf8_chunk), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', replaceRegexpAll(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', replaceRegexpAll(tupleElement(__json_member, ?), ?, ?))))), ?, ?))))))))), ?), ?, ?), tupleElement(__json_member, ?)), JSONExtractKeysAndValuesRaw(tupleElement(__json_entry, ?))), array(__json_entry)), __json_acc)), range(countSubstrings(`Body`, ?)), arrayMap(__json_member -> tuple(replaceRegexpOne(arrayStringConcat(arrayFilter(__json_part -> (__json_part != ?), array(?, if(isValidUTF8(replaceRegexpAll(tupleElement(__json_member, ?), ?, ?)), replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, ?), ?, ?), ?, ?), arrayStringConcat(arrayMap((utf8_sub, utf8_rune) -> if(utf8_sub = utf8_rune OR utf8_rune != '�', utf8_rune, concat(char(bitOr(bitShiftLeft(bitAnd(reinterpretAsUInt8(substring(utf8_sub, 3, 1)), 3), 6), bitAnd(reinterpretAsUInt8(substring(utf8_sub, 4, 1)), 63))), substring(utf8_sub, 5))), arrayMap(utf8_chunk -> arrayStringConcat(utf8_chunk), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', replaceRegexpAll(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(if(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))) >= '􏾀' AND arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))) <= '􏿿', '􏼀', arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), arrayStringConcat(arrayMap(utf8_byte -> char(244, 143, bitOr(188, bitShiftRight(reinterpretAsUInt8(utf8_byte), 6)), bitOr(128, bitAnd(reinterpretAsUInt8(utf8_byte), 63))), arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> char(244, 143, bitOr(188, bitShiftRight(reinterpretAsUInt8(utf8_byte), 6)), bitOr(128, bitAnd(reinterpretAsUInt8(utf8_byte), 63))), arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', replaceRegexpAll(tupleElement(__json_member, ?), ?, ?))))), ?, ?)))), arrayMap(utf8_chunk -> arrayStringConcat(utf8_chunk), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', replaceRegexpAll(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', replaceRegexpAll(tupleElement(__json_member, ?), ?, ?))))), ?, ?))))))))), ?), ?, ?), tupleElement(__json_member, ?)), JSONExtractKeysAndValuesRaw(`Body`)))))), CAST(array(), ?))), ?))) AS `_logql_labels_0` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `Timestamp`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `Timestamp`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))))) WHERE (if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?]) = ?))) WHERE `Timestamp` > now64(9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= now64(9) GROUP BY `ResourceAttributes`)) WHERE `_cerb_n` > 0)
+-- sql_optimized --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Value` FROM (SELECT sum(`Value`) AS `Value`, count() AS `_cerb_n` FROM (SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT mapSort(mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`)))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM (SELECT `LogAttributes`, `ResourceAttributes`, `Timestamp`, `_logql_detected_level`, mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(arrayMap(__json_entry -> tuple(tupleElement(__json_entry, ?), if(startsWith(tupleElement(__json_entry, ?), ?), JSONExtractString(tupleElement(__json_entry, ?)), tupleElement(__json_entry, ?))), arrayFilter(__json_entry -> ((tupleElement(__json_entry, ?) != ?) AND match(tupleElement(__json_entry, ?), ?)), arrayFold((__json_acc, __json_step) -> arrayFlatten(arrayMap(__json_entry -> if(startsWith(tupleElement(__json_entry, ?), ?), arrayMap(__json_member -> tuple(replaceRegexpOne(arrayStringConcat(arrayFilter(__json_part -> (__json_part != ?), array(tupleElement(__json_entry, ?), if(isValidUTF8(replaceRegexpAll(tupleElement(__json_member, ?), ?, ?)), replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, ?), ?, ?), ?, ?), arrayStringConcat(arrayMap((utf8_sub, utf8_rune) -> if(utf8_sub = utf8_rune OR utf8_rune != '�', utf8_rune, concat(char(bitOr(bitShiftLeft(bitAnd(reinterpretAsUInt8(substring(utf8_sub, 3, 1)), 3), 6), bitAnd(reinterpretAsUInt8(substring(utf8_sub, 4, 1)), 63))), substring(utf8_sub, 5))), arrayMap(utf8_chunk -> arrayStringConcat(utf8_chunk), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', replaceRegexpAll(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(if(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))) >= '􏾀' AND arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))) <= '􏿿', '􏼀', arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), arrayStringConcat(arrayMap(utf8_byte -> char(244, 143, bitOr(188, bitShiftRight(reinterpretAsUInt8(utf8_byte), 6)), bitOr(128, bitAnd(reinterpretAsUInt8(utf8_byte), 63))), arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> char(244, 143, bitOr(188, bitShiftRight(reinterpretAsUInt8(utf8_byte), 6)), bitOr(128, bitAnd(reinterpretAsUInt8(utf8_byte), 63))), arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', replaceRegexpAll(tupleElement(__json_member, ?), ?, ?))))), ?, ?)))), arrayMap(utf8_chunk -> arrayStringConcat(utf8_chunk), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', replaceRegexpAll(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', replaceRegexpAll(tupleElement(__json_member, ?), ?, ?))))), ?, ?))))))))), ?), ?, ?), tupleElement(__json_member, ?)), JSONExtractKeysAndValuesRaw(tupleElement(__json_entry, ?))), array(__json_entry)), __json_acc)), range(countSubstrings(`Body`, ?)), arrayMap(__json_member -> tuple(replaceRegexpOne(arrayStringConcat(arrayFilter(__json_part -> (__json_part != ?), array(?, if(isValidUTF8(replaceRegexpAll(tupleElement(__json_member, ?), ?, ?)), replaceRegexpAll(replaceRegexpAll(tupleElement(__json_member, ?), ?, ?), ?, ?), arrayStringConcat(arrayMap((utf8_sub, utf8_rune) -> if(utf8_sub = utf8_rune OR utf8_rune != '�', utf8_rune, concat(char(bitOr(bitShiftLeft(bitAnd(reinterpretAsUInt8(substring(utf8_sub, 3, 1)), 3), 6), bitAnd(reinterpretAsUInt8(substring(utf8_sub, 4, 1)), 63))), substring(utf8_sub, 5))), arrayMap(utf8_chunk -> arrayStringConcat(utf8_chunk), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', replaceRegexpAll(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(if(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))) >= '􏾀' AND arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))) <= '􏿿', '􏼀', arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), arrayStringConcat(arrayMap(utf8_byte -> char(244, 143, bitOr(188, bitShiftRight(reinterpretAsUInt8(utf8_byte), 6)), bitOr(128, bitAnd(reinterpretAsUInt8(utf8_byte), 63))), arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> char(244, 143, bitOr(188, bitShiftRight(reinterpretAsUInt8(utf8_byte), 6)), bitOr(128, bitAnd(reinterpretAsUInt8(utf8_byte), 63))), arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', replaceRegexpAll(tupleElement(__json_member, ?), ?, ?))))), ?, ?)))), arrayMap(utf8_chunk -> arrayStringConcat(utf8_chunk), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', replaceRegexpAll(arrayStringConcat(arrayMap(utf8_chunk -> if(isValidUTF8(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4)))), concat(arrayStringConcat(arraySlice(utf8_chunk, 1, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, multiIf(reinterpretAsUInt8(utf8_chunk[1]) < 128, 1, reinterpretAsUInt8(utf8_chunk[1]) < 224, 2, reinterpretAsUInt8(utf8_chunk[1]) < 240, 3, 4) + 1)))), arrayStringConcat(arrayMap(utf8_byte -> '�', arraySlice(utf8_chunk, 1)))), arraySplit(utf8_byte -> bitAnd(reinterpretAsUInt8(utf8_byte), 192) != 128, splitByString('', replaceRegexpAll(tupleElement(__json_member, ?), ?, ?))))), ?, ?))))))))), ?), ?, ?), tupleElement(__json_member, ?)), JSONExtractKeysAndValuesRaw(`Body`)))))), CAST(array(), ?))), ?))) AS `_logql_labels_0` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `Timestamp`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `Timestamp`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `SeverityNumber`, `SeverityText`, `Timestamp` FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?))))) WHERE (if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?]) = ?))) WHERE `Timestamp` > now64(9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= now64(9) GROUP BY `ResourceAttributes`)) WHERE `_cerb_n` > 0)

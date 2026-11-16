@@ -142,11 +142,12 @@ func TestDetectedLevel_GroupingLevelAliasesToDetectedLevel(t *testing.T) {
 }
 
 // TestDetectedLevel_RangeAggregationLevelByUsesSeverityText pins the
-// inner range-aggregation `by (level)` form. At the inner Project
-// layer, `SeverityText` is still in scope, so the group-key value
-// embeds the full multiIf normalisation directly — the outer
-// MapAccess-via-`detected_level` approach can't apply because the
-// inner Project IS what populates the augmented map (and at this
+// inner range-aggregation `by (level)` form. Below the inner Project,
+// `SeverityText` is still in scope, so the group-key value reads the
+// row stage's level column — the multiIf normalisation over a source
+// cascade that falls back to SeverityText — rather than the outer
+// MapAccess-via-`detected_level` approach, which can't apply because
+// the inner Project IS what populates the augmented map (and at this
 // layer the map hasn't been augmented yet).
 func TestDetectedLevel_RangeAggregationLevelByUsesSeverityText(t *testing.T) {
 	t.Parallel()
@@ -199,9 +200,49 @@ func TestDetectedLevel_RangeAggregationLevelByUsesSeverityText(t *testing.T) {
 	if !ok || keyLit.V != "level" {
 		t.Fatalf("map call args[0] = %v; want LitString(\"level\")", mapCall.Args[0])
 	}
-	multiIf, ok := mapCall.Args[1].(*chplan.FuncCall)
+	// The value reads the row stage's level column; resolve it to the
+	// expression that defines it.
+	levelRef, ok := mapCall.Args[1].(*chplan.ColumnRef)
+	if !ok || levelRef.Name != detectedLevelAlias {
+		t.Fatalf("map call args[1] = %v; want a reference to the %s column", mapCall.Args[1], detectedLevelAlias)
+	}
+	multiIf, ok := definedColumn(t, proj.Input, detectedLevelAlias).(*chplan.FuncCall)
 	if !ok || multiIf.Fn != chplan.FnMultiIf {
-		t.Fatalf("map call args[1] = %v; want FuncCall(multiIf, ...) (SeverityText-derived expression)", mapCall.Args[1])
+		t.Fatalf("%s = %v; want FuncCall(multiIf, ...) (the level normalisation)", detectedLevelAlias, multiIf)
+	}
+	source := definedColumn(t, proj.Input, levelSourceAlias)
+	readsSeverityText := false
+	chplan.InspectExpr(source, func(sub chplan.Expr) bool {
+		if ref, ok := sub.(*chplan.ColumnRef); ok && ref.Name == s.SeverityColumn {
+			readsSeverityText = true
+		}
+		return true
+	})
+	if !readsSeverityText {
+		t.Errorf("%s = %v; want the cascade to fall back to %s", levelSourceAlias, source, s.SeverityColumn)
+	}
+}
+
+// definedColumn returns the expression the row stage under node defines
+// as alias, walking down through its Project layers and filters.
+func definedColumn(t *testing.T, node chplan.Node, alias string) chplan.Expr {
+	t.Helper()
+	for {
+		switch n := node.(type) {
+		case *chplan.Filter:
+			node = n.Input
+			continue
+		case *chplan.Project:
+			for _, p := range n.Projections {
+				if p.Alias == alias {
+					return p.Expr
+				}
+			}
+			node = n.Input
+			continue
+		}
+		t.Fatalf("no row-stage layer defines %s", alias)
+		return nil
 	}
 }
 
