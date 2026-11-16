@@ -116,6 +116,9 @@ func (l *traceqlLang) Parse(ctx context.Context, query string) (chplan.Node, eng
 			// be computed here: this is the only place the parsed AST is
 			// still in hand.
 			metaKeyRefsNameIntrinsic: expr.ReferencesIntrinsic(traceql.IntrinsicName),
+			// Carry the trace-level summary fields reference Tempo leaves
+			// empty for a regrouped search; see ApplyUnsetTraceFields.
+			metaKeyUnsetTraceFields: unsetTraceFieldsFor(expr),
 		},
 	}, nil
 }

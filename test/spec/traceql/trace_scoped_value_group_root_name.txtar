@@ -20,7 +20,8 @@
 #     0030 root  'q' edge      server    0s +1s
 #     0031       'w' edge      client    2s +1s
 #
-# Groups: 'm' (trace 01), '' (rootless trace 02), 'n' (03), 'q' (04).
+# by() groups within each trace. Groups: 'm' (trace 01), '' (rootless trace
+# 02), 'n' (03), 'q' (04).
 -- query.traceql --
 { } | by(rootName)
 -- seed --

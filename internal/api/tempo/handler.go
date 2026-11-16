@@ -584,6 +584,7 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 			applyRootMetadata(summaries, roots)
 		}
 	}
+	ApplyUnsetTraceFields(summaries, res.Meta)
 	httperr.WriteEngineHeaders(w, res.Headers)
 	writeInspectedSpans(w, inspectedSpans)
 	writeJSON(w, http.StatusOK, SearchResponse{
@@ -1207,11 +1208,13 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Traces, meta engine.Met
 		// reserved-key pattern as canonicalSampleProjections — the
 		// latter is what lets the /api/search root-resolution machinery
 		// correct an arbitrarily-picked non-root row, see issue #1481).
-		// boundNewestTraces caps the result to
+		// `by(...)` / `coalesce()` carry the same envelope but group
+		// below the trace; spansetRowsPerTrace folds their rows to one
+		// per trace first. boundNewestTraces caps the result to
 		// the newest `limit` qualifying traces server-side, below the
 		// projection so the TraceStartNs sort key is still in scope.
 		return &chplan.Project{
-			Input:       boundNewestTraces(plan, searchLimitFromMeta(meta)),
+			Input:       boundNewestTraces(spansetRowsPerTrace(plan), searchLimitFromMeta(meta)),
 			Projections: spansetAggregateSampleProjections(),
 		}
 	case isAggregateShape(plan):
@@ -1558,6 +1561,47 @@ func refsNameIntrinsicFromMeta(meta engine.Meta) bool {
 	return v
 }
 
+// spansetRowsPerTrace returns a spanset-aggregate plan with one row per
+// trace. A per-trace aggregate (`| count() > 0`, `| avg(...) > X`) already
+// groups by TraceId alone and passes through. `by(...)` and `coalesce()`
+// group by TraceId plus a group key (or the span identity), so they emit
+// several rows per trace; this folds those into one envelope row per trace
+// — the earliest start, the latest end, a representative span — so
+// boundNewestTraces' LIMIT counts traces rather than groups, and each trace's
+// duration spans every group rather than whichever group's row is read last.
+func spansetRowsPerTrace(plan chplan.Node) chplan.Node {
+	if a := spansetAggregateRoot(plan); a == nil || len(a.GroupBy) == 1 {
+		return plan
+	}
+	col := func(name string) []chplan.Expr { return []chplan.Expr{&chplan.ColumnRef{Name: name}} }
+	return &chplan.Aggregate{
+		Input:          plan,
+		GroupBy:        col("TraceId"),
+		GroupByAliases: []string{"TraceId"},
+		AggFuncs: []chplan.AggFunc{
+			{Fn: chplan.FnSum, Args: col("Value"), Alias: "Value"},
+			{Fn: chplan.FnAny, Args: col(sampleMetricNameCol), Alias: sampleMetricNameCol},
+			{Fn: chplan.FnAny, Args: col("ResourceAttrs"), Alias: "ResourceAttrs"},
+			{Fn: chplan.FnAny, Args: col("ParentSpanId"), Alias: "ParentSpanId"},
+			{Fn: chplan.FnMin, Args: col(sampleTimeUnixCol), Alias: sampleTimeUnixCol},
+			{Fn: chplan.FnMin, Args: col("TraceStartNs"), Alias: "TraceStartNs"},
+			{Fn: chplan.FnMax, Args: col("TraceEndNs"), Alias: "TraceEndNs"},
+		},
+	}
+}
+
+// spansetAggregateRoot returns the Aggregate at the root of a spanset-
+// aggregate plan, under any scalar-filter Filter, or nil.
+func spansetAggregateRoot(plan chplan.Node) *chplan.Aggregate {
+	switch v := plan.(type) {
+	case *chplan.Aggregate:
+		return v
+	case *chplan.Filter:
+		return spansetAggregateRoot(v.Input)
+	}
+	return nil
+}
+
 // boundNewestTraces caps a spanset-aggregation search (`| count() > N`,
 // `| by(name)`, `| avg(...) > X`) to the newest `limit` qualifying traces
 // server-side as ORDER BY TraceStartNs DESC LIMIT N — the parity counterpart to
@@ -1628,13 +1672,8 @@ func isAggregateShape(plan chplan.Node) bool {
 // deliberately fall through; the metrics search-envelope shape is
 // distinct (no TraceId group key, no `__cerberus_traceID` thread).
 func isSpansetAggregateShape(plan chplan.Node) bool {
-	switch v := plan.(type) {
-	case *chplan.Aggregate:
-		return aggregateCarriesSpansetEnvelope(v)
-	case *chplan.Filter:
-		return isSpansetAggregateShape(v.Input)
-	}
-	return false
+	a := spansetAggregateRoot(plan)
+	return a != nil && aggregateCarriesSpansetEnvelope(a)
 }
 
 // aggregateCarriesSpansetEnvelope reports whether a *chplan.Aggregate

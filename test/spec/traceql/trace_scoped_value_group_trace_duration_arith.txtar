@@ -18,7 +18,8 @@
 #     0030 root  'q' edge      server    0s +1s
 #     0031       'w' edge      client    2s +1s
 #
-# Groups: 6s (traces 01 and 04), 4s (02), 2s (03).
+# by() groups within each trace, so traces 01 and 04 stay two groups though
+# they share a key. Groups: 6s (trace 01), 4s (02), 2s (03), 6s (04).
 -- query.traceql --
 { } | by(traceDuration * 2)
 -- seed --
