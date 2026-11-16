@@ -53,6 +53,28 @@ var harmCapFactors = []float64{1.11, 1.2, 1.4, 1.6}
 // peak varies from run to run.
 const harmCalibrationRuns = 3
 
+// settingMaxThreads is ClickHouse's per-query thread count, and
+// settingMaxMemoryUsage its per-query memory limit.
+const (
+	settingMaxThreads     = "max_threads"
+	settingMaxMemoryUsage = "max_memory_usage"
+)
+
+// harmDispatchedHeadroom is how far above the request's own peak under a
+// cap's settings — the largest of harmCalibrationRuns, memory limit lifted —
+// a cap must lie for TestDistinctSpill_WithheldShapesAnswer to require the
+// request to answer under it. It exceeds the widest spread between one
+// statement's single-thread peaks across repeated runs, so the largest of a
+// few runs bounds any other run once multiplied by it.
+const harmDispatchedHeadroom = 1.10
+
+// harmProbeThreads is the thread count every statement of
+// TestDistinctSpill_WithheldShapesAnswer runs with. Run in parallel, a
+// DISTINCT's peak depends on how its per-thread sets happen to merge, and an
+// occasional run peaks far above the rest; on one thread the peak repeats
+// within a few percent, so a cap a fixed factor above it bounds every run.
+const harmProbeThreads = 1
+
 // harmedShape is one Tempo tag-discovery request whose statement's DISTINCT
 // a spill harms, so the handler withholds the DISTINCT threshold from it.
 type harmedShape struct {
@@ -82,16 +104,18 @@ func tagNamesAnswers(t *testing.T, body string) int {
 // TestDistinctSpill_WithheldShapesAnswer drives every Tempo tag-discovery
 // shape the handler withholds the DISTINCT spill threshold from, over 1M
 // unique 256-byte values, through the production handler on ClickHouse 26.9
-// with the engine's settings rules resolved from "auto,distinct_spill". For
-// each shape it measures the statement's unspilled peak P under a cap far
-// above it, the largest of harmCalibrationRuns runs, then finds a cap between
-// P and 2P at which the DISTINCT threshold forced onto the statement at half
-// the cap makes it abort with MEMORY_LIMIT_EXCEEDED (code 241) while carrying
-// that threshold — failing if there is none, since a shape a
-// spill no longer harms must not go without the threshold — and requires the
-// request as dispatched to answer every seeded value under that same cap,
-// running with the group_by/sort/join thresholds at cap/2 and without the
-// DISTINCT one (system.query_log's Settings).
+// with the engine's settings rules resolved from "auto,distinct_spill", every
+// statement on harmProbeThreads threads. For each shape it measures the
+// statement's unspilled peak P under a cap far above it, the largest of
+// harmCalibrationRuns runs, then finds a cap between P and 2P that clears the
+// request's own peak under that cap's settings (memory limit lifted) by
+// harmDispatchedHeadroom and at which the DISTINCT threshold forced onto the
+// statement at half the cap makes it abort with MEMORY_LIMIT_EXCEEDED (code
+// 241) while carrying that threshold — failing if there is none, since a
+// shape a spill no longer harms must not go without the threshold — and
+// requires the request as dispatched to answer every seeded value under that
+// same cap, running with the group_by/sort/join thresholds at cap/2 and
+// without the DISTINCT one (system.query_log's Settings).
 func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), harmProbeBudget)
 	defer cancel()
@@ -118,7 +142,35 @@ func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 				client := s.client(t, adminUser, adminPassword, chclient.Config{MaxQueryMemoryBytes: memCap})
 				params := url.Values{}
 				maps.Copy(params, shape.params)
-				return runTempoProbeOn(ctx, t, client, rules, traces, shape.path, params)
+				return runTempoProbeOn(chclient.WithQuerySetting(ctx, settingMaxThreads, harmProbeThreads), t, client, rules, traces, shape.path, params)
+			}
+			// assertRanWith requires statement qid to have run on
+			// harmProbeThreads threads under memLimit, with the
+			// group_by/sort/join thresholds at half of memCap.
+			assertRanWith := func(qid string, memCap, memLimit int64) {
+				t.Helper()
+				threshold := strconv.FormatInt(memCap/2, 10)
+				for _, name := range []string{settingExternalGroupBy, settingExternalSort, chopt.SettingMaxBytesBeforeExternalJoin} {
+					s.assertEffectiveSetting(ctx, t, qid, name, threshold)
+				}
+				s.assertEffectiveSetting(ctx, t, qid, settingMaxMemoryUsage, strconv.FormatInt(memLimit, 10))
+				s.assertEffectiveSetting(ctx, t, qid, settingMaxThreads, strconv.Itoa(harmProbeThreads))
+			}
+			// dispatchedPeak is the largest of harmCalibrationRuns peaks of
+			// the request as dispatched under memCap — the spill thresholds
+			// memCap sets — with only the memory limit itself lifted.
+			dispatchedPeak := func(memCap int64) int64 {
+				peak := int64(0)
+				for range harmCalibrationRuns {
+					qid := fmt.Sprintf("harm-dispatched-peak-%d", time.Now().UnixNano())
+					lifted := chclient.WithQuerySetting(chclient.WithQueryID(ctx, qid), settingMaxMemoryUsage, int64(harmCalibrationCap))
+					if code, body := run(lifted, memCap); code != http.StatusOK {
+						t.Fatalf("as dispatched under the %d-byte cap's settings, with the memory limit lifted, the probe answered HTTP %d: %.500s", memCap, code, body)
+					}
+					assertRanWith(qid, memCap, harmCalibrationCap)
+					peak = max(peak, int64(s.peakMemory(ctx, t, qid)))
+				}
+				return peak
 			}
 
 			peak := int64(0)
@@ -134,9 +186,15 @@ func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 				peak = max(peak, int64(s.peakMemory(ctx, t, qid)))
 			}
 
-			memCap := int64(0)
+			memCap, capPeak := int64(0), int64(0)
 			for _, factor := range harmCapFactors {
 				candidate := int64(factor * float64(peak))
+				dispatched := dispatchedPeak(candidate)
+				if float64(candidate) < harmDispatchedHeadroom*float64(dispatched) {
+					t.Logf("at %.2f x the %d-byte peak (%d bytes) the cap does not clear the request's own %d-byte peak under its settings by %.2f x",
+						factor, peak, candidate, dispatched, harmDispatchedHeadroom)
+					continue
+				}
 				qid := fmt.Sprintf("harm-forced-%d", time.Now().UnixNano())
 				forced := chclient.WithQuerySetting(chclient.WithQueryID(ctx, qid), chopt.SettingMaxBytesBeforeExternalDistinct, candidate/2)
 				if code, _ := run(forced, candidate); code == http.StatusOK {
@@ -153,12 +211,13 @@ func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 						factor, chopt.SettingMaxBytesBeforeExternalDistinct)
 				}
 				t.Logf("at %.2f x the %d-byte peak (%d bytes) the forced-spill probe aborted: %.200s", factor, peak, candidate, msg)
-				memCap = candidate
+				memCap, capPeak = candidate, dispatched
 				break
 			}
 			if memCap == 0 {
-				t.Fatalf("no cap in %v x the %d-byte peak made the forced-spill probe abort: a spill no longer harms this shape, so it must keep the DISTINCT threshold",
-					harmCapFactors, peak)
+				t.Fatalf("no cap in %v x the %d-byte peak both cleared the request's own peak under its settings by %.2f x and made the forced-spill probe abort: "+
+					"either a spill no longer harms this shape, so it must keep the DISTINCT threshold, or the request's peak under a cap's settings has outgrown the band the harm is shown in",
+					harmCapFactors, peak, harmDispatchedHeadroom)
 			}
 
 			qid := fmt.Sprintf("harm-dispatched-%d", time.Now().UnixNano())
@@ -169,16 +228,13 @@ func TestDistinctSpill_WithheldShapesAnswer(t *testing.T) {
 			if got := shape.answers(t, body); got != shape.want {
 				t.Errorf("as dispatched the probe returned %d values; want %d", got, shape.want)
 			}
-			threshold := strconv.FormatInt(memCap/2, 10)
-			for _, name := range []string{settingExternalGroupBy, settingExternalSort, chopt.SettingMaxBytesBeforeExternalJoin} {
-				s.assertEffectiveSetting(ctx, t, qid, name, threshold)
-			}
+			assertRanWith(qid, memCap, memCap)
 			if s.finishedCarries(ctx, t, qid, chopt.SettingMaxBytesBeforeExternalDistinct) {
 				t.Errorf("as dispatched the statement carries %s; want it withheld from a DISTINCT a spill harms",
 					chopt.SettingMaxBytesBeforeExternalDistinct)
 			}
-			t.Logf("as dispatched: answered under %d bytes, %.2f x the %d-byte unspilled peak, at a peak of %d",
-				memCap, float64(memCap)/float64(peak), peak, s.peakMemory(ctx, t, qid))
+			t.Logf("as dispatched: answered under %d bytes, %.2f x its %d-byte peak under the cap's settings, at a peak of %d",
+				memCap, float64(memCap)/float64(capPeak), capPeak, s.peakMemory(ctx, t, qid))
 		})
 	}
 }

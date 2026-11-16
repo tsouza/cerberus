@@ -728,22 +728,43 @@ the 26.8 LTS. Flipping `AutoSelect` is tracked in
 the statements a spill was measured to harm, not a shape rule.
 `test/chserver`'s `TestDistinctSpill_WithheldShapesAnswer` drives each
 through the handler over 1M spans carrying unique 256-byte values on
-26.9.25.15. It takes the unspilled peak P as the largest of three runs under
-a 4 GiB cap, then forces the threshold to half a cap of 1.11 × P. Two runs
-of the test measured:
+26.9.25.15, every statement on one thread. It takes the unspilled peak P as
+the largest of three runs under a 4 GiB cap, then forces the threshold to
+half a cap of 1.11 × P. It uses that cap only once the cap clears, by 1.10,
+the request's own peak under the cap's settings (the largest of three runs,
+memory limit lifted), and otherwise moves on to 1.2 × P. Three runs of the
+test measured:
 
-| Statement                                         | Unspilled peak P | Threshold forced at 1.11 × P | As dispatched at 1.11 × P |
-| ------------------------------------------------- | ---------------- | ---------------------------- | ------------------------- |
-| intrinsic `name` values                           | 94.7–106.4 MiB   | code 241                     | answers every value       |
-| intrinsic `kind` values                           | 98.1–100.9 MiB   | code 241                     | answers every value       |
-| intrinsic `status` values                         | 94.5–102.9 MiB   | code 241                     | answers every value       |
-| materialized span `rpc.method` values             | 98.0–106.5 MiB   | code 241                     | answers every value       |
-| materialized resource `k8s.namespace.name` values | 99.9–107.7 MiB   | code 241                     | answers every value       |
-| span tag names                                    | 123.8–168.3 MiB  | code 241                     | answers every value       |
-| resource tag names                                | 123.8–125.3 MiB  | code 241                     | answers every value       |
+| Statement                                         | Unspilled peak P | Threshold forced at the cap | As dispatched: cap / its peak |
+| ------------------------------------------------- | ---------------- | --------------------------- | ----------------------------- |
+| intrinsic `name` values                           | 89.7–90.9 MiB    | code 241                    | 1.13–1.20, every value        |
+| intrinsic `kind` values                           | 90.9 MiB         | code 241                    | 1.15, every value             |
+| intrinsic `status` values                         | 89.7–90.9 MiB    | code 241                    | 1.11–1.15, every value        |
+| materialized span `rpc.method` values             | 89.8–91.0 MiB    | code 241                    | 1.10–1.15, every value        |
+| materialized resource `k8s.namespace.name` values | 91.0 MiB         | code 241                    | 1.13–1.15, every value        |
+| span tag names                                    | 152.2–153.5 MiB  | code 241                    | 1.11–1.14, every value        |
+| resource tag names                                | 152.2–153.5 MiB  | code 241                    | 1.10–1.14, every value        |
 
-A single statement's peak varies from run to run (the span tag names by a
-third), which is why the test sizes its caps from the largest of several.
+The cap was 1.11 × P in all but one cell; one run of the intrinsic `name`
+values found 1.11 × P short of its peak under the cap's settings and used
+1.2 × P.
+
+The statements run on one thread because a parallel `DISTINCT`'s peak
+depends on how its per-thread sets happen to merge. Forty parallel runs of
+the resource tag names peaked between 119.5 and 130.3 MiB, and one at
+170.5 MiB; over five green `main` runs of the earlier parallel test, the
+largest of three calibration runs of the tag names ranged from 122.9 to
+165.5 MiB. A cap 1.11 × the largest of three runs sat inside that spread:
+one strict-scan run aborted the resource tag names as dispatched under a
+138.7 MiB cap. On one thread, forty runs of each statement peaked at a few
+discrete values: the intrinsic `name` values at 87.5–94.4 MiB (a spread of
+7.9%), the intrinsic `kind` and materialized resource values at
+87.5–91.0 MiB (4.0%), and the span tag names at 150.2–153.5 MiB (2.2%). The
+1.10 headroom lies above the widest of these. The harm does not depend on
+the thread count: with the threshold forced at 1.11 × P on one thread and
+the memory limit lifted, the intrinsic `name` values statement completed at
+5.1–5.3 × the cap and the span tag names at 1.16–1.18 ×.
+
 An earlier replay of the captured handler SQL found the intrinsic `name`
 values, the materialized values and the span tag names harmed across a band
 from just above P to about twice it.
