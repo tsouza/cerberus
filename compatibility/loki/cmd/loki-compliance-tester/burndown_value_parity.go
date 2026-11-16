@@ -83,7 +83,7 @@ func compareBurndownValueParity(c *http.Client, f flags, metadata *corpus.Metada
 // burndownCases derives the fixed query list from the dataset
 // metadata. Two selectors anchor the templates:
 //
-//   - selJSON — the web-server stream: JSON format, EVERY line carries
+//   - selJSON — the lexicographically-first web-server selector: JSON format, EVERY line carries
 //     a delimited `client_ip` IPv4 (the harness seeder
 //     compatibility/loki/cmd/seed stamps one on every web-server line,
 //     matching the dataset metadata's promise), lines start with `{`
@@ -97,7 +97,7 @@ func burndownCases(metadata *corpus.Metadata) ([]corpus.Case, error) {
 	if len(jsonSels) == 0 {
 		return nil, fmt.Errorf("burndown: dataset metadata has no web-server selectors (required for ip()/pattern cases)")
 	}
-	selJSON := jsonSels[0]
+	selJSON := slices.Min(jsonSels)
 
 	durSels := corpus.Intersect(metadata.ByFormat[corpus.LogFormatLogfmt], metadata.ByUnwrappableField["duration"])
 	if len(durSels) == 0 {

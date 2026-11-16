@@ -142,27 +142,44 @@ func TestLoadMetadata_SortsEveryList(t *testing.T) {
 		t.Fatal(err)
 	}
 	lists := map[string][]string{"all_selectors": md.AllSelectors}
-	for name, index := range map[string]map[string][]string{
-		"by_service_name":        md.ByServiceName,
-		"by_unwrappable_field":   md.ByUnwrappableField,
-		"by_detected_field":      md.ByDetectedField,
-		"by_structured_metadata": md.ByStructuredMetadata,
-		"by_label_key":           md.ByLabelKey,
-		"by_keyword":             md.ByKeyword,
-	} {
-		for key, sels := range index {
-			lists[name+"/"+key] = sels
+	for _, ix := range md.indexes() {
+		if len(ix.lists) == 0 {
+			t.Errorf("%s decoded empty; the fixture gives every index a list", ix.key)
 		}
-	}
-	for f, sels := range md.ByFormat {
-		lists["by_format/"+string(f)] = sels
-	}
-	if len(lists) != 8 {
-		t.Fatalf("decoded %d lists, want 8", len(lists))
+		for key, sels := range ix.lists {
+			lists[ix.key+"/"+key] = sels
+		}
 	}
 	for name, sels := range lists {
 		if len(sels) < 2 || !slices.IsSorted(sels) {
 			t.Errorf("%s = %v, want it sorted ascending", name, sels)
 		}
+	}
+}
+
+// TestMetadataIndexes_CoverEverySelectorIndex holds [Metadata.indexes] to
+// the struct: every field holding selector lists by property value is an
+// index LoadMetadata sorts and checks, so a new index field cannot be
+// decoded and left unchecked.
+func TestMetadataIndexes_CoverEverySelectorIndex(t *testing.T) {
+	t.Parallel()
+	covered := map[string]bool{}
+	for _, ix := range (&Metadata{}).indexes() {
+		covered[ix.key] = true
+	}
+	selectorLists := reflect.TypeFor[map[string][]string]().Elem()
+	var fields int
+	for field := range reflect.TypeFor[Metadata]().Fields() {
+		if field.Type.Kind() != reflect.Map || field.Type.Elem() != selectorLists {
+			continue
+		}
+		fields++
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if !covered[name] {
+			t.Errorf("Metadata.%s (%q) is an index that Metadata.indexes does not return", field.Name, name)
+		}
+	}
+	if fields != len(covered) {
+		t.Fatalf("Metadata has %d index fields, Metadata.indexes returns %d", fields, len(covered))
 	}
 }

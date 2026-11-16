@@ -44,8 +44,11 @@ type StreamRanges struct {
 
 // Metadata describes the seeded dataset: every stream selector, indexes
 // from a stream property to the selectors that have it, the time span, and
-// the per-stream range bounds. Every list is a set: the resolver reads an
-// index by membership ([Intersect]), never by position.
+// the per-stream range bounds. Every list is a set of selectors.
+// [LoadMetadata] sorts each one, so a read by position — the resolver's
+// seeded draw over `all_selectors`, a pass that takes a service's first
+// selector — depends on the set the file declares and not on its layout.
+// Metadata built in code is read as given.
 type Metadata struct {
 	AllSelectors         []string                 `json:"all_selectors"`
 	ByFormat             map[LogFormat][]string   `json:"by_format"`
@@ -96,22 +99,7 @@ func (md *Metadata) canonicalise() error {
 			return fmt.Errorf("metadata_by_selector has range bounds for %s, which all_selectors does not carry", sel)
 		}
 	}
-	formats := make(map[string][]string, len(md.ByFormat))
-	for f, sels := range md.ByFormat {
-		formats[string(f)] = sels
-	}
-	for _, ix := range []struct {
-		key   string
-		lists map[string][]string
-	}{
-		{"by_format", formats},
-		{"by_service_name", md.ByServiceName},
-		{"by_unwrappable_field", md.ByUnwrappableField},
-		{"by_detected_field", md.ByDetectedField},
-		{"by_structured_metadata", md.ByStructuredMetadata},
-		{"by_label_key", md.ByLabelKey},
-		{"by_keyword", md.ByKeyword},
-	} {
+	for _, ix := range md.indexes() {
 		for _, name := range slices.Sorted(maps.Keys(ix.lists)) {
 			sels := ix.lists[name]
 			slices.Sort(sels)
@@ -126,6 +114,31 @@ func (md *Metadata) canonicalise() error {
 		}
 	}
 	return nil
+}
+
+// metadataIndex is one stream-property index of [Metadata]: its key in
+// the file and its lists, keyed by property value.
+type metadataIndex struct {
+	key   string
+	lists map[string][]string
+}
+
+// indexes returns every stream-property index of md. The lists share
+// their backing arrays with md, so sorting one sorts md's.
+func (md *Metadata) indexes() []metadataIndex {
+	formats := make(map[string][]string, len(md.ByFormat))
+	for f, sels := range md.ByFormat {
+		formats[string(f)] = sels
+	}
+	return []metadataIndex{
+		{"by_format", formats},
+		{"by_service_name", md.ByServiceName},
+		{"by_unwrappable_field", md.ByUnwrappableField},
+		{"by_detected_field", md.ByDetectedField},
+		{"by_structured_metadata", md.ByStructuredMetadata},
+		{"by_label_key", md.ByLabelKey},
+		{"by_keyword", md.ByKeyword},
+	}
 }
 
 // firstRepeat returns the index of the first element of the sorted list
