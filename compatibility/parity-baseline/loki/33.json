@@ -6,6 +6,7 @@
     "cerberus/metadata-endpoints | label_values | range | n/a | {cluster=\"cluster-0\"} | label values parity: label=service_name selector={cluster=\"cluster-0\"}",
     "cerberus/metadata-endpoints | label_values | range | n/a | {cluster=~\"cluster-.+\"} | label values parity: label=datacenter selector={cluster=~\"cluster-.+\"}",
     "cerberus/metadata-endpoints | label_values | range | n/a | {cluster=~\"cluster-.+\"} | label values parity: label=pod selector={cluster=~\"cluster-.+\"}",
-    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-5\", region=\"us-east-1\", service=\"prometheus\", service_name=\"prometheus\"} | detected_field values parity: service=prometheus field=detected_level"
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-5\", region=\"us-east-1\", service=\"prometheus\", service_name=\"prometheus\"} | detected_field values parity: service=prometheus field=detected_level",
+    "upstream:0b6946c91f11147f"
   ]
 }

@@ -75,8 +75,8 @@ import (
 // the guard's message at 128.3 / 128.0 MiB, before the merge ran.
 //
 // The per-series window stage that feeds the merge (classicBucketWindowStage)
-// runs before this guard and is not bounded by it; its own ceilings are in
-// classic_bucket_window_bound.go.
+// runs before this guard and is not bounded by it; its per-series ceiling is
+// in classic_bucket_window_bound.go.
 const (
 	// classicBucketMergeBytesPerEntry is the merge's peak memory per bucket
 	// entry at the largest calibrated shapes on 26.8: 2620.9 MiB over
@@ -92,7 +92,7 @@ const (
 	// peak takes between calibration points (75,000 x 50 peaks at 733 MiB,
 	// 100,000 x 50 at 1247 MiB on 26.8) and for the scan feeding the merge.
 	// It does not bound the per-series window stage, which runs before the
-	// guard under its own ceilings (classic_bucket_window_bound.go).
+	// guard under its own per-series ceiling (classic_bucket_window_bound.go).
 	classicBucketMergeCapSharePercent = 75
 
 	// percentDenominator turns classicBucketMergeCapSharePercent into a

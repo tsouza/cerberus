@@ -6,6 +6,6 @@
     "cerberus/metadata-endpoints | detected_labels | range | n/a | {cluster=~\"cluster-.+\"} | detected labels parity (label, cardinality): selector={cluster=~\"cluster-.+\"}",
     "cerberus/wrong-rejection-burndown | metric | range | FORWARD | sort_desc(sum by (detected_level) (count_over_time({cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"}[5m]))) | step=1m0s | sort_desc: sample set unchanged",
     "regression/unpack.yaml | log | range | BACKWARD | {service_name=\"packed-source\"} | unpack | __error__=\"JSONParserErr\" | unpack error path - only lines unpack rejected",
-    "upstream:b42ac569285ac01e"
+    "upstream:140ab2528d0c3a59"
   ]
 }

@@ -1,27 +1,108 @@
 package chclient
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"testing"
 
+	"github.com/ClickHouse/ch-go"
+	chproto "github.com/ClickHouse/ch-go/proto"
 	"github.com/ClickHouse/clickhouse-go/v2"
 
 	"github.com/tsouza/cerberus/internal/chopt"
 )
 
-// chCodeReadonly is the ClickHouse server error code a readonly user raises
-// when cerberus stamps the experimental setting; with
-// chCodeSettingConstraintViolation, the codes a hardened profile raises. Named
-// so the test pins the exact mapping (these codes -> Forbidden).
-const chCodeReadonly = 164
+// transientCanaryErrors are canary errors that are not a refusal: a
+// condition of the moment the server answered with (answered), or a failure
+// with no server answer.
+var transientCanaryErrors = []struct {
+	name     string
+	err      error
+	answered bool
+}{
+	{"timeout exceeded", &clickhouse.Exception{Code: chCodeTimeoutExceeded, Name: "TIMEOUT_EXCEEDED"}, true},
+	{"memory limit exceeded", &clickhouse.Exception{Code: chCodeMemoryLimitExceeded, Name: "MEMORY_LIMIT_EXCEEDED"}, true},
+	{"too many simultaneous queries", &clickhouse.Exception{Code: int32(chproto.ErrTooManySimultaneousQueries), Name: "TOO_MANY_SIMULTANEOUS_QUERIES"}, true},
+	{"server-side socket timeout", &clickhouse.Exception{Code: int32(chproto.ErrSocketTimeout), Name: "SOCKET_TIMEOUT"}, true},
+	{"server-side network error", &clickhouse.Exception{Code: int32(chproto.ErrNetworkError), Name: "NETWORK_ERROR"}, true},
+	{"query cancelled", &clickhouse.Exception{Code: int32(chproto.ErrQueryWasCancelled), Name: "QUERY_WAS_CANCELLED"}, true},
+	{"quota exceeded", &clickhouse.Exception{Code: int32(chproto.ErrQuotaExceeded), Name: "QUOTA_EXCEEDED"}, true},
+	{"memory limit sentinel without a cause", &MemoryLimitError{}, true},
+	{"query timeout sentinel without a cause", &QueryTimeoutError{}, true},
+	{"wrapped memory limit", fmt.Errorf("chclient: query: %w", &clickhouse.Exception{Code: chCodeMemoryLimitExceeded}), true},
+	{"memory limit over http", &clickhouse.HTTPError{StatusCode: http.StatusInternalServerError, Err: &clickhouse.Exception{Code: chCodeMemoryLimitExceeded}}, true},
+	{"dial failure", &net.OpError{Op: "dial", Err: errors.New("connection refused")}, false},
+	{"circuit open", fmt.Errorf("chclient: query: %w", ErrCircuitOpen), false},
+	{"client deadline", fmt.Errorf("chclient: query: %w", context.DeadlineExceeded), false},
+	{"proxy bad gateway", &clickhouse.HTTPError{StatusCode: http.StatusBadGateway, Err: errors.New("response body: upstream connect error")}, false},
+}
 
-// TestClassifyCapabilityFromProbeErr_AllStates pins the tri-state error
-// mapping every capability canary relies on:
+// canaryFamily is one family of canaries: the function that answers it from
+// its statement's error, and whether it reads a condition of the moment the
+// server answered with as Forbidden for the pass only (the query-log union
+// canary, whose read is the feature's own) rather than Unreachable.
+type canaryFamily struct {
+	answer             func(error) canaryAnswer
+	answeredIsPassOnly bool
+}
+
+// canaryFamilies maps each canary family's name to it.
+var canaryFamilies = map[string]canaryFamily{
+	"settings":        {func(err error) canaryAnswer { return canaryErrAnswer(err, isSettingsRefusal) }, false},
+	"query-log union": {queryLogUnionErrAnswer, true},
+}
+
+// TestCanaryErrAnswer_TransientIsNeverHeld pins that no canary reads a load
+// or resource condition as a refusal it holds: a settings canary reads every
+// one as Unreachable, and the query-log union canary reads a condition the
+// server answered with as Forbidden for the pass only and a failure with no
+// server answer as Unreachable.
+func TestCanaryErrAnswer_TransientIsNeverHeld(t *testing.T) {
+	t.Parallel()
+	for family, f := range canaryFamilies {
+		for _, tc := range transientCanaryErrors {
+			wantVerdict, wantPassOnly := chopt.CapabilityUnreachable, false
+			if tc.answered && f.answeredIsPassOnly {
+				wantVerdict, wantPassOnly = chopt.CapabilityForbidden, true
+			}
+			if got := f.answer(tc.err); got.verdict != wantVerdict || got.passOnly != wantPassOnly {
+				t.Errorf("%s canary: %s answered %v, passOnly=%v; want %v, passOnly=%v", family, tc.name, got.verdict, got.passOnly, wantVerdict, wantPassOnly)
+			}
+		}
+	}
+}
+
+// TestCanaryErrAnswer_UnknownServerErrorIsForbiddenForThePassOnly pins that a
+// server exception that is neither a known refusal nor a known condition
+// keeps the capability off for the pass that read it without being held,
+// while a known refusal is held.
+func TestCanaryErrAnswer_UnknownServerErrorIsForbiddenForThePassOnly(t *testing.T) {
+	t.Parallel()
+	unknown := &clickhouse.Exception{Code: int32(chproto.ErrTooManyRowsOrBytes), Name: "TOO_MANY_ROWS_OR_BYTES"}
+	refusal := &clickhouse.Exception{Code: int32(chproto.ErrReadonly), Name: "READONLY"}
+	for set, f := range canaryFamilies {
+		answer := f.answer
+		if got := answer(unknown); got.verdict != chopt.CapabilityForbidden || !got.passOnly {
+			t.Errorf("%s canary: unknown server error answered %v, passOnly=%v; want %v, passOnly", set, got.verdict, got.passOnly, chopt.CapabilityForbidden)
+		}
+		if got := answer(refusal); got.verdict != chopt.CapabilityForbidden || got.passOnly {
+			t.Errorf("%s canary: refusal answered %v, passOnly=%v; want %v, held", set, got.verdict, got.passOnly, chopt.CapabilityForbidden)
+		}
+	}
+}
+
+// TestCanaryErrAnswer_AllStates pins the error mapping every settings canary
+// relies on:
 //   - nil                      -> Available
-//   - typed server rejection   -> Forbidden (the setting was refused)
-//   - transport failure        -> Unreachable (no server verdict; conservative)
-func TestClassifyCapabilityFromProbeErr_AllStates(t *testing.T) {
+//   - the setting refused      -> Forbidden
+//   - a condition of the moment -> Unreachable (no verdict; conservative)
+//
+// TestCanaryErrAnswer_UnknownServerErrorIsForbiddenForThePassOnly pins the
+// remaining case, any other server exception.
+func TestCanaryErrAnswer_AllStates(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -46,19 +127,29 @@ func TestClassifyCapabilityFromProbeErr_AllStates(t *testing.T) {
 		{
 			name: "readonly user (164) is forbidden",
 			err: &clickhouse.Exception{
-				Code:    chCodeReadonly,
+				Code:    int32(chproto.ErrReadonly),
 				Name:    "READONLY",
 				Message: "Cannot modify 'allow_experimental_time_series_aggregate_functions' setting in readonly mode",
 			},
 			want: chopt.CapabilityForbidden,
 		},
 		{
-			name: "any other typed server exception is forbidden (server refused the probe)",
+			name: "unknown setting (115) on a build without the setting is forbidden",
 			err: &clickhouse.Exception{
-				Code:    115,
+				Code:    chCodeUnknownSetting,
 				Name:    "UNKNOWN_SETTING",
-				Message: "Unknown setting allow_experimental_time_series_aggregate_functions",
+				Message: "Setting allow_experimental_time_series_aggregate_functions is neither a builtin setting nor started with the prefix 'SQL_'",
 			},
+			want: chopt.CapabilityForbidden,
+		},
+		{
+			name: "a server exception reporting a condition of the moment is unreachable",
+			err:  &clickhouse.Exception{Code: chCodeMemoryLimitExceeded, Name: "MEMORY_LIMIT_EXCEEDED"},
+			want: chopt.CapabilityUnreachable,
+		},
+		{
+			name: "a ch-go exception carrying a refusal code is forbidden",
+			err:  fmt.Errorf("chclient: query: %w", &ch.Exception{Code: chproto.ErrSettingConstraintViolation, Name: "SETTING_CONSTRAINT_VIOLATION"}),
 			want: chopt.CapabilityForbidden,
 		},
 		{
@@ -81,8 +172,8 @@ func TestClassifyCapabilityFromProbeErr_AllStates(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := classifyCapabilityFromProbeErr(tc.err); got != tc.want {
-				t.Errorf("classifyCapabilityFromProbeErr(%v) = %v; want %v", tc.err, got, tc.want)
+			if got := canaryErrAnswer(tc.err, isSettingsRefusal).verdict; got != tc.want {
+				t.Errorf("canaryErrAnswer(%v) = %v; want %v", tc.err, got, tc.want)
 			}
 		})
 	}

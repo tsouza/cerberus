@@ -452,10 +452,13 @@ flagged in the IR — by design, not by default):
   each `TraceLookupFilter` lookup, each membership subquery in a `Filter`
   predicate or a `compare()` selection — takes that bound widened by the
   metrics node's `PerTraceLookback` on both sides
-  (`chplan.PerTraceWindowBound`). `chplan.BoundMetricsPerTraceSubqueries`
-  stamps both, run at the top of `chsql.Emit` and of the compare root-leg
-  statement; the exemplar statement applies it to the metrics node it
-  renders.
+  (`chplan.PerTraceWindowBound`). Each recursive spans scan the emitter
+  synthesises inside a `WITH RECURSIVE` — a structural closure's anchor and
+  step arms, the nested-set numbering — reads that same input span, and the
+  widened one inside a per-trace subquery. `chplan.BoundMetricsPerTraceSubqueries`
+  stamps all three, run at the top of `chsql.Emit` and of the compare
+  root-leg statement; the exemplar statement applies it to the metrics node
+  it renders.
 - `RangeLWR`, `RangeBucketFanout`, and `AbsentOverTime` are separate IR
   node types with their own `maybePushRangeScanTimeBound` / inner-scan
   bounds.

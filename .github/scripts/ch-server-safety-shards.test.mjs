@@ -53,13 +53,21 @@ func TestCancellation_CPUBoundEmittedShapesAcrossBuilds(t *testing.T) {
 `;
 const a = 'clickhouse/clickhouse-server:26.6.1.1193-alpine';
 const b = 'clickhouse/clickhouse-server:26.8.10.6-alpine';
-const [family] = FAMILY_SHARDS;
+const [family, ...otherFamilies] = FAMILY_SHARDS;
 const familyA = `${family.prefix}_A`;
 const familyB = `${family.prefix}_B`;
-const tests = [familyA, familyB, 'TestConditionCache_X', CANCELLATION_TEST];
+// One test of every other family, so the fixture package leaves no family of
+// FAMILY_SHARDS without a test.
+const otherFamilyTests = otherFamilies.map((f) => `${f.prefix}_A`);
+const tests = [familyA, familyB, ...otherFamilyTests, 'TestConditionCache_X', CANCELLATION_TEST];
 const floor = 'clickhouse/clickhouse-server:25.3.14.14-alpine';
 const pinned = [floor, a, b];
-const pkg = { cancellation: [a, b], tests, rest: [a, floor], families: { [family.id]: [b] } };
+const pkg = {
+  cancellation: [a, b],
+  tests,
+  rest: [a, floor],
+  families: Object.fromEntries(FAMILY_SHARDS.map((f) => [f.id, [b]])),
+};
 
 // A condition-cache source naming the floor and a build the cancellation table
 // also names, plus a commented-out image that names nothing.
@@ -139,6 +147,30 @@ test("a family's images are the ones its defining sources name, and no other sou
   assert.deepEqual(familyImages([familySource, conditionCacheFixture])[family.id], [b]);
 });
 
+test("a family's images include an image constant its source uses and another source defines", () => {
+  const familySource = `func ${familyA}(t *testing.T) {\n\tstart(t, sharedImage)\n}\n`;
+  const definingSource = `const sharedImage = "${b}"\n\nconst unusedImage = "${a}"\n`;
+  assert.deepEqual(familyImages([familySource, definingSource])[family.id], [b]);
+});
+
+test("a family's image constant named only in a comment, or inside a longer name, is not one it boots", () => {
+  const familySource =
+    `func ${familyA}(t *testing.T) {\n\t// was sharedImage\n\tstart(t, sharedImageOld)\n\t_ = "${a}"\n}\n`;
+  const definingSource = `const sharedImage = "${b}"\n`;
+  assert.deepEqual(familyImages([familySource, definingSource])[family.id], [a]);
+});
+
+test('only a single-line const declares an image constant, never a var or an assignment', () => {
+  const familySource = `func ${familyA}(t *testing.T) {\n\tstart(t, varImage, assigned)\n\t_ = "${a}"\n}\n`;
+  const definingSource = `var varImage = "${b}"\n\nfunc f() {\n\tassigned = "${b}"\n}\n`;
+  assert.deepEqual(familyImages([familySource, definingSource])[family.id], [a]);
+});
+
+test('a family whose tests name no image is an error, never a shard that pulls nothing', () => {
+  const familySource = `func ${familyA}(t *testing.T) {\n\tstart(t)\n}\n`;
+  assert.throws(() => familyImages([familySource, conditionCacheFixture]), /names no image/);
+});
+
 test('a family no test belongs to is an error, never an empty shard', () => {
   assert.throws(
     () => selection(SHARD_REST, { ...pkg, tests: ['TestConditionCache_X', CANCELLATION_TEST] }),
@@ -190,7 +222,10 @@ test('an unknown shard, an unpinned build, or a renamed cancellation test is an 
   assert.throws(() => selection('cancellation-1.2.3', pkg), /unknown shard/);
   assert.throws(() => shardImages(selection(cancellationShardId(a), pkg), [b]), /not among the pinned images/);
   assert.throws(() => shardImages(selection(SHARD_REST, pkg), [a, b]), /not among the pinned images/);
-  assert.throws(() => selection(SHARD_REST, { ...pkg, tests: [familyA, 'TestConditionCache_X'] }), /shard table is stale/);
+  assert.throws(
+    () => selection(SHARD_REST, { ...pkg, tests: [familyA, ...otherFamilyTests, 'TestConditionCache_X'] }),
+    /shard table is stale/,
+  );
 });
 
 test('the selection flags always ask for -json and carry -run / -skip only when set', () => {

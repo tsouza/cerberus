@@ -522,23 +522,13 @@ instead (`internal/engine/resource_bound_env.go`,
   `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS`, which counted a
   different unit; the old name is ignored, and setting it logs a startup warning
   naming this one.
-- **`CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_MAX_COST_UNITS`** (int64, no
-  fixed default) - the instant classic-histogram per-series window ceiling, in
-  estimated bytes: a pre-count over the scan the stage reads estimates the
-  memory of the series it groups, the bucket entries it collects and the fold
-  that reduces each series, and refuses the query when the estimate exceeds the
-  ceiling (`internal/promql/classic_bucket_window_bound.go`,
-  `ClassicBucketWindowCostUnitsForMemory`). Unset, the ceiling is derived from
-  `CERBERUS_CH_QUERY_MAX_MEMORY` as 75% of the cap (so `805306368` at
-  the 1 GiB default, and the 1 GiB value when the cap is `0`). Setting a
-  positive value pins it and opts out of the derivation.
 - **`CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_SERIES_MAX_ENTRIES`** (int64, no
   fixed default) - the most bucket entries one series' window may collect in an
   instant classic-histogram query (every in-window sample's finite bounds plus
   its +Inf rung) (`internal/promql/classic_bucket_window_bound.go`,
   `ClassicBucketWindowSeriesEntriesForMemory`). Unset, the ceiling is
-  derived from `CERBERUS_CH_QUERY_MAX_MEMORY` as half of the quarter of
-  the cap the window ceiling above leaves free, at 880 bytes per entry (so
+  derived from `CERBERUS_CH_QUERY_MAX_MEMORY` as half of a quarter of the
+  cap, at 880 bytes per entry (so
   `152520` at the 1 GiB default, and the 1 GiB value when the cap is
   `0`). Setting a positive value pins it and opts out of the derivation.
 - **`CERBERUS_CH_MAX_EMITTED_SQL_BYTES`** (int64, default `262144`) -

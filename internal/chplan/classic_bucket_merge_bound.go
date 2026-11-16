@@ -16,20 +16,18 @@ package chplan
 const ClassicBucketMergeBudgetMessage = "classic-histogram bucket merge exceeds the " +
 	"merged-bucket-entry resource bound"
 
-// ClassicBucketWindowBudgetMessage is the `throwIf` message the instant
-// classic-histogram window guard (internal/promql/classic_bucket_window_bound.go)
-// raises when its pre-count estimates that the per-series window stage — the
-// series it groups, the bucket entries it collects and the fold that reduces
-// them — would use more memory than the configured ceiling
-// (CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_MAX_COST_UNITS). It lives here beside
-// [ClassicBucketMergeBudgetMessage] for the same reason: the lowering that
-// builds the guard may not import the SQL-emission layer, and the classifier
-// in internal/api/prom needs the identical string.
-const ClassicBucketWindowBudgetMessage = "classic-histogram window exceeds the estimated-memory resource bound"
-
 // ClassicBucketWindowSeriesBudgetMessage is the `throwIf` message the
 // instant classic-histogram window guard raises when one series' window
 // collects more bucket entries — every in-window row's finite bounds plus its
 // +Inf rung — than the configured ceiling
 // (CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_SERIES_MAX_ENTRIES).
 const ClassicBucketWindowSeriesBudgetMessage = "classic-histogram window exceeds the bucket-entries-per-series resource bound"
+
+// ClassicHistogramMemoryLimitMessage is the message the Prometheus head
+// answers with when ClickHouse aborts a statement carrying a
+// classic-histogram quantile ([HistogramQuantile]) for exceeding its memory
+// limit (code 241). The quantile's stages are bounded per series and per
+// merge, not as a whole, so the server's cap is what refuses such a query;
+// the head names the quantile instead of reporting a generic memory-limit
+// failure.
+const ClassicHistogramMemoryLimitMessage = "classic-histogram quantile exceeds the ClickHouse memory limit"

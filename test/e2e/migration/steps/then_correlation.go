@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -153,7 +152,7 @@ func (w *World) givenCorrelationProbe() error {
 		// fixture never declares, so this selector matches one live stream per
 		// detected level. The record is identified by its timestamp in
 		// correlationQueryLogs, not by its position in the response.
-		logSelector:    logQLSelectorFor(stream.Labels),
+		logSelector:    seed.LogSelector(stream.Labels),
 		logStart:       manifest.VerifyStart,
 		logEnd:         manifest.VerifyEnd,
 		wantTraceID:    record.TraceID,
@@ -185,29 +184,6 @@ func firstTracedLogRecordInWindow(f seed.Fixture, from, to time.Time) (seed.LogR
 		}
 	}
 	return seed.LogRecord{}, seed.LogStream{}, false
-}
-
-// logQLSelectorFor renders every label in labels as one LogQL stream
-// selector, sorted so the query string is deterministic across runs.
-func logQLSelectorFor(labels map[string]string) string {
-	keys := make([]string, 0, len(labels))
-	for k := range labels {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	b.WriteByte('{')
-	for i, k := range keys {
-		if i > 0 {
-			b.WriteByte(',')
-		}
-		b.WriteString(k)
-		b.WriteString(`="`)
-		b.WriteString(labels[k])
-		b.WriteString(`"`)
-	}
-	b.WriteByte('}')
-	return b.String()
 }
 
 // traceSpanCount walks f.Traces directly for the trace whose spans carry

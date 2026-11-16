@@ -20,7 +20,6 @@ func ownedExternalSettings() []string {
 		promql.EnvClassicBucketMergeMaxEntries,
 		promql.EnvClassicBucketMergeMaxCostUnitsRetired,
 		promql.EnvExpHistogramWindowMaxCostUnits,
-		promql.EnvClassicBucketWindowMaxCostUnits,
 		promql.EnvClassicBucketWindowSeriesMaxEntries,
 
 		engine.EnvRangeBucketFanoutMaxRows,

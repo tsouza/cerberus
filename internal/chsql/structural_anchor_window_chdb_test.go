@@ -88,7 +88,7 @@ func TestStructuralAnchorWindow_ChainExecutes_ChDB(t *testing.T) {
 		t.Fatalf("emit: %v", err)
 	}
 	// The chain emits two closures; both anchor arms must carry the window.
-	assertAnchorArmsWindowed(t, sql, 2)
+	assertAnchorArmsWindowed(t, sql, 2, scanWindowEmitStartNano, scanWindowEmitEndNano)
 
 	// count() over the statement rather than a row drain: chdb-go's parquet
 	// driver reads the wide span envelope back column-by-column, and the row

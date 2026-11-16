@@ -647,7 +647,7 @@ func (e *emitter) emitProject(p *chplan.Project) error {
 	// renders as the bare `SELECT *` — no length guard needed.
 	for _, pr := range p.Projections {
 		expr := pr.Expr
-		// A bare column with no alias passes the column through unchanged
+		// A projection with no alias passes its column through unchanged
 		// under its own name, for a layer above to read with the same
 		// attribute strategy; only a projection that names its output
 		// renders a JSON-strategy column as the reconstructed map.

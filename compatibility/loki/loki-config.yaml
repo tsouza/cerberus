@@ -68,6 +68,10 @@ limits_config:
   max_streams_matchers_per_query: 10000
   max_streams_per_user: 0
   max_query_parallelism: 32
+  # The migration lane's seeder keeps the fixture's last record off the
+  # query frontend's split cuts; seed.ReferenceLokiSplitInterval must
+  # equal this value.
+  split_queries_by_interval: 1h
 
 # Disable the ingester WAL's host-disk-usage throttle. The default
 # (`-ingester.wal-disk-full-threshold=0.90`) rejects every /push with

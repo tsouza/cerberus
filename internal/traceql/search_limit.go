@@ -160,9 +160,12 @@ func stampNestedSetTraceLimit(plan chplan.Node, limit int64, start, end time.Tim
 // reach BELOW a WITH RECURSIVE, so a metrics pipeline over a structural /
 // nested-set source (`{ } >> { } | rate()`,
 // `{ nestedSetParent<0 } | by(nestedSetParent) | rate()`) would emit a
-// windowless recursive arm unless this stamp runs for it too. The bound needs
-// only a non-zero [start,end] + tsCol, NOT the /api/search response trace limit
-// — conflating the two would skip the metrics path, which carries no limit.
+// windowless recursive arm unless this stamp arms it too. On the metrics path
+// the emitter replaces the stamped [start,end] with the span the RangeWindow
+// reads (chplan.BoundMetricsPerTraceSubqueries), keeping the TimestampColumn
+// this stamp set. The bound needs only a non-zero [start,end] + tsCol, NOT the
+// /api/search response trace limit — conflating the two would skip the
+// metrics path, which carries no limit.
 //
 // Unlike stampNestedSetTraceLimit's structure-tab RANKING bound, the request
 // window is safe to apply to EVERY span search shape — select(nestedSet*),
@@ -190,55 +193,7 @@ func stampRecursiveScanWindow(plan chplan.Node, start, end time.Time, s schema.T
 	if startNano == 0 && endNano == 0 {
 		return plan
 	}
-	return windowRecursiveScans(plan, startNano, endNano, s.TimestampColumn, s.MaxTraceDuration)
-}
-
-// windowRecursiveScans is stampRecursiveScanWindow's in-place walk. It stamps
-// the window onto every NestedSetAnnotate / StructuralJoin it reaches and
-// recurses generically through every other node so deeply-nested closures are
-// covered. A closure inside a trace-cohort subquery is part of that per-trace
-// subquery, so it takes the window widened by lookback on each set side, the
-// window the cohort's own leaves read (perTraceWindow).
-func windowRecursiveScans(n chplan.Node, startNano, endNano int64, tsCol string, lookback time.Duration) chplan.Node {
-	switch v := n.(type) {
-	case *chplan.NestedSetAnnotate:
-		// TimestampColumn is already set by the select / group / aggregate
-		// lowering; only the window bounds need stamping here.
-		v.WindowStartNano = startNano
-		v.WindowEndNano = endNano
-		v.Input = windowRecursiveScans(v.Input, startNano, endNano, tsCol, lookback)
-		return v
-	case *chplan.StructuralJoin:
-		// Lowering leaves TimestampColumn "" on the structural join; setting it
-		// alongside the window arms both the emit-time push and its fail-closed
-		// guard (chsql.requireSpansScanWindow).
-		v.TimestampColumn = tsCol
-		v.WindowStartNano = startNano
-		v.WindowEndNano = endNano
-		v.Left = windowRecursiveScans(v.Left, startNano, endNano, tsCol, lookback)
-		v.Right = windowRecursiveScans(v.Right, startNano, endNano, tsCol, lookback)
-		return v
-	case *chplan.Filter:
-		// Same Expr-slot blind spot chplan.PushLeafPredicate documents: the
-		// trace-cohort subquery of a spanset-aggregate operand
-		// (`({A} >> {B} | count() > 1)`) can itself hold a structural closure,
-		// and RewriteChildren cannot reach a Node behind an Expr. Descend it explicitly; the input recurse below is
-		// what the generic default would have done.
-		// The cohort's window is already widened, so a cohort nested inside
-		// it reads the same window (zero further lookback).
-		const alreadyWidened time.Duration = 0
-		cohortStart, cohortEnd := widenWindowNanos(startNano, endNano, lookback)
-		for _, in := range chplan.CohortSubqueries(v.Predicate) {
-			in.Subquery = windowRecursiveScans(in.Subquery, cohortStart, cohortEnd, tsCol, alreadyWidened)
-		}
-		v.Input = windowRecursiveScans(v.Input, startNano, endNano, tsCol, lookback)
-		return v
-	default:
-		out, _ := chplan.RewriteChildren(n, func(c chplan.Node) (chplan.Node, bool) {
-			return windowRecursiveScans(c, startNano, endNano, tsCol, lookback), true
-		})
-		return out
-	}
+	return chplan.StampRecursiveScanWindow(plan, startNano, endNano, s.TimestampColumn, s.MaxTraceDuration)
 }
 
 // stampSearchWindow folds the /api/search request window into every leaf
@@ -606,19 +561,6 @@ func BoundPerTraceCohorts(pred chplan.Expr, start, end time.Time, s schema.Trace
 	if window := perTraceWindow(start, end, s); window != nil {
 		chplan.PushLeafPredicateIntoCohort(pred, window)
 	}
-}
-
-// widenWindowNanos is perTraceWindow's widening over a nanosecond window, as
-// the recursive-scan stamps carry it: each set (non-zero) side moves outward
-// by lookback, and an unset side stays 0.
-func widenWindowNanos(startNano, endNano int64, lookback time.Duration) (int64, int64) {
-	if startNano != 0 {
-		startNano -= lookback.Nanoseconds()
-	}
-	if endNano != 0 {
-		endNano += lookback.Nanoseconds()
-	}
-	return startNano, endNano
 }
 
 // conjoin ANDs two predicates, dropping a nil left arm so the first bound

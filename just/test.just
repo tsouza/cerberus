@@ -491,8 +491,9 @@ query-log-integration:
 # CPU and memory limits. Requires Docker; gated behind the `integration` build
 # tag. See test/chserver/doc.go and .github/workflows/strict-scan.yml. SHARD
 # selects one CI shard: `rest`, a `cancellation-<tag>` id, or a test-family id
-# such as `classic-histogram`, as `node .github/scripts/ch-server-safety-shards.mjs
-# plan` lists them; the default `all` runs the whole package.
+# such as `classic-histogram` or `distinct-spill-harm`, as
+# `node .github/scripts/ch-server-safety-shards.mjs plan` lists them; the
+# default `all` runs the whole package.
 
 # Run the condition-cache and cancellation probes across pinned ClickHouse builds. Needs Docker.
 ch-server-safety-integration SHARD="all":

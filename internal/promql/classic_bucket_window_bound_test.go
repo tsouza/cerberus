@@ -36,12 +36,17 @@ func classicWindowGuardSQL(t *testing.T, query string) string {
 	return sqlStr
 }
 
-// TestClassicBucketWindowGuard_EveryInstantWindowShapeCarriesBothChecks
+// classicWindowScanTable is the FROM clause of the scan every case below
+// reads.
+const classicWindowScanTable = "FROM `otel_metrics_histogram`"
+
+// TestClassicBucketWindowGuard_EveryInstantWindowShapeReadsTheWindowOnce
 // enumerates the instant classic-histogram shapes that reach the per-series
 // window stage — every window function the idiom accepts, aggregated with
-// and without a grouping, and the bare-selector form — and requires both
-// window checks in each emitted statement.
-func TestClassicBucketWindowGuard_EveryInstantWindowShapeCarriesBothChecks(t *testing.T) {
+// and without a grouping, and the bare-selector form — and requires each
+// emitted statement to carry the per-series check and to read the histogram
+// table exactly once: no pre-count over a second copy of the window.
+func TestClassicBucketWindowGuard_EveryInstantWindowShapeReadsTheWindowOnce(t *testing.T) {
 	t.Parallel()
 	for _, query := range []string{
 		`histogram_quantile(0.5, sum by (le) (rate(req_bucket[5m])))`,
@@ -66,84 +71,47 @@ func TestClassicBucketWindowGuard_EveryInstantWindowShapeCarriesBothChecks(t *te
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 			sqlStr := classicWindowGuardSQL(t, query)
-			for _, msg := range []string{chplan.ClassicBucketWindowBudgetMessage, chplan.ClassicBucketWindowSeriesBudgetMessage} {
-				if !strings.Contains(sqlStr, msg) {
-					t.Fatalf("emitted SQL carries no %q check\nSQL: %s", msg, sqlStr)
-				}
+			if !strings.Contains(sqlStr, chplan.ClassicBucketWindowSeriesBudgetMessage) {
+				t.Fatalf("emitted SQL carries no %q check\nSQL: %s", chplan.ClassicBucketWindowSeriesBudgetMessage, sqlStr)
+			}
+			if n := strings.Count(sqlStr, classicWindowScanTable); n != 1 {
+				t.Fatalf("emitted SQL reads the histogram table %d times, want once\nSQL: %s", n, sqlStr)
 			}
 		})
 	}
 }
 
-// TestClassicBucketWindowGuard_PreCountReadsTheScanOnce pins the shape of
-// the query-wide check: one scalar subquery over a copy of the stage's
-// filtered scan, counting entries, rows and series — not a window function
-// over the stage's input, which would hold every scanned row until it had
-// read them all.
-func TestClassicBucketWindowGuard_PreCountReadsTheScanOnce(t *testing.T) {
-	t.Parallel()
-	sqlStr := classicWindowGuardSQL(t, `histogram_quantile(0.5, sum by (le) (rate(req_bucket[5m])))`)
-	before, _, ok := strings.Cut(sqlStr, chplan.ClassicBucketWindowBudgetMessage)
-	if !ok {
-		t.Fatalf("no window check in\n%s", sqlStr)
-	}
-	guard := before[strings.LastIndex(before, "throwIf("):]
-	for _, want := range []string{
-		"sum((length(`ExplicitBounds`) + ?))",
-		"count()",
-		"uniqCombined64(`Attributes`, `ResourceAttributes`, `ServiceName`)",
-		"FROM `otel_metrics_histogram`",
-	} {
-		if !strings.Contains(guard, want) {
-			t.Fatalf("pre-count lacks %q\nguard: %s", want, guard)
-		}
-	}
-	if strings.Contains(guard, " OVER ") {
-		t.Fatalf("pre-count uses a window function\nguard: %s", guard)
-	}
-}
-
-// TestClassicBucketWindowCeilings_DerivedFromCHQueryMaxMemory pins both
-// window ceilings to the per-query memory cap: three-quarters of the cap for
-// the query-wide estimate, half the remaining quarter over the fold's
-// per-entry working set on two threads for the per-series ceiling, the
-// one-GiB values for an unset cap, and an explicit ceiling winning over the
+// TestClassicBucketWindowSeriesCeiling_DerivedFromCHQueryMaxMemory pins the
+// per-series window ceiling to the per-query memory cap: half of a quarter
+// of the cap over the fold's per-entry working set on two threads, the
+// one-GiB value for an unset cap, and an explicit ceiling winning over the
 // derivation.
-func TestClassicBucketWindowCeilings_DerivedFromCHQueryMaxMemory(t *testing.T) {
+func TestClassicBucketWindowSeriesCeiling_DerivedFromCHQueryMaxMemory(t *testing.T) {
 	t.Parallel()
-	// The values docs/operations.md and docs/configuration.md state for the
+	// The value docs/operations.md and docs/configuration.md state for the
 	// 1 GiB default cap.
-	const (
-		shippedCostCeiling   int64 = 805_306_368
-		shippedSeriesCeiling int64 = 152_520
-	)
+	const shippedSeriesCeiling int64 = 152_520
 	const halfGiB = config.DefaultCHQueryMaxMemory / 2
 	at := func(capBytes int64) ResourceBounds {
 		return ResourceBounds{CHQueryMaxMemory: capBytes}.withDefaults()
 	}
-	def := at(config.DefaultCHQueryMaxMemory)
-	if def.ClassicBucketWindowMaxCostUnits != shippedCostCeiling {
-		t.Fatalf("cost ceiling at the default cap = %d, want %d", def.ClassicBucketWindowMaxCostUnits, shippedCostCeiling)
-	}
-	if def.ClassicBucketWindowSeriesMaxEntries != shippedSeriesCeiling {
-		t.Fatalf("per-series ceiling at the default cap = %d, want %d", def.ClassicBucketWindowSeriesMaxEntries, shippedSeriesCeiling)
+	if got := at(config.DefaultCHQueryMaxMemory).ClassicBucketWindowSeriesMaxEntries; got != shippedSeriesCeiling {
+		t.Fatalf("per-series ceiling at the default cap = %d, want %d", got, shippedSeriesCeiling)
 	}
 	for _, tc := range []struct {
-		capBytes            int64
-		wantCost, wantEntry int64
+		capBytes  int64
+		wantEntry int64
 	}{
-		{halfGiB, 402_653_184, 76_260},
-		{2 * config.DefaultCHQueryMaxMemory, 1_610_612_736, 305_040},
-		{0, shippedCostCeiling, shippedSeriesCeiling},
+		{halfGiB, 76_260},
+		{2 * config.DefaultCHQueryMaxMemory, 305_040},
+		{0, shippedSeriesCeiling},
 	} {
-		got := at(tc.capBytes)
-		if got.ClassicBucketWindowMaxCostUnits != tc.wantCost || got.ClassicBucketWindowSeriesMaxEntries != tc.wantEntry {
-			t.Fatalf("ceilings at a %d-byte cap = (%d, %d), want (%d, %d)", tc.capBytes,
-				got.ClassicBucketWindowMaxCostUnits, got.ClassicBucketWindowSeriesMaxEntries, tc.wantCost, tc.wantEntry)
+		if got := at(tc.capBytes).ClassicBucketWindowSeriesMaxEntries; got != tc.wantEntry {
+			t.Fatalf("per-series ceiling at a %d-byte cap = %d, want %d", tc.capBytes, got, tc.wantEntry)
 		}
 	}
-	pinned := ResourceBounds{ClassicBucketWindowMaxCostUnits: 7, ClassicBucketWindowSeriesMaxEntries: 9, CHQueryMaxMemory: halfGiB}.withDefaults()
-	if pinned.ClassicBucketWindowMaxCostUnits != 7 || pinned.ClassicBucketWindowSeriesMaxEntries != 9 {
-		t.Fatalf("explicit ceilings = (%d, %d), want (7, 9)", pinned.ClassicBucketWindowMaxCostUnits, pinned.ClassicBucketWindowSeriesMaxEntries)
+	pinned := ResourceBounds{ClassicBucketWindowSeriesMaxEntries: 9, CHQueryMaxMemory: halfGiB}.withDefaults()
+	if pinned.ClassicBucketWindowSeriesMaxEntries != 9 {
+		t.Fatalf("explicit per-series ceiling = %d, want 9", pinned.ClassicBucketWindowSeriesMaxEntries)
 	}
 }

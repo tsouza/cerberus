@@ -18,6 +18,7 @@ package loki
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -152,5 +153,73 @@ func TestQueryRange_ChDB_JSONResourceAttributes(t *testing.T) {
 	}
 	if want := []string{"api-1", "api-2"}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("query_range lines = %v, want %v", got, want)
+	}
+}
+
+// TestQueryRange_ChDB_JSONResourceAttributesRangeAggregation pins that a
+// range aggregation over a JSON-typed ResourceAttributes answers. Its row
+// stage passes ResourceAttributes through Project layers as a bare column,
+// which must reach the layer that reads it under the same name.
+func TestQueryRange_ChDB_JSONResourceAttributesRangeAggregation(t *testing.T) {
+	base := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	srv := newJSONStrategiesLogsServer(t, base)
+	series := map[string]string{"detected_level": "unknown", "job": "api", "service_name": "svc-a"}
+	for _, tc := range []struct {
+		query string
+		want  map[string][][]any
+	}{
+		{
+			// api-1 sits exactly on base and api-2 2ms after it, so each of
+			// the two steps' (t-1m, t] windows holds one line.
+			query: `count_over_time({job="api"}[1m])`,
+			want:  map[string][][]any{fmt.Sprint(series): {{float64(base.Unix()), "1"}, {float64(base.Add(time.Minute).Unix()), "1"}}},
+		},
+		{
+			// No line is JSON, so no line carries level="x".
+			query: `count_over_time({job="api"} | json | level="x" [1m])`,
+			want:  map[string][][]any{},
+		},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "/loki/api/v1/query_range?" + url.Values{
+				"query": {tc.query},
+				"start": {strconv.FormatInt(base.Add(-time.Minute).UnixNano(), 10)},
+				"end":   {strconv.FormatInt(base.Add(time.Minute).UnixNano(), 10)},
+				"step":  {"60"},
+			}.Encode())
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d: %s", resp.StatusCode, body)
+			}
+			var out struct {
+				Data struct {
+					ResultType string `json:"resultType"`
+					Result     []struct {
+						Metric map[string]string `json:"metric"`
+						Values [][]any           `json:"values"`
+					} `json:"result"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(body, &out); err != nil {
+				t.Fatalf("decode %s: %v", body, err)
+			}
+			if out.Data.ResultType != "matrix" {
+				t.Fatalf("resultType = %q, want matrix", out.Data.ResultType)
+			}
+			got := map[string][][]any{}
+			for _, r := range out.Data.Result {
+				got[fmt.Sprint(r.Metric)] = r.Values
+			}
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Fatalf("matrix = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

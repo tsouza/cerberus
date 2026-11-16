@@ -728,9 +728,28 @@ the 26.8 LTS. Flipping `AutoSelect` is tracked in
 the statements a spill was measured to harm, not a shape rule.
 `test/chserver`'s `TestDistinctSpill_WithheldShapesAnswer` drives each
 through the handler over 1M spans carrying unique 256-byte values on
-26.9.25.15. It takes the unspilled peak P as the largest of three runs under
-a 4 GiB cap, then forces the threshold to half a cap of 1.11 × P. Two runs
-of the test measured:
+26.9.25.15. It measures on one thread. The unspilled peak P is the largest of
+three runs under a 4 GiB cap. For each cap in 1.11, 1.2, 1.4 and 1.6 × P,
+in order, the test first measures the request's own peak under that cap's
+settings (the largest of three runs, memory limit lifted) and passes over
+the cap unless it clears that peak by 1.10. It then forces the threshold to
+half the cap, on one thread, on the server's default thread count (two in
+the test container) and on 16 threads, and passes over the cap unless all
+three abort with code 241. The first cap that passes both is the one the
+request as dispatched must answer under. Three runs of the test measured:
+
+| Statement                                         | Unspilled peak P | Cap chosen      | Threshold forced at the cap | As dispatched: cap / its peak |
+| ------------------------------------------------- | ---------------- | --------------- | --------------------------- | ----------------------------- |
+| intrinsic `name` values                           | 89.7–93.2 MiB    | 1.11 × P        | code 241                    | 1.13–1.18, every value        |
+| intrinsic `kind` values                           | 89.7–90.9 MiB    | 1.11 or 1.2 × P | code 241                    | 1.11–1.23, every value        |
+| intrinsic `status` values                         | 89.7–90.9 MiB    | 1.11 × P        | code 241                    | 1.10–1.15, every value        |
+| materialized span `rpc.method` values             | 91.0 MiB         | 1.11 × P        | code 241                    | 1.11–1.15, every value        |
+| materialized resource `k8s.namespace.name` values | 87.5–91.0 MiB    | 1.11 or 1.2 × P | code 241                    | 1.11–1.17, every value        |
+| span tag names                                    | 153.5 MiB        | 1.11 × P        | code 241                    | 1.12–1.14, every value        |
+| resource tag names                                | 152.2–153.5 MiB  | 1.11 × P        | code 241                    | 1.10–1.12, every value        |
+
+Before the test measured on one thread, it ran every statement on the
+container's default two threads, and two runs measured the same harm there:
 
 | Statement                                         | Unspilled peak P | Threshold forced at 1.11 × P | As dispatched at 1.11 × P |
 | ------------------------------------------------- | ---------------- | ---------------------------- | ------------------------- |
@@ -742,8 +761,41 @@ of the test measured:
 | span tag names                                    | 123.8–168.3 MiB  | code 241                     | answers every value       |
 | resource tag names                                | 123.8–125.3 MiB  | code 241                     | answers every value       |
 
-A single statement's peak varies from run to run (the span tag names by a
-third), which is why the test sizes its caps from the largest of several.
+The peaks are measured on one thread because a parallel `DISTINCT`'s peak
+depends on how its per-thread sets happen to merge. Of forty runs of the
+resource tag names on two threads, thirty-nine peaked between 119.5 and
+130.3 MiB and one at 170.5 MiB. Over five green `main` runs of the
+two-thread test, the largest of three calibration runs of the tag names
+ranged from 122.9 to 165.5 MiB. A cap 1.11 × the largest of three runs sat
+inside that spread, and one strict-scan run aborted the resource tag names as
+dispatched under a 138.7 MiB cap.
+
+On one thread a statement's peak falls on a few discrete values. Under the
+calibration settings, forty runs each spread by 7.9% for the intrinsic
+`name` values (87.5–94.4 MiB), 4.0% for the intrinsic `kind` values
+(87.5–90.9 MiB) and the materialized resource values (87.5–91.0 MiB), and
+2.2% for the span tag names (150.2–153.5 MiB). Under a 1.11 × P cap's
+settings, thirty runs of each of the seven statements spread by at most
+4.0% for the five value statements and 2.3% for the two tag-name
+statements. The 1.10 headroom lies above all of these. With it, the
+tag-name statements' peak under a 1.2 × P cap's settings always clears the
+headroom, so their search stops at 1.2 × P at the latest.
+
+The harm the withholding rests on does not depend on the thread count. With
+the threshold forced at 1.11 × the one-thread P and the memory limit lifted:
+
+| Statement                              | One thread       | Two threads      |
+| -------------------------------------- | ---------------- | ---------------- |
+| intrinsic `name` values                | 5.34–5.51 × cap  | 4.33–4.66 × cap  |
+| materialized resource values           | 5.34–5.51 × cap  | 4.28–4.78 × cap  |
+| span tag names                         | 1.18–1.29 × cap  | 2.61–2.70 × cap  |
+
+Capped, the forced statement aborted with code 241 in every run on 1, 2, 4,
+8 and 16 threads, at both 1.11 and 1.2 × the one-thread P (the intrinsic
+`name` values and both tag-name statements, four runs each). At 1.4 × P the
+two-thread tag-name statements aborted only in some runs, which is why the
+search ending at 1.2 × P for them matters.
+
 An earlier replay of the captured handler SQL found the intrinsic `name`
 values, the materialized values and the span tag names harmed across a band
 from just above P to about twice it.
@@ -1428,7 +1480,9 @@ hold it. Running each canary inside the version probe, on a client whose
 server was just identified, gives it one, and the fleet memory that already
 keys builds by identity keeps verdicts the same way. A second store keyed some
 other way would have had its own retention and forgetting rules to keep in
-step with the first.
+step with the first. The one verdict that has no identity — one read over
+HTTP, below — is held in such a store, and it takes its retention from the
+same per-server count rather than a rule of its own.
 
 **Why a settings canary reads the identity in its own statement.** A canary
 the server accepts returns a row, and a row that holds `serverUUID()` names
@@ -1437,9 +1491,11 @@ through a connection the balancer re-dialled, or through an HTTP balancer
 that routes requests one by one. A refusal
 is an exception and returns no row, and the query-log union canary's
 statement is the reader's own record selection, so neither can name its
-server that way. Both fall back to the identity read on the same client.
+server that way. Over the native protocol both fall back to the identity read
+on the same client; over HTTP neither is attributed (below).
 
-**Why an identity read after every refusal.** The driver closes a connection
+**Why an identity read after every refusal, over the native protocol.** The
+driver closes a connection
 on any error, so the statement after a canary the server refused dials a new
 connection, and behind a load balancer that connection can reach a different
 server. Reading the identity again before the next canary ties the next
@@ -1447,7 +1503,42 @@ refusal to the server the new connection reached, at the cost of one trivial
 statement per canary that was not accepted, per address. An accepted canary keeps the connection,
 and its own row is the latest identity.
 
-**Why each server runs the canary it ran longest ago first.** After a
+**Why a verdict over HTTP is held unattributed rather than attributed.**
+Attributing a refusal, or a query-log union verdict, to the server the identity
+read named needs the canary and that read to reach the same server. Over the
+native protocol they share one connection. Over HTTP each statement is its own
+request, and a balancer that routes requests one by one (chproxy, an nginx
+`http` upstream, a cloud L7 balancer) can send them to different servers. A
+refusal filed under the wrong server was then cleared by that server's next
+accepted canary, while the server that refused never held the refusal, so a
+disagreeing replica's refusal came and went with the routing. Holding the
+verdict as an unnamed server's keeps it in force while the replica that gives
+it keeps answering the canary, under the same retention as a remembered
+server, and a server's own accepted canaries cannot clear it. The cost is that
+an unattributed refusal outlives a replica's fix: it clears only once 40
+complete probes per remembered server have not read it, rather than on the
+first probe that lands on the fixed replica. A server error that is not a
+refusal never pays that cost, because it is not a refusal verdict (below).
+
+An unreachable verdict read over HTTP is not held, and over the native
+protocol it is not stored on the server that gave it. An unattributed
+unreachable verdict has no server to wait on: held for the full retention, it
+would mark the canary unreachable for minutes after one failed request to any
+replica, and an unreachable verdict says nothing about whether any server
+accepts the canary.
+
+Tying each statement to one server with an HTTP session (`session_id` on the
+identity read, `session_check=1` on the canary, which a server without the
+session refuses with `SESSION_NOT_FOUND`) was rejected for two reasons. The
+driver redials after every error, and the hello request a redial sends carries
+the statement's parameters, so a session-creating statement can create the
+session on two servers, and a canary on the second would be attributed to the
+first. And a balancer that alternates requests sends the request after the
+session-creating one to another server every time, so no canary would ever
+land on its session's server.
+
+**Why each server runs the canary it ran longest ago first, over the native
+protocol.** After a
 refusal, the remaining canaries run on whichever server the next connection
 reaches. With a fixed canary order, a balancer that hands out connections in
 a fixed rotation can give the refusing replica the first connection of every
@@ -1478,8 +1569,96 @@ verdict carries no evidence about the server: the failure belongs to the
 connection. Letting it replace a remembered refusal would turn the feature
 back on until the next probe that reads the refusal again; letting it replace
 a remembered permit would demote the fleet to unreachable on a transient
-failure. A server with nothing remembered takes the unreachable verdict,
-since that is all that is known about it.
+failure. On a server with nothing remembered, the unreachable verdict counts
+toward the probe that read it only. Stored on the server, it would outrank
+every other replica's permit, and mark the fleet held, until a probe landed
+on that server again, which behind a native balancer can take longer than
+the one re-probe interval a failed canary cost when nothing was remembered.
+
+**Why a canary error is classified three ways.** A canary error is a
+**forbidden** verdict held like any other when its code is a refusal, an
+**unreachable** one when it reports a condition of the moment, and a
+**forbidden** verdict for the probe that read it only otherwise.
+
+Reading every server exception as a refusal would turn a timeout, a memory
+limit or a burst of concurrent queries into a refusal; held the way a refusal
+is held — over HTTP, for 40 complete probes per remembered server at the
+10-second cadence, after the 5-minute probe that read it — a single such
+error would keep the capability off for over eleven minutes against one
+server, where a probe that forgets each verdict at the next one keeps it off
+for one 5-minute interval. As unreachable, it is not held over HTTP and
+leaves a server's remembered verdict in place over the native protocol, so a
+capability already read available stays on, and one with no verdict yet
+stays off only until the next probe.
+
+Reading every server exception that is not a known refusal as unreachable
+fails the other way. A refusal whose code is missing from the list would
+leave a remembered permit in force: a server upgraded in place, or a profile
+changed under a running process, would keep the capability on while every
+query that uses it fails. So the conditions of the moment are the
+enumerated side — the per-query limits, cancellation and quota, and the
+server and cluster conditions the circuit breaker already counts as a
+backend unable to serve — and any other server error turns the capability
+off. It is attributed to no server and counts for the probe that read it
+only, on either protocol, so it costs at most what it cost when every
+exception was a refusal and nothing was remembered: off until the next
+probe. Attributed to the server that gave it, it would stay in force behind
+a native balancer until a probe landed on that server again.
+
+The refusal codes were read off real servers from 24.8 to 26.10 by provoking
+the conditions that refuse a canary: a readonly profile (`READONLY`),
+`CONST` and `MAX` constraints on the setting a canary turns on and on the
+settings it pins beside it (`SETTING_CONSTRAINT_VIOLATION`), a build that
+predates the setting (`UNKNOWN_SETTING`), a workload name the server cannot
+resolve under `throw_on_unknown_workload` (`RESOURCE_ACCESS_DENIED`), a
+profile whose overflow mode is not `throw`, under which the query cache
+refuses every statement on 25.3 and later
+(`QUERY_CACHE_USED_WITH_NON_THROW_OVERFLOW_MODE`), and, for the query-log
+union read, a server without the union table (`UNKNOWN_TABLE`) and a user
+without the `SELECT` grant on it, or with a grant on some columns only
+(`ACCESS_DENIED`). The union read also keeps the reader's own refusals of a
+member that lacks a selected column (`UNKNOWN_IDENTIFIER`,
+`NO_SUCH_COLUMN_IN_TABLE`). A readonly profile also refuses the identity
+read, which carries settings, so a fleet probe runs a readonly server's
+canaries only when a per-request HTTP balancer sends the identity read to
+another server. `TestFleetProbe_EveryRefusalIsForbidden` provokes each of
+these but the missing-column refusal and the grant on some columns only, on
+a 26.8 and a 24.8 server, over both protocols; for every refusal but the
+readonly one, which no fleet probe can run against a single server, it also
+requires the fleet memory to hold the refusal on the next probe.
+
+The query-log union canary reads a condition of the moment differently from
+the settings canaries. A settings canary runs a trivial statement, so a
+timeout or a memory limit on it says nothing about the statements the
+feature would run; the union canary runs the reconciler's own read, so a
+lasting condition fails that read too. Read as unreachable, it would leave a
+permit in force over either protocol — the server's remembered verdict over
+the native protocol, the held unattributed one over HTTP — and the
+reconciler would keep reading the union, logging a failed poll each time,
+for as long as the condition lasted. As a forbidden verdict for the probe
+that read it only, it switches the reconciler to the local query log at that
+probe and back at the first probe that reads the union cleanly. A momentary
+condition on the canary costs the same one probe interval of the local log,
+which is what any server exception cost when every one was a refusal and
+nothing was remembered.
+
+A refusal that occurs only for a moment is held like a lasting one, over HTTP
+only. A freshly initialised server answers `UNKNOWN_TABLE` on
+`system.all_query_log` for a few seconds after it starts accepting
+connections. A probe over HTTP in that window holds the query-log union canary
+forbidden for the full retention: the 5-minute interval after the probe that
+reads it, then 40·N − 1 more probes at the 10-second cadence for N remembered
+servers, about 11.5 minutes against one server, where a probe that forgets
+each verdict at the next one keeps it off for one 5-minute interval. Over the
+native protocol the next probe that reaches the server replaces its verdict.
+The settings canaries' refusals come from the server's configuration and the
+user's profile, not from start-up, so they are not brief; a 26.8 server
+restarted with a workload already defined resolves it from its first answer,
+so the workload canary's refusal is not brief across a restart either. Telling
+a brief refusal from a lasting one would need a second reading before holding
+it, and a refusal not yet held would let a disagreeing replica's refusal come
+and go with the routing, which is what holding it prevents. A refusal never
+makes `query_log_union` fatal: cerberus falls back to the local query log.
 
 **Why the order is forbidden, then unreachable, then available.** A query can
 land on any remembered server, so the fleet permits a setting only when every
