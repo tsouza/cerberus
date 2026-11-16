@@ -5,7 +5,6 @@
   "cases": [
     "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-10\", region=\"us-east-1\", service=\"nginx\", service_name=\"nginx\"} | detected_field values parity: service=nginx field=detected_level",
     "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-4\", region=\"us-east-1\", service=\"kafka\", service_name=\"kafka\"} | detected_field values parity: service=kafka field=ts",
-    "detected-fields | detected_fields | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} | detected_fields parity: service=loki",
-    "upstream:11163d6488b14b7d"
+    "detected-fields | detected_fields | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} | detected_fields parity: service=loki"
   ]
 }

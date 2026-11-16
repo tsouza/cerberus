@@ -117,16 +117,15 @@ func TestCheckExpansion(t *testing.T) {
 
 // The expanded-case identity of the full corpus — upstream plus
 // cerberus-queries/, seed 42, against the committed dataset metadata —
-// as caseIdentity computes it, one digest per lane. These digests were
-// recorded from the loader the harness used before this one, so they
-// pin that the current loader expands the corpus into exactly the same
-// cases: same queries, windows, directions, steps, kinds, sources,
-// descriptions and tags.
+// as caseIdentity computes it, one digest per lane. They pin the exact
+// cases the corpus expands into: queries, windows, directions, steps,
+// kinds, sources, descriptions and tags. A change to the corpus, the
+// dataset metadata or the resolver that moves any case re-records them.
 const (
 	fullCorpusRangeCases       = 99
-	fullCorpusRangeIdentity    = "bae65080643e2c0c36babcb31a73d0b448e72465653414b61fd315c59f5761a7"
+	fullCorpusRangeIdentity    = "b9baf008f78a5a73d3b60c790fbf28b373a03bd422a21ec2cdb7e8bbbce6a034"
 	fullCorpusInstantCases     = 71
-	fullCorpusInstantIdentity  = "a57eea66427951ac042100b205678e5d0ec42adbdda698061eba4e7580e09e3f"
+	fullCorpusInstantIdentity  = "2ce00bee3a351b5e1f4bc7961cd3c2b3afb4b6fa1afc24da932bb07c7db79f4b"
 	fullCorpusIdentitySeed     = 42
 	kindlessMetricDefinitions  = 8
 	kindlessMetricSourceFile   = "exhaustive/aggregations.yaml"

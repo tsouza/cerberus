@@ -42,7 +42,7 @@ package main
 import (
 	"fmt"
 	"net/http"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/tsouza/cerberus/compatibility/loki/corpus"
@@ -83,7 +83,7 @@ func compareBurndownValueParity(c *http.Client, f flags, metadata *corpus.Metada
 // burndownCases derives the fixed query list from the dataset
 // metadata. Two selectors anchor the templates:
 //
-//   - selJSON — the web-server stream: JSON format, EVERY line carries
+//   - selJSON — the lexicographically-first web-server selector: JSON format, EVERY line carries
 //     a delimited `client_ip` IPv4 (the harness seeder
 //     compatibility/loki/cmd/seed stamps one on every web-server line,
 //     matching the dataset metadata's promise), lines start with `{`
@@ -97,13 +97,13 @@ func burndownCases(metadata *corpus.Metadata) ([]corpus.Case, error) {
 	if len(jsonSels) == 0 {
 		return nil, fmt.Errorf("burndown: dataset metadata has no web-server selectors (required for ip()/pattern cases)")
 	}
-	selJSON := jsonSels[0]
+	selJSON := slices.Min(jsonSels)
 
-	durSels := intersectSorted(metadata.ByFormat[corpus.LogFormatLogfmt], metadata.ByUnwrappableField["duration"])
+	durSels := corpus.Intersect(metadata.ByFormat[corpus.LogFormatLogfmt], metadata.ByUnwrappableField["duration"])
 	if len(durSels) == 0 {
 		return nil, fmt.Errorf("burndown: dataset metadata has no logfmt selector with an unwrappable `duration` field (required for first/last_over_time cases)")
 	}
-	selDur := durSels[0]
+	selDur := slices.Min(durSels)
 
 	start := metadata.TimeRange.Start.UTC()
 	end := start.Add(burndownLength)
@@ -184,23 +184,4 @@ func burndownCases(metadata *corpus.Metadata) ([]corpus.Case, error) {
 		cases = append(cases, tc)
 	}
 	return cases, nil
-}
-
-// intersectSorted returns the sorted intersection of two selector
-// lists. Sorted output keeps the selector pick deterministic across
-// runs (the metadata maps carry slices whose order is generator-
-// dependent).
-func intersectSorted(a, b []string) []string {
-	inB := make(map[string]struct{}, len(b))
-	for _, s := range b {
-		inB[s] = struct{}{}
-	}
-	var out []string
-	for _, s := range a {
-		if _, ok := inB[s]; ok {
-			out = append(out, s)
-		}
-	}
-	sort.Strings(out)
-	return out
 }

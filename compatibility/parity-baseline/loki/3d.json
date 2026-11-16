@@ -7,6 +7,7 @@
     "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-7\", region=\"us-east-1\", service=\"mimir\", service_name=\"mimir\"} | detected_field values parity: service=mimir field=level",
     "detected-fields | detected_fields | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | detected_fields parity: service=grafana",
     "upstream:4dd1d6e3c4b0978e",
+    "upstream:61fe928c74f21f9c",
     "upstream:aae57e5088a8b9bb"
   ]
 }
