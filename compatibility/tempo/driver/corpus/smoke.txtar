@@ -34,9 +34,12 @@
 #
 # Seeder fixture shape (see seeder.go):
 #   * 4 services: checkout, payments, search, shipping
-#   * 25 traces per service (100 traces total)
-#   * Each trace: 1 root span (Server, "GET /api/<svc>/<idx>", 150ms)
+#   * 25 traces per service (100 rooted traces)
+#   * Each rooted trace: 1 root span (Server, "GET /api/<svc>/<idx>", 150ms)
 #     + 2-4 children (rotating kinds, every 5th child = ERROR)
+#   * One more trace, orphan/0 (service "orphan"), with no root span: an
+#     entry span (Server, "orphan.entry", 2s) whose parent is never
+#     ingested, and its child ("orphan.child"); no span attributes
 #   * Resource attrs: service.name, deployment.env="compat-test",
 #     telemetry.sdk="cerberus-tempo-compat-seeder", trace.fixture="pr3"
 #   * Span attrs (root): http.method=GET, http.target=/api/<svc>/<idx>,
@@ -45,7 +48,8 @@
 #   * Status: Ok (default), Error for every 5th child
 #   * Anchor: rolling — recomputed per run as `now() - 5m` (see
 #     driver/seeder.go::currentAnchor). Each trace shifted by (svcIdx*25 +
-#     traceIdx) seconds — last trace lands ~400s after anchor.
+#     traceIdx) seconds — the last rooted trace lands ~100s after anchor,
+#     and the rootless trace at 100s.
 #
 # Diff strategy reminder (see differ.go top-of-file):
 #   * Trace IDs are the diff key as-is: cerberus emits the real
@@ -564,7 +568,7 @@ metrics_compare_status_error
 # by hash, sample grids point-for-point.
 #
 # topN=500 deliberately exceeds every per-attribute cardinality in the
-# seed (span names ~116, http.target 100, rootName 100, trace.index 25)
+# seed (span names ~118, http.target 100, rootName ~100, trace.index 25)
 # so neither backend truncates — upstream's top-N tie-break is an
 # unstable sort, and a truncated tie would make the case flaky rather
 # than prove anything. Full-inventory comparison is the stronger pin.
@@ -1950,8 +1954,12 @@ search
 
 -- name --
 metrics_compare_root_name_eq_name
+# `{ } | compare({ rootName = name })`, compared over the full inventory:
 # topN=500 exceeds every per-attribute cardinality in the seed so neither
-# backend truncates (see metrics_compare_status_error).
+# backend truncates (see metrics_compare_status_error). At the default top-N
+# (10) reference Tempo keeps an arbitrary subset of the values tied at the
+# cutoff, a different one between identical requests, so no answer matches
+# it series for series.
 -- query --
 { } | compare({ rootName = name }, 500)
 -- endpoint --
@@ -2041,3 +2049,43 @@ search
 1
 -- expected_max_traces --
 500
+
+# --- The rootless trace ---
+#
+# The seed's orphan/0 trace has no root span: its entry span names a parent
+# no trace carries. It lasts 2s, longer than any rooted trace (150ms), so a
+# trace-duration threshold between the two selects it alone. A case above
+# whose spans it matches, `{ }` among them, returns it too.
+
+-- name --
+aggregate_avg_trace_duration_gt_1s
+# Only the rootless trace qualifies: it is the one trace whose spans all read
+# a 2s trace duration.
+-- query --
+{ } | avg(traceDuration) > 1s
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+1
+
+-- name --
+rootless_trace_plain_search
+-- query --
+{ resource.service.name = "orphan" }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+1
+
+-- name --
+trace_by_id_rootless
+-- query --
+{ }
+-- endpoint --
+traces
+-- traceid_template --
+orphan/0

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -274,6 +275,22 @@ func TestApplyRootMetadata_PatchesSummaries(t *testing.T) {
 	}
 	if summaries[2].RootTraceName != "real-name-c" || summaries[2].RootServiceName != "real-svc-c" {
 		t.Errorf("summary c: got %+v, want recovered metadata", summaries[2])
+	}
+}
+
+// TestApplyRootMetadata_RootlessTraceClearsFallback pins that a lookup row
+// with no root identity — a trace none of whose spans is a root — replaces
+// the earliest-span fallback with the empty root fields reference Tempo
+// reports, rather than keeping a non-root span's name and service.
+func TestApplyRootMetadata_RootlessTraceClearsFallback(t *testing.T) {
+	t.Parallel()
+	const traceDuration = 2 * time.Second
+	summaries := []TraceSummary{
+		{TraceID: "a", RootServiceName: "orphan", RootTraceName: "orphan.entry"},
+	}
+	applyRootMetadata(summaries, map[string]rootMetadata{"a": {TraceDurationNs: traceDuration.Nanoseconds()}})
+	if summaries[0].RootServiceName != "" || summaries[0].RootTraceName != "" || int64(summaries[0].DurationMs) != traceDuration.Milliseconds() {
+		t.Errorf("rootless trace: got %+v, want empty root fields and durationMs %d", summaries[0], traceDuration.Milliseconds())
 	}
 }
 

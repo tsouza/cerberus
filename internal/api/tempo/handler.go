@@ -569,13 +569,12 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		// of the affected TraceIDs and patch RootServiceName /
 		// RootTraceName before responding.
 		//
-		// A lookup failure WARN-degrades (the earliest-span fallback
-		// stays in place) instead of failing the search — mirroring
-		// reference Tempo, where root metadata is best-effort by
-		// design: a search whose root span is unavailable still
-		// returns 200 with placeholder root fields
-		// (modules/frontend/combiner/search.go sets
-		// search.RootSpanNotYetReceivedText), never an error.
+		// A lookup failure WARN-degrades instead of failing the search:
+		// the affected summaries keep the earliest matched span's name
+		// and service, since the failure leaves unknown whether the
+		// trace has a root. Reference Tempo likewise treats root
+		// metadata as best-effort and answers 200 for a trace whose
+		// root it lacks.
 		roots, lookupErr := h.resolveTraceRoots(ctx, missingRoots)
 		if lookupErr != nil {
 			h.Logger.Warn("cerberus tempo root-span lookup failed",
@@ -584,7 +583,7 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 			applyRootMetadata(summaries, roots)
 		}
 	}
-	ApplyUnsetTraceFields(summaries, res.Meta)
+	FinishTraceSummaries(summaries, res.Meta)
 	httperr.WriteEngineHeaders(w, res.Headers)
 	writeInspectedSpans(w, inspectedSpans)
 	writeJSON(w, http.StatusOK, SearchResponse{
@@ -730,6 +729,7 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 			applyRootMetadata(summaries, roots)
 		}
 	}
+	FinishTraceSummaries(summaries, res.Meta)
 	// /search/recent applies its limit SQL-side (chplan.Limit), so the
 	// summary set is never truncated in Go and the pre-truncation trace
 	// count is simply the grouped set.
