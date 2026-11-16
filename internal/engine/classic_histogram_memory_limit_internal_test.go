@@ -75,12 +75,12 @@ func chMemoryLimitAbort() error {
 func TestClassicHistogramMemoryLimit_ClassifiesAsTheUnwrappedAbort(t *testing.T) {
 	t.Parallel()
 	raw := chMemoryLimitAbort()
-	wrapped := wrapClassicHistogramMemoryLimit(raw, true)
+	wrapped := wrapClassicHistogramMemoryLimit(raw, classicQuantileOver(histogramScan()))
 	var classic *ClassicHistogramMemoryLimitError
 	if !errors.As(wrapped, &classic) {
-		t.Fatalf("wrapClassicHistogramMemoryLimit(abort, true) = %v, want a ClassicHistogramMemoryLimitError", wrapped)
+		t.Fatalf("wrapClassicHistogramMemoryLimit(abort, classic plan) = %v, want a ClassicHistogramMemoryLimitError", wrapped)
 	}
-	if again := wrapClassicHistogramMemoryLimit(wrapped, true); again != wrapped {
+	if again := wrapClassicHistogramMemoryLimit(wrapped, classicQuantileOver(histogramScan())); again != wrapped {
 		t.Fatalf("wrapping a wrapped abort = %v, want it unchanged", again)
 	}
 	for _, route := range []routememo.Route{routememo.RouteA, routememo.RouteB} {
@@ -94,8 +94,8 @@ func TestClassicHistogramMemoryLimit_ClassifiesAsTheUnwrappedAbort(t *testing.T)
 	if got := queryFailureClass(wrapped); got != optcorpusExitOOM {
 		t.Fatalf("failure class = %q, want %q", got, optcorpusExitOOM)
 	}
-	if got := wrapClassicHistogramMemoryLimit(raw, false); got != raw {
-		t.Fatalf("wrapClassicHistogramMemoryLimit(abort, false) = %v, want the abort unchanged", got)
+	if got := wrapClassicHistogramMemoryLimit(raw, histogramScan()); got != raw {
+		t.Fatalf("wrapClassicHistogramMemoryLimit(abort, other plan) = %v, want the abort unchanged", got)
 	}
 }
 
@@ -116,7 +116,7 @@ func (c composedFakeCursor) TeardownBudget() time.Duration { return c.budget }
 func TestWrapClassicHistogramCursor_KeepsTheComposedTeardown(t *testing.T) {
 	t.Parallel()
 	const budget = 7 * time.Second
-	wrapped := wrapClassicHistogramCursor(composedFakeCursor{budget: budget}, true)
+	wrapped := wrapClassicHistogramCursor(composedFakeCursor{budget: budget}, classicQuantileOver(histogramScan()))
 	composed, ok := wrapped.(chclient.ComposedCursor)
 	if !ok {
 		t.Fatal("the wrapped composed cursor is no longer a chclient.ComposedCursor")
@@ -128,7 +128,7 @@ func TestWrapClassicHistogramCursor_KeepsTheComposedTeardown(t *testing.T) {
 	if !errors.As(wrapped.Err(), &classic) {
 		t.Fatalf("wrapped Err = %v, want a ClassicHistogramMemoryLimitError", wrapped.Err())
 	}
-	if _, ok := wrapClassicHistogramCursor(&perRungFakeCursor{}, true).(chclient.ComposedCursor); ok {
+	if _, ok := wrapClassicHistogramCursor(&perRungFakeCursor{}, classicQuantileOver(histogramScan())).(chclient.ComposedCursor); ok {
 		t.Fatal("wrapping a plain cursor made it a chclient.ComposedCursor")
 	}
 }

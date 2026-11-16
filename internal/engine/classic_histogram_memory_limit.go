@@ -37,45 +37,46 @@ func (e *ClassicHistogramMemoryLimitError) Error() string {
 func (e *ClassicHistogramMemoryLimitError) Unwrap() error { return e.Err }
 
 // wrapClassicHistogramMemoryLimit returns err as a
-// *ClassicHistogramMemoryLimitError when the statement carries a
-// classic-histogram quantile (classicHistogramQuantile) and err is a
-// ClickHouse memory-limit abort; every other error, and every error of a
-// statement without one, passes through unchanged.
-func wrapClassicHistogramMemoryLimit(err error, classicHistogramQuantile bool) error {
-	if !classicHistogramQuantile || err == nil {
-		return err
+// *ClassicHistogramMemoryLimitError when err is a ClickHouse memory-limit
+// abort and plan carries a classic-histogram quantile
+// (planShapeFacts.classicHistogramQuantile); every other error, and every
+// error of a plan without one, passes through unchanged. The plan is
+// inspected only once a memory-limit abort is in hand, so a dispatch that
+// succeeds, or fails otherwise, pays nothing for the classification.
+func wrapClassicHistogramMemoryLimit(err error, plan chplan.Node) error {
+	if err == nil {
+		return nil
 	}
 	var memLimit *chclient.MemoryLimitError
 	if !errors.As(err, &memLimit) {
 		return err
 	}
 	var wrapped *ClassicHistogramMemoryLimitError
-	if errors.As(err, &wrapped) {
+	if errors.As(err, &wrapped) || !planHasClassicHistogramQuantile(plan) {
 		return err
 	}
 	return &ClassicHistogramMemoryLimitError{Limit: memLimit.Limit, Err: err}
 }
 
 // planHasClassicHistogramQuantile reports the classicHistogramQuantile fact
-// for the plan a dispatch site holds. The settings compositions
-// (routeAQuerySettings, routeBExecCtx) run their own inspection and return
-// only a context, so each site inspects the plan itself, as
-// planHasTSGridNative does for the ts-grid gate.
+// for plan.
 func planHasClassicHistogramQuantile(plan chplan.Node) bool {
 	return inspectPlanShape(plan, "").classicHistogramQuantile
 }
 
 // classicHistogramCursor reports a memory-limit abort its wrapped cursor
-// surfaces mid-drain as a *ClassicHistogramMemoryLimitError. Every other
-// method delegates to the wrapped cursor, so the drain itself is unchanged.
+// surfaces mid-drain as a *ClassicHistogramMemoryLimitError when its plan
+// carries a classic-histogram quantile. Every other method delegates to the
+// wrapped cursor, so the drain itself is unchanged.
 type classicHistogramCursor struct {
 	chclient.Cursor
+	plan chplan.Node
 }
 
 // Err is the wrapped cursor's error, wrapped by
 // wrapClassicHistogramMemoryLimit.
 func (c *classicHistogramCursor) Err() error {
-	return wrapClassicHistogramMemoryLimit(c.Cursor.Err(), true)
+	return wrapClassicHistogramMemoryLimit(c.Cursor.Err(), c.plan)
 }
 
 // classicHistogramComposedCursor is classicHistogramCursor over a
@@ -91,16 +92,15 @@ func (c *classicHistogramComposedCursor) TeardownBudget() time.Duration {
 	return c.composed.TeardownBudget()
 }
 
-// wrapClassicHistogramCursor returns cursor under classicHistogramCursor when
-// its statement carries a classic-histogram quantile, so a memory-limit abort
-// the drain surfaces through cursor.Err() reaches the caller as a
-// *ClassicHistogramMemoryLimitError. A statement without one, or a nil
-// cursor, passes through unchanged.
-func wrapClassicHistogramCursor(cursor chclient.Cursor, classicHistogramQuantile bool) chclient.Cursor {
-	if !classicHistogramQuantile || cursor == nil {
-		return cursor
+// wrapClassicHistogramCursor returns cursor under classicHistogramCursor, so
+// a memory-limit abort the drain surfaces through cursor.Err() reaches the
+// caller as a *ClassicHistogramMemoryLimitError when plan carries a
+// classic-histogram quantile. A nil cursor passes through unchanged.
+func wrapClassicHistogramCursor(cursor chclient.Cursor, plan chplan.Node) chclient.Cursor {
+	if cursor == nil {
+		return nil
 	}
-	wrapped := classicHistogramCursor{Cursor: cursor}
+	wrapped := classicHistogramCursor{Cursor: cursor, plan: plan}
 	if composed, ok := cursor.(chclient.ComposedCursor); ok {
 		return &classicHistogramComposedCursor{classicHistogramCursor: wrapped, composed: composed}
 	}
