@@ -1154,7 +1154,8 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   name prefix), plus a `rest` shard, and `dump` prints the same rows for the
   workflow meta-tests' check-name index; `images` prints the images a shard
   boots (a cancellation shard's own build; for a family shard, the images the
-  sources defining its tests name; for `rest`, the images the package's
+  sources defining its tests name, directly or through a single-line image
+  constant; for `rest`, the images the package's
   sources name outside the cancellation table; every pinned image for `all`);
   `go test ...` runs the recipe's go test command with the selection of the
   shard named by `CH_SERVER_SAFETY_SHARD` (`-json` / `-run` / `-skip`) appended
