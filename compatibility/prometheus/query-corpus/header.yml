@@ -107,6 +107,12 @@
 #     to the reference as the stale marker it was scraped as; the cases
 #     cover the bare selector, an aggregation over it, the extrapolated rate
 #     functions, last_over_time, absent() and a subquery.
+# 13. Four cerberus-owned cases apply `histogram_quantile` to
+#     avg_over_time / max_over_time / min_over_time / last_over_time of a
+#     classic `_bucket` selector, two under `sum by (le)` and two per series.
+#     Prometheus reads each `le` rung as an ordinary float series and reduces
+#     it over the window; upstream's corpus applies `histogram_quantile` only
+#     to rate() and to bare selectors.
 #
 # Series schema: the harness seeds a fixture that mirrors PromLabs's demo
 # service labels (`instance` / `job` / `type` / `mode` / `method` / `path`

@@ -782,7 +782,7 @@ type histogramAggShape struct {
 	selector *parser.VectorSelector
 	// windowRange is the window the shape reduces over, and every shape
 	// matchHistogramAggIdiom yields carries a STRICTLY POSITIVE one: the
-	// `[range]` of the wrapping rate / increase / sum_over_time, which the
+	// `[range]` of the wrapping range-vector function, which the
 	// PromQL grammar's positive_duration_expr refuses to parse as anything
 	// else, or instantLookback (5m) for the #1692 no-range-wrapper shape.
 	// lowerHistogramQuantileAgg and lowerHistogramQuantileNativeAgg bind the
@@ -826,8 +826,9 @@ type histogramAggShape struct {
 // histogramWindowMinSamples maps a matched range-vector function to the
 // number of samples reference PromQL needs inside `[range]` before it emits
 // at an anchor. rate / increase span a delta between two points and emit
-// nothing with fewer; sum_over_time folds whatever is there, so one sample
-// is a valid window.
+// nothing with fewer; sum_over_time, avg_over_time, max_over_time,
+// min_over_time and last_over_time fold whatever is there, so one sample is
+// a valid window.
 func histogramWindowMinSamples(fn string) int {
 	switch fn {
 	case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn:
@@ -863,7 +864,7 @@ func (shape histogramAggShape) minSamples() int {
 }
 
 // matchHistogramAggIdiom walks the expression tree looking for the
-// shape `[sum|avg by/without (...) ((paren))*] rate|increase|sum_over_time((paren)*
+// shape `[sum|avg by/without (...) ((paren))*] <range-fn>((paren)*
 // <VectorSelector>[range])`. Returns the captured shape on a match.
 //
 // Accepted shapes (after peeling ParenExpr / StepInvariantExpr at each
@@ -871,6 +872,8 @@ func (shape histogramAggShape) minSamples() int {
 //   - rate(metric_bucket[5m])
 //   - increase(metric_bucket[5m])
 //   - sum_over_time(metric_bucket[5m])   (DELTA-histogram aggregation)
+//   - avg_over_time / max_over_time / min_over_time / last_over_time
+//     (metric_bucket[5m])                (classic histograms only)
 //   - sum by(le)(rate(metric_bucket[5m]))
 //   - avg by(le)(rate(metric_bucket[5m]))
 //   - sum by(le)(sum_over_time(metric_bucket[5m]))
@@ -881,8 +884,8 @@ func (shape histogramAggShape) minSamples() int {
 //     sum / avg (classic histograms only — see classicBucketLadderFold)
 //
 // Anything else returns ok=false and the caller falls through to the
-// bare-selector path: range-vector functions other than rate / increase /
-// sum_over_time, and deeper nestings (e.g. `sum(sum(...))`).
+// bare-selector path: range-vector functions outside the list above, and
+// deeper nestings (e.g. `sum(sum(...))`).
 //
 // WHICH aggregation operators lower is deliberately not decided here.
 // The matcher captures any aggregation wrapper; classicBucketLadderFold
@@ -1206,13 +1209,24 @@ func matchHistogramAggIdiom(e parser.Expr, s schema.Metrics) (histogramAggShape,
 		}
 	}
 
-	// Inner must be a rate/increase call over a MatrixSelector.
+	// Inner must be one of the range-vector calls below over a MatrixSelector.
 	call, ok := e.(*parser.Call)
 	if !ok {
 		return histogramAggShape{}, false
 	}
+	classicOnly := false
 	switch call.Func.Name {
-	case "rate", "increase", "sum_over_time":
+	case avgOverTimeWindowFn, maxOverTimeWindowFn, minOverTimeWindowFn, lastOverTimeWindowFn:
+		// Each `le` rung of a classic histogram is an ordinary float
+		// series to Prometheus, so these reduce it rung by rung like any
+		// other float series: the window's mean, maximum, minimum or
+		// newest cumulative count (histogramWindowFold). They are matched
+		// for classic buckets only. An exponential histogram keeps its own
+		// over-time lowerings (overTimeOverExpHistogram,
+		// lastFirstOverExpHistogram), and Prometheus drops histogram
+		// samples under max_over_time / min_over_time.
+		classicOnly = true
+	case rateWindowFn, increaseWindowFn, sumOverTimeWindowFn:
 		// Supported range-vector functions on the histogram-array path.
 		// `histogram_quantile` is SCALE-INVARIANT — it interpolates the
 		// ratio of cumulative bucket counts, so it yields the identical
@@ -1236,6 +1250,9 @@ func matchHistogramAggIdiom(e parser.Expr, s schema.Metrics) (histogramAggShape,
 	}
 	vs, ok := peelWrappers(ms.VectorSelector).(*parser.VectorSelector)
 	if !ok {
+		return histogramAggShape{}, false
+	}
+	if classicOnly && s.IsExpHistogramMetric(metricNameFromMatchers(vs.LabelMatchers)) {
 		return histogramAggShape{}, false
 	}
 	return histogramAggShape{
