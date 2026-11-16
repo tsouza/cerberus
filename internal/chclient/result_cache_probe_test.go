@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	chproto "github.com/ClickHouse/ch-go/proto"
 	"github.com/ClickHouse/clickhouse-go/v2"
 
 	"github.com/tsouza/cerberus/internal/chopt"
@@ -38,7 +39,7 @@ func TestCanaryErrAnswer_ResultCacheShapes(t *testing.T) {
 		{
 			name: "query cache under a non-throw overflow mode (731) is forbidden",
 			err: &clickhouse.Exception{
-				Code:    chCodeQueryCacheUsedWithNonThrowOverflowMode,
+				Code:    int32(chproto.ErrQueryCacheUsedWithNonThrowOverflowMode),
 				Name:    "QUERY_CACHE_USED_WITH_NON_THROW_OVERFLOW_MODE",
 				Message: "use_query_cache and overflow_mode != 'throw' cannot be used together",
 			},

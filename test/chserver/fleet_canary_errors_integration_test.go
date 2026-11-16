@@ -105,7 +105,7 @@ func TestFleetProbe_EveryRefusalIsForbidden(t *testing.T) {
 				if got := canary.probe(ctx, c); got != chopt.CapabilityForbidden {
 					t.Errorf("%s over %s: %s %s; want %s", r.name, protocol, canary.fleet.Name, got, chopt.CapabilityForbidden)
 				}
-				if protocol == clickhouse.HTTP && !r.readonly {
+				if !r.readonly {
 					requireRefusalHeld(ctx, t, cfg, r.name, canary.fleet)
 				}
 			}
@@ -140,22 +140,25 @@ func probeWorkload(workload string) canaryProbe {
 	}}
 }
 
-// requireRefusalHeld fails the test unless canary's refusal, read over HTTP
-// by a fleet probe against cfg, is one the fleet memory holds as a refusal: a
-// following pass that reaches the same server without reading it still
-// reads the canary forbidden. A refusal answered with a code the classifier
-// does not know as one would count for its own pass only.
+// requireRefusalHeld fails the test unless canary's refusal, read by a fleet
+// probe against cfg, is one the fleet memory holds as a refusal: a following
+// pass that reaches the same server without running the canary still reads
+// it forbidden. A refusal answered with a code the classifier does not know
+// as one would count for its own pass only.
 func requireRefusalHeld(ctx context.Context, t *testing.T, cfg chclient.Config, name string, canary chclient.FleetCanary) {
 	t.Helper()
 	memory := chclient.NewFleetMemory()
 	pass := chclient.ProbeFleet(ctx, cfg, "", nil, canary)
 	if got := memory.Observe(pass).Capability(canary.Name); got != chopt.CapabilityForbidden {
-		t.Errorf("%s over http, fleet probe: %s %s; want %s", name, canary.Name, got, chopt.CapabilityForbidden)
+		t.Errorf("%s over %s, fleet probe: %s %s; want %s", name, cfg.Protocol, canary.Name, got, chopt.CapabilityForbidden)
 		return
 	}
-	pass.Unattributed = nil
-	if got := memory.Observe(pass).Capability(canary.Name); got != chopt.CapabilityForbidden {
-		t.Errorf("%s over http, the pass after the refusal: %s %s; want the refusal held, %s", name, canary.Name, got, chopt.CapabilityForbidden)
+	next := chclient.FleetPass{Complete: pass.Complete}
+	for _, n := range pass.Nodes {
+		next.Nodes = append(next.Nodes, chclient.FleetNode{ID: n.ID, Version: n.Version})
+	}
+	if got := memory.Observe(next).Capability(canary.Name); got != chopt.CapabilityForbidden {
+		t.Errorf("%s over %s, a pass that reaches the server without the canary: %s %s; want the refusal held, %s", name, cfg.Protocol, canary.Name, got, chopt.CapabilityForbidden)
 	}
 }
 

@@ -186,3 +186,28 @@ func TestProbeCanaries_HTTPLeavesUnnamedVerdictsUnattributed(t *testing.T) {
 		t.Errorf("unattributed = %v; want %v", unattributed, wantUnattributed)
 	}
 }
+
+// TestProbeCanaries_PassOnlyVerdictIsUnattributed: a PassOnly verdict is
+// returned unattributed, with its flag, over either protocol, so no server
+// keeps it past the pass. Over the native protocol it closed the connection,
+// so the identity is read again before the next canary.
+func TestProbeCanaries_PassOnlyVerdictIsUnattributed(t *testing.T) {
+	t.Parallel()
+	for _, protocol := range []clickhouse.Protocol{clickhouse.Native, clickhouse.HTTP} {
+		ran := map[string]int{}
+		nodes, unattributed, read := probeCanaries(context.Background(), unreachableCanaryClientOver(t, protocol), FleetNode{ID: replicaA, Version: memoryNewBuild}, nil, []FleetCanary{
+			scriptedCanary("unclassified", canaryAnswer{verdict: chopt.CapabilityForbidden, passOnly: true}, ran),
+			scriptedCanary("next", canaryAnswer{verdict: chopt.CapabilityAvailable}, ran),
+		})
+		if got := verdictsByServer(nodes); len(got[replicaA]) != 0 {
+			t.Errorf("over %s: attributed verdicts = %v; want none", protocol, got)
+		}
+		want := CanaryReading{Canary: "unclassified", Verdict: chopt.CapabilityForbidden, PassOnly: true}
+		if len(unattributed) == 0 || unattributed[0] != want {
+			t.Errorf("over %s: unattributed = %v; want %v first", protocol, unattributed, want)
+		}
+		if wantRead := protocol == clickhouse.HTTP; read != wantRead || (ran["next"] == 1) != wantRead {
+			t.Errorf("over %s: read=%v, runs %v; want the next canary run only over http, where no identity read precedes it", protocol, read, ran)
+		}
+	}
+}

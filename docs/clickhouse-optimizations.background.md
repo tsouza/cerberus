@@ -1545,11 +1545,11 @@ query that uses it fails. So the conditions of the moment are the
 enumerated side — the per-query limits, cancellation and quota, and the
 server and cluster conditions the circuit breaker already counts as a
 backend unable to serve — and any other server error turns the capability
-off. Over HTTP it is held for the probe that read it only, so it costs at
-most what it cost when every exception was a refusal and nothing was
-remembered: off until the next probe. Over the native protocol it is the
-verdict of the server that gave it, replaced by the next probe that reaches
-that server.
+off. It is attributed to no server and counts for the probe that read it
+only, on either protocol, so it costs at most what it cost when every
+exception was a refusal and nothing was remembered: off until the next
+probe. Attributed to the server that gave it, it would stay in force behind
+a native balancer until a probe landed on that server again.
 
 The refusal codes were read off real servers from 24.8 to 26.10 by provoking
 the conditions that refuse a canary: a readonly profile (`READONLY`),
@@ -1565,19 +1565,31 @@ without the `SELECT` grant on it, or with a grant on some columns only
 (`ACCESS_DENIED`). The union read also keeps the reader's own refusals of a
 member that lacks a selected column (`UNKNOWN_IDENTIFIER`,
 `NO_SUCH_COLUMN_IN_TABLE`). A readonly profile also refuses the identity
-read, which carries settings, so a fleet probe never reaches such a server.
-`TestFleetProbe_EveryRefusalIsForbidden` provokes each of these but the
-missing-column refusal on a 26.8 and a 24.8 server.
+read, which carries settings, so a fleet probe runs a readonly server's
+canaries only when a per-request HTTP balancer sends the identity read to
+another server. `TestFleetProbe_EveryRefusalIsForbidden` provokes each of
+these but the missing-column refusal and the grant on some columns only, on
+a 26.8 and a 24.8 server, over both protocols; for every refusal but the
+readonly one, which no fleet probe can run against a single server, it also
+requires the fleet memory to hold the refusal on the next probe.
 
-A refusal that occurs only for a moment is held like a lasting one. A freshly
-initialised server answers `UNKNOWN_TABLE` on `system.all_query_log` for a
-few seconds after it starts accepting connections; a probe over HTTP in that
-window holds the query-log union canary forbidden for the full retention.
-Telling a brief refusal from a lasting one would need a second reading
-before holding it, and a refusal not yet held would let a disagreeing
-replica's refusal come and go with the routing, which is what holding it
-prevents. The cost falls on `query_log_union`, which a refusal never makes
-fatal and which falls back to the local query log.
+A refusal that occurs only for a moment is held like a lasting one, over HTTP
+only. A freshly initialised server answers `UNKNOWN_TABLE` on
+`system.all_query_log` for a few seconds after it starts accepting
+connections. A probe over HTTP in that window holds the query-log union canary
+forbidden for the full retention: the 5-minute interval after the probe that
+reads it, then 40·N − 1 more probes at the 10-second cadence for N remembered
+servers, about 11.5 minutes against one server, where a probe that forgets
+each verdict at the next one keeps it off for one 5-minute interval. Over the
+native protocol the next probe that reaches the server replaces its verdict.
+The settings canaries' refusals come from the server's configuration and the
+user's profile, not from start-up, so they are not brief; a 26.8 server
+restarted with a workload already defined resolves it from its first answer,
+so the workload canary's refusal is not brief across a restart either. Telling
+a brief refusal from a lasting one would need a second reading before holding
+it, and a refusal not yet held would let a disagreeing replica's refusal come
+and go with the routing, which is what holding it prevents. A refusal never
+makes `query_log_union` fatal: cerberus falls back to the local query log.
 
 **Why the order is forbidden, then unreachable, then available.** A query can
 land on any remembered server, so the fleet permits a setting only when every

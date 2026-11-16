@@ -917,9 +917,12 @@ without one where the server cannot be named:
   reach. Each distinct verdict a probe reads this way is held as the verdict of
   a server cerberus cannot name, and counts toward the verdict in force until
   40 complete probes per remembered server have not read it again. An
-  **unreachable** verdict read this way is not held, and a **forbidden** one
-  from a server error that is neither a refusal nor a condition of the moment
-  counts toward the verdict in force for the probe that read it only.
+  **unreachable** verdict read this way is not held.
+- On either protocol, a **forbidden** verdict from a server error that is
+  neither a refusal nor a condition of the moment is attributed to no server
+  and counts toward the verdict in force for the probe that read it only.
+  Over the native protocol, an **unreachable** verdict from a server with no
+  remembered verdict on that canary counts toward that probe's verdict only.
 - On each server, the canaries run in the order of how long ago a probe last
   ran them there: a canary never run on that server first, then the one run
   there longest ago. Over the native protocol, a probe that lands on a
@@ -981,8 +984,9 @@ The verdict is tri-state:
 - **available** — the server accepted the setting; the native family resolves
   per its version floor.
 - **forbidden** — the server refused the setting, or answered the canary with
-  another server error that is not a condition of the moment; a *definitive*
-  "no". The refusals are `SETTING_CONSTRAINT_VIOLATION` (a constrained
+  another server error that is not a condition of the moment; a "no",
+  *definitive* for a refusal and in force for that probe only for any other
+  error. The refusals are `SETTING_CONSTRAINT_VIOLATION` (a constrained
   profile), `READONLY` (a readonly profile), `UNKNOWN_SETTING` (a build
   without the setting), `RESOURCE_ACCESS_DENIED` (a workload the server
   cannot resolve) and `QUERY_CACHE_USED_WITH_NON_THROW_OVERFLOW_MODE` (the

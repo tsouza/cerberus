@@ -55,7 +55,7 @@ const (
 	// (SETTING_CONSTRAINT_VIOLATION), a readonly user (READONLY), a build
 	// without the setting (UNKNOWN_SETTING) — or another server error that is
 	// not a condition of the moment. The server is reachable and may be new
-	// enough, but it will not run the gated feature, so cerberus falls back.
+	// enough, but cerberus does not use the gated feature and falls back.
 	CapabilityForbidden
 	// CapabilityUnreachable means the canary got no verdict from the server:
 	// a dial / breaker-open transport failure, or a server error reporting a

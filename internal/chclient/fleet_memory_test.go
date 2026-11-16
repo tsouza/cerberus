@@ -512,3 +512,37 @@ func TestFleetMemory_PassOnlyVerdictCountsForItsPassOnly(t *testing.T) {
 		t.Fatalf("next pass = %+v; want %s, not held", fv, chopt.CapabilityAvailable)
 	}
 }
+
+// TestFleetMemory_PassOnlyReadingDoesNotRefreshAHeldRefusal: a PassOnly
+// reading of the same verdict as a held unattributed refusal does not count
+// as reading that refusal again, so the refusal is still forgotten after
+// retentionPasses complete passes that read it only as PassOnly.
+func TestFleetMemory_PassOnlyReadingDoesNotRefreshAHeldRefusal(t *testing.T) {
+	t.Parallel()
+	m := NewFleetMemory()
+	m.Observe(overHTTP(replicaA, chopt.CapabilityForbidden))
+	passOnly := landed(replicaA, memoryNewBuild)
+	passOnly.Unattributed = []CanaryReading{{Canary: memoryCanary, Verdict: chopt.CapabilityForbidden, PassOnly: true}}
+	for range retentionPasses(1) {
+		m.Observe(passOnly)
+	}
+	if fv := m.Observe(overHTTP(replicaA, chopt.CapabilityAvailable)); fv.Capability(memoryCanary) != chopt.CapabilityAvailable {
+		t.Fatalf("after %d passes reading the refusal only as PassOnly = %+v; want the held refusal forgotten, %s", retentionPasses(1), fv, chopt.CapabilityAvailable)
+	}
+}
+
+// TestFleetMemory_UnreachableWithNoVerdictCountsForItsPassOnly: behind a
+// native balancer, a canary that got no verdict from a server the memory has
+// no verdict for reads the fleet unreachable on that pass only; the next pass,
+// landing on another server that permits, reads the fleet available, not held.
+func TestFleetMemory_UnreachableWithNoVerdictCountsForItsPassOnly(t *testing.T) {
+	t.Parallel()
+	m := NewFleetMemory()
+	m.Observe(landedWith(replicaB, chopt.CapabilityAvailable))
+	if fv := m.Observe(landedWith(replicaA, chopt.CapabilityUnreachable)); fv.Capability(memoryCanary) != chopt.CapabilityUnreachable || fv.Held {
+		t.Fatalf("pass that got no verdict from a server with none = %+v; want %s, not held", fv, chopt.CapabilityUnreachable)
+	}
+	if fv := m.Observe(landedWith(replicaB, chopt.CapabilityAvailable)); fv.Capability(memoryCanary) != chopt.CapabilityAvailable || fv.Held {
+		t.Fatalf("next pass on the permitting server = %+v; want %s, not held", fv, chopt.CapabilityAvailable)
+	}
+}

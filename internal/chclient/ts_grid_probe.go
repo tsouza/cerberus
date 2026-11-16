@@ -61,10 +61,13 @@ func (c *Client) probeCanaryNode(ctx context.Context) canaryAnswer {
 //   - the server refusing the setting  -> CapabilityForbidden (a constrained
 //     or readonly profile, or a build that does not know the setting:
 //     isSettingsRefusal)
-//   - any other failure                -> CapabilityUnreachable (a transport
-//     failure, or a server exception that is not a refusal, such as a
-//     timeout or a memory limit; conservative: do NOT enable native, matching
-//     the version probe's connectivity fallback)
+//   - a transport failure, or a server
+//     exception reporting a condition
+//     of the moment                    -> CapabilityUnreachable (conservative:
+//     do NOT enable native, matching the version probe's connectivity
+//     fallback)
+//   - any other server exception       -> CapabilityForbidden for the pass
+//     that read it only (canaryErrAnswer)
 //
 // It never returns an error: a probe failure is a verdict (Forbidden /
 // Unreachable), not a fatal. The resolver decides what an inconclusive verdict
@@ -89,20 +92,16 @@ const (
 	// Could not access resource 'cpu'. Please check throw_on_unknown_workload
 	// setting.`
 	chCodeResourceAccessDenied = 673
-	// chCodeQueryCacheUsedWithNonThrowOverflowMode is
-	// QUERY_CACHE_USED_WITH_NON_THROW_OVERFLOW_MODE: the query cache refuses
-	// a statement whose profile sets an overflow mode other than throw
-	// (result_overflow_mode='break', for one).
-	chCodeQueryCacheUsedWithNonThrowOverflowMode = 731
 )
 
 // isSettingsRefusal reports whether err is the server refusing a setting the
 // statement carries: a setting the build does not know, a readonly profile, a
 // settings constraint, a workload the server cannot resolve, or the query
-// cache under a non-throw overflow mode.
+// cache refusing a statement whose profile sets an overflow mode other than
+// throw (result_overflow_mode='break', for one).
 func isSettingsRefusal(err error) bool {
 	return exceptionCodeIn(err, chCodeUnknownSetting, chCodeReadonly, chCodeSettingConstraintViolation,
-		chCodeResourceAccessDenied, chCodeQueryCacheUsedWithNonThrowOverflowMode)
+		chCodeResourceAccessDenied, chproto.ErrQueryCacheUsedWithNonThrowOverflowMode)
 }
 
 // exceptionCodeIn reports whether err is a server exception whose code is one

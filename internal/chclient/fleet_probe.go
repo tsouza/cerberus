@@ -172,6 +172,10 @@ func ProbeFleet(ctx context.Context, cfg Config, cluster string, order CanaryOrd
 //     the one the identity read reached, so the verdict is returned as
 //     unattributed. No identity read can tie the next canary to a server
 //     either, so none is made.
+//
+// A PassOnly verdict counts toward the pass that read it only, so it is
+// returned unattributed over either protocol: attributed to a server, it
+// would stay in force until a pass reached that server again.
 func probeCanaries(ctx context.Context, c *Client, first FleetNode, order CanaryOrder, canaries []FleetCanary) (nodes []FleetNode, unattributed []CanaryReading, read bool) {
 	nodes = []FleetNode{first}
 	perRequest := c.protocol == clickhouse.HTTP
@@ -192,8 +196,9 @@ func probeCanaries(ctx context.Context, c *Client, first FleetNode, order Canary
 		switch {
 		case answer.identified:
 			nodes = append(nodes, answer.node)
-		case perRequest:
+		case perRequest || answer.passOnly:
 			unattributed = append(unattributed, CanaryReading{Canary: canary.Name, Verdict: answer.verdict, PassOnly: answer.passOnly})
+			connected = perRequest
 			continue
 		}
 		on := &nodes[len(nodes)-1]

@@ -6,24 +6,12 @@ import (
 	"net"
 	"testing"
 
+	"github.com/ClickHouse/ch-go"
+	chproto "github.com/ClickHouse/ch-go/proto"
 	"github.com/ClickHouse/clickhouse-go/v2"
 
 	"github.com/tsouza/cerberus/internal/chopt"
 )
-
-// Server error codes a canary can read that say nothing about whether the
-// server accepts the capability: a load or resource condition of the moment.
-const (
-	chCodeTooManySimultaneousQueries = 202
-	chCodeSocketTimeout              = 209
-	chCodeNetworkError               = 210
-	chCodeQueryWasCancelled          = 394
-	chCodeQuotaExceeded              = 201
-)
-
-// chCodeTooManyRowsOrBytes is TOO_MANY_ROWS_OR_BYTES, a server exception that
-// is neither a refusal nor a condition the canary classifier knows.
-const chCodeTooManyRowsOrBytes = 396
 
 // transientCanaryErrors are canary errors that are not a refusal: each must
 // classify as Unreachable under every canary's refusal set.
@@ -33,12 +21,13 @@ var transientCanaryErrors = []struct {
 }{
 	{"timeout exceeded", &clickhouse.Exception{Code: chCodeTimeoutExceeded, Name: "TIMEOUT_EXCEEDED"}},
 	{"memory limit exceeded", &clickhouse.Exception{Code: chCodeMemoryLimitExceeded, Name: "MEMORY_LIMIT_EXCEEDED"}},
-	{"too many simultaneous queries", &clickhouse.Exception{Code: chCodeTooManySimultaneousQueries, Name: "TOO_MANY_SIMULTANEOUS_QUERIES"}},
-	{"server-side socket timeout", &clickhouse.Exception{Code: chCodeSocketTimeout, Name: "SOCKET_TIMEOUT"}},
-	{"server-side network error", &clickhouse.Exception{Code: chCodeNetworkError, Name: "NETWORK_ERROR"}},
-	{"query cancelled", &clickhouse.Exception{Code: chCodeQueryWasCancelled, Name: "QUERY_WAS_CANCELLED"}},
-	{"quota exceeded", &clickhouse.Exception{Code: chCodeQuotaExceeded, Name: "QUOTA_EXCEEDED"}},
+	{"too many simultaneous queries", &clickhouse.Exception{Code: int32(chproto.ErrTooManySimultaneousQueries), Name: "TOO_MANY_SIMULTANEOUS_QUERIES"}},
+	{"server-side socket timeout", &clickhouse.Exception{Code: int32(chproto.ErrSocketTimeout), Name: "SOCKET_TIMEOUT"}},
+	{"server-side network error", &clickhouse.Exception{Code: int32(chproto.ErrNetworkError), Name: "NETWORK_ERROR"}},
+	{"query cancelled", &clickhouse.Exception{Code: int32(chproto.ErrQueryWasCancelled), Name: "QUERY_WAS_CANCELLED"}},
+	{"quota exceeded", &clickhouse.Exception{Code: int32(chproto.ErrQuotaExceeded), Name: "QUOTA_EXCEEDED"}},
 	{"memory limit sentinel without a cause", &MemoryLimitError{}},
+	{"query timeout sentinel without a cause", &QueryTimeoutError{}},
 	{"wrapped memory limit", fmt.Errorf("chclient: query: %w", &clickhouse.Exception{Code: chCodeMemoryLimitExceeded})},
 	{"dial failure", &net.OpError{Op: "dial", Err: errors.New("connection refused")}},
 	{"circuit open", fmt.Errorf("chclient: query: %w", ErrCircuitOpen)},
@@ -65,7 +54,7 @@ func TestCanaryErrAnswer_TransientIsUnreachable(t *testing.T) {
 func TestCanaryErrAnswer_UnknownServerErrorIsForbiddenForThePassOnly(t *testing.T) {
 	t.Parallel()
 	refusals := map[string]func(error) bool{"settings": isSettingsRefusal, "query-log union": isQueryLogUnionCanaryRefusal}
-	unknown := &clickhouse.Exception{Code: chCodeTooManyRowsOrBytes, Name: "TOO_MANY_ROWS_OR_BYTES"}
+	unknown := &clickhouse.Exception{Code: int32(chproto.ErrTooManyRowsOrBytes), Name: "TOO_MANY_ROWS_OR_BYTES"}
 	refusal := &clickhouse.Exception{Code: chCodeReadonly, Name: "READONLY"}
 	for set, refused := range refusals {
 		if got := canaryErrAnswer(unknown, refused); got.verdict != chopt.CapabilityForbidden || !got.passOnly {
@@ -77,11 +66,14 @@ func TestCanaryErrAnswer_UnknownServerErrorIsForbiddenForThePassOnly(t *testing.
 	}
 }
 
-// TestCanaryErrAnswer_AllStates pins the tri-state error
-// mapping every settings canary relies on:
+// TestCanaryErrAnswer_AllStates pins the error mapping every settings canary
+// relies on:
 //   - nil                      -> Available
 //   - the setting refused      -> Forbidden
-//   - anything else            -> Unreachable (no verdict; conservative)
+//   - a condition of the moment -> Unreachable (no verdict; conservative)
+//
+// TestCanaryErrAnswer_UnknownServerErrorIsForbiddenForThePassOnly pins the
+// remaining case, any other server exception.
 func TestCanaryErrAnswer_AllStates(t *testing.T) {
 	t.Parallel()
 
@@ -123,9 +115,14 @@ func TestCanaryErrAnswer_AllStates(t *testing.T) {
 			want: chopt.CapabilityForbidden,
 		},
 		{
-			name: "a server exception that is not a refusal is unreachable",
+			name: "a server exception reporting a condition of the moment is unreachable",
 			err:  &clickhouse.Exception{Code: chCodeMemoryLimitExceeded, Name: "MEMORY_LIMIT_EXCEEDED"},
 			want: chopt.CapabilityUnreachable,
+		},
+		{
+			name: "a ch-go exception carrying a refusal code is forbidden",
+			err:  fmt.Errorf("chclient: query: %w", &ch.Exception{Code: chproto.ErrSettingConstraintViolation, Name: "SETTING_CONSTRAINT_VIOLATION"}),
+			want: chopt.CapabilityForbidden,
 		},
 		{
 			name: "wrapped typed exception is still forbidden (errors.As reaches it)",
