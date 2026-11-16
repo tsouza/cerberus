@@ -450,6 +450,28 @@
       "status": "active",
       "replaces": null,
       "replaced_by": null
+    },
+    {
+      "id": "VERIFIER-CHDB-EMIT-FORM-EQUIVALENCE",
+      "name": "chDB emit-form equivalence",
+      "description": "A chdb-tagged Go test in internal/chsql that renders one predicate through two emitter forms — a rewrite and the general form it replaces — executes both side by side in one query against a seeded chDB table, and asserts the two answer alike on every row.",
+      "detects": [
+        "an emitter rewrite that answers differently from the general form it replaces on a value the seeded table holds",
+        "a rewrite that accepts an input outside the class it is sound for, where its answer then diverges on a seeded value"
+      ],
+      "cannot_detect": [
+        "a divergence only on a value or an input shape the test's corpus does not hold",
+        "the general form itself answering differently from the reference engine: both forms can agree on a wrong answer, which only VERIFIER-REFERENCE-DIFFERENTIAL's evidence can show",
+        "chDB-vs-real-ClickHouse execution drift: chDB is a coercive, not a strict, oracle for type mismatches production ClickHouse would reject"
+      ],
+      "complemented_by": [
+        "VERIFIER-REFERENCE-DIFFERENTIAL"
+      ],
+      "substrate": "chdb",
+      "relative_cost": "low",
+      "status": "active",
+      "replaces": null,
+      "replaced_by": null
     }
   ]
 }

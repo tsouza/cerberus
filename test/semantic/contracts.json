@@ -81,16 +81,17 @@
     },
     {
       "id": "PROMQL-LABEL-MATCHER-REGEX-ANCHORING",
-      "statement": "A PromQL regex label matcher (=~ / !~), including one on __name__, matches only a label value the FULL pattern matches, never merely a substring it contains — a bare, non-anchored pattern like job=~\"ap\" matches job=\"ap\" and rejects job=\"api\"/job=\"apiserver\", matching Prometheus's always-implicitly-anchored labels.NewFastRegexMatcher semantics.",
+      "statement": "A PromQL regex label matcher (=~ / !~), including one on __name__, matches only a label value the FULL pattern matches, never merely a substring it contains — a bare, non-anchored pattern like job=~\"ap\" matches job=\"ap\" and rejects job=\"api\"/job=\"apiserver\", matching Prometheus's always-implicitly-anchored labels.NewFastRegexMatcher semantics. The matcher is anchored by anchoredRegexPattern (internal/chsql/builder.go, issue #1741) and rendered either as match() over the anchored pattern or, when that pattern's language is a finite set of literals, as `subject IN (set)` (anchoredRegexLiteralSet, internal/chsql/regex_literal_set.go), which answers what match() answers on every value, the empty one an absent label reads as included.",
       "scope": "head",
       "applicable_heads": ["HEAD-PROMQL"],
       "applicable_capabilities": ["CAP-LABEL-MATCHER-EXPRESSION"],
       "authority": "specification",
       "required_evidence_classes": ["execution", "reference"],
-      "required_independence_groups": ["spec-fixture-roundtrip", "reference-differential"],
+      "required_independence_groups": ["spec-fixture-roundtrip", "reference-differential", "literal-set-emit-equivalence"],
       "blind_spots": [
-        "The anchoring fix (anchoredRegexPattern, internal/chsql/builder.go, issue #1741) is centralized at the one SQL-emission site chplan.OpMatch/OpNotMatch shares across PromQL, LogQL and TraceQL; this contract claims coverage for PromQL only — the mechanism's LogQL/TraceQL correctness is SIGNAL-LABEL-MATCHER-CONSISTENCY's and each head's own contract, not re-proven here.",
-        "The compat corpus's discriminating case (query-corpus/header.yml item 4, job=~\"dem\" against a seeded job=\"demo\") is a cerberus-authored addition, not one of the cases copied from the upstream compliance corpus — it discriminates only cerberus's own lowering bug, since reference Prometheus has nothing to diverge on for an already-anchored matcher; see PROMQL-THIRD-PARTY-COMPLIANCE-CORPUS-PROVENANCE."
+        "The anchoring fix (anchoredRegexPattern, internal/chsql/builder.go, issue #1741) and both of its emission forms are shared by every head through chplan.OpMatch/OpNotMatch; this contract claims coverage for PromQL only — the mechanism's LogQL/TraceQL correctness is SIGNAL-LABEL-MATCHER-CONSISTENCY's and each head's own contract, not re-proven here.",
+        "The compat corpus's discriminating case (query-corpus/header.yml item 4, job=~\"dem\" against a seeded job=\"demo\") is a cerberus-authored addition, not one of the cases copied from the upstream compliance corpus — it discriminates only cerberus's own lowering bug, since reference Prometheus has nothing to diverge on for an already-anchored matcher; see PROMQL-THIRD-PARTY-COMPLIANCE-CORPUS-PROVENANCE.",
+        "The literal-set IN rewrite's equivalence with match() is executed only on the patterns and values TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB (internal/chsql/regex_literal_set_chdb_test.go) holds; for any other pattern it rests on anchoredRegexLiteralSet's own analysis and on TestAnchoredRegexLiteralSet_AgreesWithGoRegexp, a randomized Go-side property against Go's regexp that executes no SQL."
       ],
       "related_contracts": ["SIGNAL-LABEL-MATCHER-CONSISTENCY"],
       "inherits_from": null,
@@ -288,16 +289,17 @@
     },
     {
       "id": "LOGQL-LABEL-MATCHER-REGEX-ANCHORING",
-      "statement": "A LogQL stream-selector matcher and a `| label=~\"...\"` label-filter matcher (=~ / !~) match a label's value only when the FULL pattern matches, never merely a substring it contains — `service_name=~\"auth\"` matches a stream only when service_name is exactly \"auth\", rejecting service_name=\"auth-service\" even though \"auth-service\" contains \"auth\" as a prefix. This is the same anchoredRegexPattern mechanism internal/chsql/builder.go applies for every head sharing chplan.OpMatch/OpNotMatch (issue #1741).",
+      "statement": "A LogQL stream-selector matcher and a `| label=~\"...\"` label-filter matcher (=~ / !~) match a label's value only when the FULL pattern matches, never merely a substring it contains — `service_name=~\"auth\"` matches a stream only when service_name is exactly \"auth\", rejecting service_name=\"auth-service\" even though \"auth-service\" contains \"auth\" as a prefix. This is the same anchoredRegexPattern mechanism internal/chsql/builder.go applies for every head sharing chplan.OpMatch/OpNotMatch (issue #1741), rendered either as match() over the anchored pattern or, when that pattern's language is a finite set of literals, as `subject IN (set)` (anchoredRegexLiteralSet, internal/chsql/regex_literal_set.go), which answers what match() answers on every value, the empty one an absent label reads as included.",
       "scope": "head",
       "applicable_heads": ["HEAD-LOGQL"],
       "applicable_capabilities": ["CAP-LABEL-MATCHER-EXPRESSION"],
       "authority": "specification",
       "required_evidence_classes": ["execution", "reference"],
-      "required_independence_groups": ["spec-fixture-roundtrip", "reference-differential"],
+      "required_independence_groups": ["spec-fixture-roundtrip", "reference-differential", "literal-set-emit-equivalence"],
       "blind_spots": [
-        "The anchoring fix is centralized at the one SQL-emission site chplan.OpMatch/OpNotMatch shares across PromQL, LogQL and TraceQL; this contract claims coverage for LogQL only — the mechanism's PromQL correctness is PROMQL-LABEL-MATCHER-REGEX-ANCHORING's job and TraceQL's is its own head's, not re-proven here.",
-        "compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml is a cerberus-authored addition under cerberus-queries/, not part of the upstream loki-bench corpus — see LOGQL-UPSTREAM-SKIP-BASELINE-PROVENANCE and the compat harness README's third-party-vs-cerberus-owned distinction; this contract's reference evidence discriminates only cerberus's own lowering, since reference Loki has nothing to diverge on for an already-anchored matcher."
+        "The anchoring fix is shared by every head through chplan.OpMatch/OpNotMatch and both of its emission forms, match() over the anchored pattern and the literal-set IN rewrite; this contract claims coverage for LogQL only — the mechanism's PromQL correctness is PROMQL-LABEL-MATCHER-REGEX-ANCHORING's job and TraceQL's is its own head's, not re-proven here.",
+        "compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml is a cerberus-authored addition under cerberus-queries/, not part of the upstream loki-bench corpus — see LOGQL-UPSTREAM-SKIP-BASELINE-PROVENANCE and the compat harness README's third-party-vs-cerberus-owned distinction; this contract's reference evidence discriminates only cerberus's own lowering, since reference Loki has nothing to diverge on for an already-anchored matcher.",
+        "The literal-set IN rewrite's equivalence with match() is executed only on the patterns and values TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB (internal/chsql/regex_literal_set_chdb_test.go) holds; for any other pattern it rests on anchoredRegexLiteralSet's own analysis and on TestAnchoredRegexLiteralSet_AgreesWithGoRegexp, a randomized Go-side property against Go's regexp that executes no SQL."
       ],
       "related_contracts": ["SIGNAL-LABEL-MATCHER-CONSISTENCY", "PROMQL-LABEL-MATCHER-REGEX-ANCHORING"],
       "inherits_from": null,
@@ -604,14 +606,14 @@
     },
     {
       "id": "SIGNAL-LABEL-MATCHER-CONSISTENCY",
-      "statement": "A label matcher's equality and regex semantics behave identically across every head that parses one, independent of that head's own query syntax.",
+      "statement": "A label matcher's equality and regex semantics behave identically across every head that parses one, independent of that head's own query syntax. Every head's regex matcher renders through the one shared emitter, Builder.regexMatcher (internal/chsql/builder.go): match() over the anchored pattern, or `subject IN (set)` when that pattern's language is a finite set of literals (internal/chsql/regex_literal_set.go), the two answering alike on every value, the empty one included.",
       "scope": "signal",
       "applicable_heads": ["HEAD-PROMQL", "HEAD-LOGQL"],
       "applicable_capabilities": ["CAP-LABEL-MATCHER-EXPRESSION"],
       "authority": "design-decision",
       "required_evidence_classes": ["execution"],
-      "required_independence_groups": ["promql-parser", "logql-parser"],
-      "blind_spots": ["TraceQL's attribute matcher is a distinct grammar and is not yet covered by this contract."],
+      "required_independence_groups": ["promql-parser", "logql-parser", "literal-set-emit-equivalence"],
+      "blind_spots": ["TraceQL's attribute matcher is a distinct grammar and is not yet covered by this contract.", "The literal-set IN rewrite's equivalence with match() is executed only on the patterns and values TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB (internal/chsql/regex_literal_set_chdb_test.go) holds; for any other pattern it rests on anchoredRegexLiteralSet's own analysis and on TestAnchoredRegexLiteralSet_AgreesWithGoRegexp, a randomized Go-side property against Go's regexp that executes no SQL."],
       "related_contracts": ["PROMQL-RANGE-VECTOR-ALIGNMENT"],
       "inherits_from": null,
       "status": "active",

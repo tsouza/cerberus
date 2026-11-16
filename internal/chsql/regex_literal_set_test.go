@@ -74,12 +74,8 @@ func TestRegexMatcher_LiteralSetRendersMembership(t *testing.T) {
 			}
 			wantSQL, want := tc.wantSQL, tc.wantArg
 			if wantSQL == "" {
-				anchored := "^(?:" + tc.pattern + ")$"
-				m := goRegexMatch(func(fb *Builder) { _ = fb.Expr(job) }, Lit(anchored), regexReadsInvalidUTF8(anchored))
-				if tc.op == chplan.OpNotMatch {
-					m = Not(m)
-				}
-				wantSQL, want = Render(m)
+				anchored := anchoredRegexPattern(&chplan.LitString{V: tc.pattern})
+				wantSQL, want = Render(anchoredRegexMatch(tc.op, func(fb *Builder) { _ = fb.Expr(job) }, anchored))
 			}
 			if got := b.String(); got != wantSQL {
 				t.Errorf("SQL = %q, want %q", got, wantSQL)
@@ -94,10 +90,12 @@ func TestRegexMatcher_LiteralSetRendersMembership(t *testing.T) {
 // regexSetAtoms are the pattern pieces the property below composes: plain
 // and multi-byte literals, an escaped metacharacter, U+FFFD, a bounded
 // class, and the constructs that must keep a pattern on match() (`.`,
-// repetition, a case-insensitive group, an inner anchor).
+// repetition, a case-insensitive group, an inner text or line anchor, and
+// a class holding U+FFFD or a surrogate).
 var regexSetAtoms = []string{
 	"a", "b", "ab", "é", `\.`, `\|`, "�", "[ab]", `\d`,
-	".", "a*", "b+", "(?i:a)", "(?i)b", "^", "$", `\b`,
+	".", "a*", "b+", "(?i:a)", "(?i)b", "^", "$", "(?m:^)", "(?m:$)", `\b`,
+	`[\x{FFFD}a]`, `[a\x{D800}]`,
 }
 
 // regexSetValues are the subject values the property draws from besides
@@ -107,6 +105,17 @@ var regexSetAtoms = []string{
 var regexSetValues = []string{
 	"", "a", "b", "ab", "aa", "A", "B", "é", "É", ".", "|", "a.", "x", "0", "7",
 	"�", "\xff", "a\xff", "\xc3", "a|b", "ab.", "abab",
+}
+
+// literalSetNearMisses are the values a membership test over a set holding
+// s could confuse with s: s itself, repeated, extended on either side,
+// case-flipped, cut short, and with U+FFFD written as an invalid byte.
+func literalSetNearMisses(s string) []string {
+	probes := []string{s, s + s, s + "x", "x" + s, strings.ToUpper(s), strings.ToLower(s), strings.ReplaceAll(s, "\uFFFD", "\xff")}
+	if s != "" {
+		probes = append(probes, s[:len(s)-1], s[1:])
+	}
+	return probes
 }
 
 // TestAnchoredRegexLiteralSet_AgreesWithGoRegexp checks the rewrite against
@@ -145,12 +154,9 @@ func TestAnchoredRegexLiteralSet_AgreesWithGoRegexp(t *testing.T) {
 			}
 			members[s] = true
 		}
-		// Each member is also probed in the spellings an engine could
-		// confuse with it: case-flipped, and with U+FFFD written as an
-		// invalid byte.
 		values := slices.Clone(regexSetValues)
 		for _, s := range set {
-			values = append(values, s, strings.ToUpper(s), strings.ToLower(s), strings.ReplaceAll(s, "\uFFFD", "\xff"))
+			values = append(values, literalSetNearMisses(s)...)
 		}
 		for _, v := range values {
 			if got, want := members[v], reference.MatchString(v); got != want {

@@ -33,18 +33,18 @@ Of the 49 active contracts, **49** are structurally assured (bound evidence cove
 
 | status     | count  |
 | ---------- | ------ |
-| active     | 25     |
+| active     | 26     |
 | draft      | 0      |
 | superseded | 0      |
-| **total**  | **25** |
+| **total**  | **26** |
 
 ### Bindings
 
 | status    | count   |
 | --------- | ------- |
-| active    | 125     |
+| active    | 128     |
 | draft     | 0       |
-| **total** | **125** |
+| **total** | **128** |
 
 Executions on record: **0**.
 
@@ -59,39 +59,39 @@ Active bindings, classified by which existing identity system their `test_ref` n
 | surface-parity-symbol | 0               |
 | rejection-parity-site | 1               |
 | oracle-inventory-case | 0               |
-| source-path           | 78              |
+| source-path           | 81              |
 | unclassified          | 0               |
 
 ## Lane inventory (merge / release obligations)
 
 | CI lane                                                     | merge-required | release-required | active bindings bound |
 | ----------------------------------------------------------- | -------------- | ---------------- | --------------------- |
-| ci.agpl-clean                                               | true           | true             | 27                    |
+| ci.agpl-clean                                               | true           | true             | 30                    |
 | ci.forbid-skip                                              | true           | true             | 82                    |
-| compatibility.gate                                          | false          | false            | 108                   |
-| chdb.ch-server-safety                                       | true           | true             | 26                    |
-| chdb.perf-guards                                            | false          | true             | 63                    |
+| compatibility.gate                                          | false          | false            | 111                   |
+| chdb.ch-server-safety                                       | true           | true             | 29                    |
+| chdb.perf-guards                                            | false          | true             | 66                    |
 | chdb.probe                                                  | true           | true             | 21                    |
 | chdb.query-log-union                                        | false          | false            | 10                    |
-| chdb.regex-jit                                              | false          | false            | 26                    |
-| chdb.strict-scan                                            | true           | true             | 62                    |
-| ci.check                                                    | true           | true             | 71                    |
-| e2e.chaos                                                   | false          | false            | 29                    |
-| e2e.compose-crawl                                           | false          | false            | 19                    |
-| e2e.compose-smoke                                           | false          | true             | 19                    |
-| e2e.quickstart                                              | true           | true             | 26                    |
-| e2e.startup-bench                                           | false          | false            | 26                    |
-| performance.benchmark                                       | false          | false            | 29                    |
-| performance.profile                                         | false          | true             | 63                    |
-| quality.coverage-enrollment                                 | true           | true             | 27                    |
-| quality.coverage-measured                                   | true           | true             | 102                   |
+| chdb.regex-jit                                              | false          | false            | 29                    |
+| chdb.strict-scan                                            | true           | true             | 65                    |
+| ci.check                                                    | true           | true             | 74                    |
+| e2e.chaos                                                   | false          | false            | 32                    |
+| e2e.compose-crawl                                           | false          | false            | 22                    |
+| e2e.compose-smoke                                           | false          | true             | 22                    |
+| e2e.quickstart                                              | true           | true             | 29                    |
+| e2e.startup-bench                                           | false          | false            | 29                    |
+| performance.benchmark                                       | false          | false            | 32                    |
+| performance.profile                                         | false          | true             | 66                    |
+| quality.coverage-enrollment                                 | true           | true             | 30                    |
+| quality.coverage-measured                                   | true           | true             | 105                   |
 | agpl.oracle                                                 | false          | false            | 14                    |
 | e2e.dashboard                                               | false          | true             | 14                    |
 | chdb.roundtrip-promql                                       | false          | true             | 8                     |
 | quality.post-merge-drift                                    | false          | false            | 37                    |
 | chdb.roundtrip-logql                                        | false          | true             | 14                    |
 | chdb.roundtrip-traceql                                      | false          | true             | 10                    |
-| quality.mutation                                            | false          | false            | 3                     |
+| quality.mutation                                            | false          | false            | 6                     |
 | compatibility.loki                                          | false          | true             | 9                     |
 | compatibility.prometheus                                    | false          | true             | 7                     |
 | compatibility.prometheus-floor                              | false          | false            | 6                     |
@@ -100,7 +100,7 @@ Active bindings, classified by which existing identity system their `test_ref` n
 | perf-nightly-selfcheck.perf-nightly-selfcheck               | false          | false            | 2                     |
 | perf-nightly-selfcheck.perf-nightly-selfcheck-health-notify | false          | false            | 2                     |
 | perf-nightly.calibrate                                      | false          | false            | 2                     |
-| perf-nightly.classic-histogram-report                       | false          | true             | 3                     |
+| perf-nightly.classic-histogram-report                       | false          | true             | 6                     |
 | perf-nightly.perf-nightly                                   | false          | true             | 2                     |
 | perf-nightly.perf-nightly-health-notify                     | false          | false            | 2                     |
 | perf-nightly.ts-grid-instant-memory                         | false          | true             | 2                     |
@@ -196,30 +196,33 @@ Missing: classes `execution`, groups `none`.
 
 ### PROMQL-LABEL-MATCHER-REGEX-ANCHORING
 
-A PromQL regex label matcher (=~ / !~), including one on \_\_name\_\_, matches only a label value the FULL pattern matches, never merely a substring it contains — a bare, non-anchored pattern like job=~"ap" matches job="ap" and rejects job="api"/job="apiserver", matching Prometheus's always-implicitly-anchored labels.NewFastRegexMatcher semantics.
+A PromQL regex label matcher (=~ / !~), including one on \_\_name\_\_, matches only a label value the FULL pattern matches, never merely a substring it contains — a bare, non-anchored pattern like job=~"ap" matches job="ap" and rejects job="api"/job="apiserver", matching Prometheus's always-implicitly-anchored labels.NewFastRegexMatcher semantics. The matcher is anchored by anchoredRegexPattern (internal/chsql/builder.go, issue #1741) and rendered either as match() over the anchored pattern or, when that pattern's language is a finite set of literals, as \`subject IN (set)\` (anchoredRegexLiteralSet, internal/chsql/regex\_literal\_set.go), which answers what match() answers on every value, the empty one an absent label reads as included.
 
 - scope: `head` · applicable heads: `HEAD-PROMQL`
 - authority: `specification` · status: `active` · owner: `cerberus-core`
 - related contracts: `SIGNAL-LABEL-MATCHER-CONSISTENCY`
 
-**Bound evidence** (structural — assured: **true**): required classes `execution, reference`, required independence groups `spec-fixture-roundtrip, reference-differential`.
+**Bound evidence** (structural — assured: **true**): required classes `execution, reference`, required independence groups `spec-fixture-roundtrip, reference-differential, literal-set-emit-equivalence`.
 
 **Observed evidence** (from executions.json): overall **unknown**.
 
-- class `execution`: **unknown** (BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC)
+- class `execution`: **unknown** (BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE, BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC)
 - class `reference`: **unknown** (BINDING-PROMQL-LABEL-MATCHER-ANCHORING-COMPAT)
 - group `spec-fixture-roundtrip`: **unknown** (BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC)
 - group `reference-differential`: **unknown** (BINDING-PROMQL-LABEL-MATCHER-ANCHORING-COMPAT)
+- group `literal-set-emit-equivalence`: **unknown** (BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE)
 
-| binding                                       | verifier                        | evidence class | independence group     | test_ref                                               | observed | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                        |
-| --------------------------------------------- | ------------------------------- | -------------- | ---------------------- | ------------------------------------------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| BINDING-PROMQL-LABEL-MATCHER-ANCHORING-COMPAT | VERIFIER-REFERENCE-DIFFERENTIAL | reference      | reference-differential | `compatibility/prometheus/query-corpus/header.yml`     | unknown  | compatibility.prometheus (release-required); compatibility.prometheus-floor; compatibility.prometheus-forced-route (release-required)                                                                                                                                                                                                                                                      |
-| BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC   | VERIFIER-SPEC-FIXTURE-ROUNDTRIP | execution      | spec-fixture-roundtrip | `test/spec/promql/regex_unanchored_no_overmatch.txtar` | unknown  | chdb.perf-guards (release-required); chdb.roundtrip-promql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift |
+| binding                                            | verifier                            | evidence class | independence group           | test_ref                                                                                        | observed | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| -------------------------------------------------- | ----------------------------------- | -------------- | ---------------------------- | ----------------------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BINDING-PROMQL-LABEL-MATCHER-ANCHORING-COMPAT      | VERIFIER-REFERENCE-DIFFERENTIAL     | reference      | reference-differential       | `compatibility/prometheus/query-corpus/header.yml`                                              | unknown  | compatibility.prometheus (release-required); compatibility.prometheus-floor; compatibility.prometheus-forced-route (release-required)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE | VERIFIER-CHDB-EMIT-FORM-EQUIVALENCE | execution      | literal-set-emit-equivalence | `internal/chsql/regex_literal_set_chdb_test.go:TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB` | unknown  | chdb.ch-server-safety (merge-required) (release-required); chdb.perf-guards (release-required); chdb.regex-jit; chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); compatibility.gate; e2e.chaos; e2e.compose-crawl; e2e.compose-smoke (release-required); e2e.quickstart (merge-required) (release-required); e2e.startup-bench; perf-nightly.classic-histogram-report (release-required); performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required); quality.mutation |
+| BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC        | VERIFIER-SPEC-FIXTURE-ROUNDTRIP     | execution      | spec-fixture-roundtrip       | `test/spec/promql/regex_unanchored_no_overmatch.txtar`                                          | unknown  | chdb.perf-guards (release-required); chdb.roundtrip-promql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift                                                                                                                                                                                                                                                                                                                      |
 
 **Blind spots:**
 
-- The anchoring fix (anchoredRegexPattern, internal/chsql/builder.go, issue #1741) is centralized at the one SQL-emission site chplan.OpMatch/OpNotMatch shares across PromQL, LogQL and TraceQL; this contract claims coverage for PromQL only — the mechanism's LogQL/TraceQL correctness is SIGNAL-LABEL-MATCHER-CONSISTENCY's and each head's own contract, not re-proven here.
+- The anchoring fix (anchoredRegexPattern, internal/chsql/builder.go, issue #1741) and both of its emission forms are shared by every head through chplan.OpMatch/OpNotMatch; this contract claims coverage for PromQL only — the mechanism's LogQL/TraceQL correctness is SIGNAL-LABEL-MATCHER-CONSISTENCY's and each head's own contract, not re-proven here.
 - The compat corpus's discriminating case (query-corpus/header.yml item 4, job=~"dem" against a seeded job="demo") is a cerberus-authored addition, not one of the cases copied from the upstream compliance corpus — it discriminates only cerberus's own lowering bug, since reference Prometheus has nothing to diverge on for an already-anchored matcher; see PROMQL-THIRD-PARTY-COMPLIANCE-CORPUS-PROVENANCE.
+- The literal-set IN rewrite's equivalence with match() is executed only on the patterns and values TestRegexLiteralSet\_AnswersAsAnchoredMatch\_ChDB (internal/chsql/regex\_literal\_set\_chdb\_test.go) holds; for any other pattern it rests on anchoredRegexLiteralSet's own analysis and on TestAnchoredRegexLiteralSet\_AgreesWithGoRegexp, a randomized Go-side property against Go's regexp that executes no SQL.
 
 **Complement gaps** (informational — does not change assurance above):
 
@@ -442,30 +445,33 @@ Third-party provenance for a PromQL compatibility test case attaches only to the
 
 ### LOGQL-LABEL-MATCHER-REGEX-ANCHORING
 
-A LogQL stream-selector matcher and a \`| label=~"..."\` label-filter matcher (=~ / !~) match a label's value only when the FULL pattern matches, never merely a substring it contains — \`service\_name=~"auth"\` matches a stream only when service\_name is exactly "auth", rejecting service\_name="auth-service" even though "auth-service" contains "auth" as a prefix. This is the same anchoredRegexPattern mechanism internal/chsql/builder.go applies for every head sharing chplan.OpMatch/OpNotMatch (issue #1741).
+A LogQL stream-selector matcher and a \`| label=~"..."\` label-filter matcher (=~ / !~) match a label's value only when the FULL pattern matches, never merely a substring it contains — \`service\_name=~"auth"\` matches a stream only when service\_name is exactly "auth", rejecting service\_name="auth-service" even though "auth-service" contains "auth" as a prefix. This is the same anchoredRegexPattern mechanism internal/chsql/builder.go applies for every head sharing chplan.OpMatch/OpNotMatch (issue #1741), rendered either as match() over the anchored pattern or, when that pattern's language is a finite set of literals, as \`subject IN (set)\` (anchoredRegexLiteralSet, internal/chsql/regex\_literal\_set.go), which answers what match() answers on every value, the empty one an absent label reads as included.
 
 - scope: `head` · applicable heads: `HEAD-LOGQL`
 - authority: `specification` · status: `active` · owner: `cerberus-core`
 - related contracts: `PROMQL-LABEL-MATCHER-REGEX-ANCHORING`, `SIGNAL-LABEL-MATCHER-CONSISTENCY`
 
-**Bound evidence** (structural — assured: **true**): required classes `execution, reference`, required independence groups `spec-fixture-roundtrip, reference-differential`.
+**Bound evidence** (structural — assured: **true**): required classes `execution, reference`, required independence groups `spec-fixture-roundtrip, reference-differential, literal-set-emit-equivalence`.
 
 **Observed evidence** (from executions.json): overall **unknown**.
 
-- class `execution`: **unknown** (BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC)
+- class `execution`: **unknown** (BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE, BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC)
 - class `reference`: **unknown** (BINDING-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT)
 - group `spec-fixture-roundtrip`: **unknown** (BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC)
 - group `reference-differential`: **unknown** (BINDING-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT)
+- group `literal-set-emit-equivalence`: **unknown** (BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE)
 
-| binding                                      | verifier                        | evidence class | independence group     | test_ref                                                                     | observed | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                       |
-| -------------------------------------------- | ------------------------------- | -------------- | ---------------------- | ---------------------------------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| BINDING-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT | VERIFIER-REFERENCE-DIFFERENTIAL | reference      | reference-differential | `compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml` | unknown  | compatibility.loki (release-required)                                                                                                                                                                                                                                                                                                                                                     |
-| BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC   | VERIFIER-SPEC-FIXTURE-ROUNDTRIP | execution      | spec-fixture-roundtrip | `test/spec/logql/stream_regex_no_overmatch.txtar#expected_rows`              | unknown  | chdb.perf-guards (release-required); chdb.roundtrip-logql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift |
+| binding                                           | verifier                            | evidence class | independence group           | test_ref                                                                                        | observed | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------------------------- | ----------------------------------- | -------------- | ---------------------------- | ----------------------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BINDING-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT      | VERIFIER-REFERENCE-DIFFERENTIAL     | reference      | reference-differential       | `compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml`                    | unknown  | compatibility.loki (release-required)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE | VERIFIER-CHDB-EMIT-FORM-EQUIVALENCE | execution      | literal-set-emit-equivalence | `internal/chsql/regex_literal_set_chdb_test.go:TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB` | unknown  | chdb.ch-server-safety (merge-required) (release-required); chdb.perf-guards (release-required); chdb.regex-jit; chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); compatibility.gate; e2e.chaos; e2e.compose-crawl; e2e.compose-smoke (release-required); e2e.quickstart (merge-required) (release-required); e2e.startup-bench; perf-nightly.classic-histogram-report (release-required); performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required); quality.mutation |
+| BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC        | VERIFIER-SPEC-FIXTURE-ROUNDTRIP     | execution      | spec-fixture-roundtrip       | `test/spec/logql/stream_regex_no_overmatch.txtar#expected_rows`                                 | unknown  | chdb.perf-guards (release-required); chdb.roundtrip-logql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift                                                                                                                                                                                                                                                                                                                       |
 
 **Blind spots:**
 
-- The anchoring fix is centralized at the one SQL-emission site chplan.OpMatch/OpNotMatch shares across PromQL, LogQL and TraceQL; this contract claims coverage for LogQL only — the mechanism's PromQL correctness is PROMQL-LABEL-MATCHER-REGEX-ANCHORING's job and TraceQL's is its own head's, not re-proven here.
+- The anchoring fix is shared by every head through chplan.OpMatch/OpNotMatch and both of its emission forms, match() over the anchored pattern and the literal-set IN rewrite; this contract claims coverage for LogQL only — the mechanism's PromQL correctness is PROMQL-LABEL-MATCHER-REGEX-ANCHORING's job and TraceQL's is its own head's, not re-proven here.
 - compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml is a cerberus-authored addition under cerberus-queries/, not part of the upstream loki-bench corpus — see LOGQL-UPSTREAM-SKIP-BASELINE-PROVENANCE and the compat harness README's third-party-vs-cerberus-owned distinction; this contract's reference evidence discriminates only cerberus's own lowering, since reference Loki has nothing to diverge on for an already-anchored matcher.
+- The literal-set IN rewrite's equivalence with match() is executed only on the patterns and values TestRegexLiteralSet\_AnswersAsAnchoredMatch\_ChDB (internal/chsql/regex\_literal\_set\_chdb\_test.go) holds; for any other pattern it rests on anchoredRegexLiteralSet's own analysis and on TestAnchoredRegexLiteralSet\_AgreesWithGoRegexp, a randomized Go-side property against Go's regexp that executes no SQL.
 
 **Complement gaps** (informational — does not change assurance above):
 
@@ -1061,31 +1067,35 @@ A captured, REAL Grafana request shape, replayed against cerberus's in-process H
 
 ### SIGNAL-LABEL-MATCHER-CONSISTENCY
 
-A label matcher's equality and regex semantics behave identically across every head that parses one, independent of that head's own query syntax.
+A label matcher's equality and regex semantics behave identically across every head that parses one, independent of that head's own query syntax. Every head's regex matcher renders through the one shared emitter, Builder.regexMatcher (internal/chsql/builder.go): match() over the anchored pattern, or \`subject IN (set)\` when that pattern's language is a finite set of literals (internal/chsql/regex\_literal\_set.go), the two answering alike on every value, the empty one included.
 
 - scope: `signal` · applicable heads: `HEAD-LOGQL`, `HEAD-PROMQL`
 - authority: `design-decision` · status: `active` · owner: `cerberus-core`
 - related contracts: `PROMQL-RANGE-VECTOR-ALIGNMENT`
 
-**Bound evidence** (structural — assured: **true**): required classes `execution`, required independence groups `promql-parser, logql-parser`.
+**Bound evidence** (structural — assured: **true**): required classes `execution`, required independence groups `promql-parser, logql-parser, literal-set-emit-equivalence`.
 
 **Observed evidence** (from executions.json): overall **unknown**.
 
-- class `execution`: **unknown** (BINDING-SIGNAL-LABEL-MATCHER-LOGQL, BINDING-SIGNAL-LABEL-MATCHER-PROMQL)
+- class `execution`: **unknown** (BINDING-SIGNAL-LABEL-MATCHER-LOGQL, BINDING-SIGNAL-LABEL-MATCHER-PROMQL, BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE)
 - group `promql-parser`: **unknown** (BINDING-SIGNAL-LABEL-MATCHER-PROMQL)
 - group `logql-parser`: **unknown** (BINDING-SIGNAL-LABEL-MATCHER-LOGQL)
+- group `literal-set-emit-equivalence`: **unknown** (BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE)
 
-| binding                             | verifier                        | evidence class | independence group | test_ref                                                  | observed | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                        |
-| ----------------------------------- | ------------------------------- | -------------- | ------------------ | --------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| BINDING-SIGNAL-LABEL-MATCHER-LOGQL  | VERIFIER-SPEC-FIXTURE-ROUNDTRIP | execution      | logql-parser       | `test/spec/logql/signal_label_matcher_consistency.txtar`  | unknown  | chdb.perf-guards (release-required); chdb.roundtrip-logql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift  |
-| BINDING-SIGNAL-LABEL-MATCHER-PROMQL | VERIFIER-SPEC-FIXTURE-ROUNDTRIP | execution      | promql-parser      | `test/spec/promql/signal_label_matcher_consistency.txtar` | unknown  | chdb.perf-guards (release-required); chdb.roundtrip-promql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift |
+| binding                                  | verifier                            | evidence class | independence group           | test_ref                                                                                        | observed | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------------------------------- | ----------------------------------- | -------------- | ---------------------------- | ----------------------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BINDING-SIGNAL-LABEL-MATCHER-LOGQL       | VERIFIER-SPEC-FIXTURE-ROUNDTRIP     | execution      | logql-parser                 | `test/spec/logql/signal_label_matcher_consistency.txtar`                                        | unknown  | chdb.perf-guards (release-required); chdb.roundtrip-logql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift                                                                                                                                                                                                                                                                                                                       |
+| BINDING-SIGNAL-LABEL-MATCHER-PROMQL      | VERIFIER-SPEC-FIXTURE-ROUNDTRIP     | execution      | promql-parser                | `test/spec/promql/signal_label_matcher_consistency.txtar`                                       | unknown  | chdb.perf-guards (release-required); chdb.roundtrip-promql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift                                                                                                                                                                                                                                                                                                                      |
+| BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE | VERIFIER-CHDB-EMIT-FORM-EQUIVALENCE | execution      | literal-set-emit-equivalence | `internal/chsql/regex_literal_set_chdb_test.go:TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB` | unknown  | chdb.ch-server-safety (merge-required) (release-required); chdb.perf-guards (release-required); chdb.regex-jit; chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); compatibility.gate; e2e.chaos; e2e.compose-crawl; e2e.compose-smoke (release-required); e2e.quickstart (merge-required) (release-required); e2e.startup-bench; perf-nightly.classic-histogram-report (release-required); performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required); quality.mutation |
 
 **Blind spots:**
 
 - TraceQL's attribute matcher is a distinct grammar and is not yet covered by this contract.
+- The literal-set IN rewrite's equivalence with match() is executed only on the patterns and values TestRegexLiteralSet\_AnswersAsAnchoredMatch\_ChDB (internal/chsql/regex\_literal\_set\_chdb\_test.go) holds; for any other pattern it rests on anchoredRegexLiteralSet's own analysis and on TestAnchoredRegexLiteralSet\_AgreesWithGoRegexp, a randomized Go-side property against Go's regexp that executes no SQL.
 
 **Complement gaps** (informational — does not change assurance above):
 
+- verifier `VERIFIER-CHDB-EMIT-FORM-EQUIVALENCE` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
 - verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`, `VERIFIER-REFERENCE-DIFFERENTIAL`
 
 ### SIGNAL-MIGRATION-WIRE-OBSERVED-COMPATIBILITY-001
@@ -1714,7 +1724,7 @@ Excluded from the assured count above by design — a draft is not yet load-bear
 
 ## Semantic mutation pilot
 
-A bounded, hand-authored cohort of contract-linked domain-semantic mutations (issues #3448-#3452), isolated from the developer checkout via `go test -overlay` (lib/semantic-mutation.mjs) — distinct from, and never a substitute for, the required traditional `mutation` (gremlins) lane. Every disposition below is the record's declared `expected_detection`, which the required `check` job's corpus step re-verifies by running the record for real on every PR (a record on `main` always classifies as it declares). Cohort revision (content fingerprint over every record's id/synthetic/violated_contracts and disposition, so a classification change is visible even when a published rate's own digits do not move): `5b2c6ba05cee06f2686bd42a52188c7415010ba24dbeb3df17a3073e98aee56d`.
+A bounded, hand-authored cohort of contract-linked domain-semantic mutations (issues #3448-#3452), isolated from the developer checkout via `go test -overlay` (lib/semantic-mutation.mjs) — distinct from, and never a substitute for, the required traditional `mutation` (gremlins) lane. Every disposition below is the record's declared `expected_detection`, which the required `check` job's corpus step re-verifies by running the record for real on every PR (a record on `main` always classifies as it declares). Cohort revision (content fingerprint over every record's id/synthetic/violated_contracts and disposition, so a classification change is visible even when a published rate's own digits do not move): `d8432609ce5cf0818541aaedd6a0eb885f97b15fcc11128da16a805338a0ed54`.
 
 Escape/kill rate is computed ONLY over records in the `denominator` bucket (`killed` + `survived` — a real detector ran, against a validly-applied, non-equivalent mutation, with a passing clean control). `equivalent` (an audited exemption), `invalid` (the mutation never validly applied), and `incomplete` (build-failed/timeout/infrastructure-error — the measurement itself never finished) are each reported separately and never folded into either side of the rate — an incomplete run is neither a kill nor a clean escape.
 
@@ -1724,62 +1734,38 @@ Real, per-head domain-semantic mutations (issues #3449-#3451) — the ONLY cohor
 
 | status               | count |
 | -------------------- | ----- |
-| killed               | 6     |
+| killed               | 7     |
 | survived             | 0     |
 | equivalent-reviewed  | 0     |
 | invalid-transform    | 0     |
 | build-failed         | 0     |
 | timeout              | 0     |
 | infrastructure-error | 0     |
-| **total**            | **6** |
+| **total**            | **7** |
 
-denominator (killed+survived): **6** — **SMALL SAMPLE**, treat the percentages below as illustrative, not conclusive
+denominator (killed+survived): **7** — **SMALL SAMPLE**, treat the percentages below as illustrative, not conclusive
 
-- kill rate: **100.0%** (6/6)
-- escape rate: **0.0%** (0/6)
+- kill rate: **100.0%** (7/7)
+- escape rate: **0.0%** (0/7)
 - excluded: equivalent **0**, invalid **0**, incomplete **0**
 
 #### By detector evidence kind
 
 A `golden-text` detector kills by comparing a TXTAR fixture's emitted sql/args/chplan text against its stored golden (every head's TestLower checks those sections before the chDB round trip is reached), so it fires on any change to the emitted SQL — a semantics-preserving refactor as readily as a wrong answer — and its kill says nothing about whether a semantic verifier would have caught the bug. An `execution` detector executes the mutated code and asserts on values. The rates below are kept apart by kind; the blended rate above is the union.
 
-| evidence kind | records                                                                                                                                                          | denominator | kill rate                    | escape rate                  |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ---------------------------- | ---------------------------- |
-| golden-text   | `MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741`, `MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED`                                                                       | 2           | 100.0% (2/2)                 | 0.0% (0/2)                   |
-| execution     | `MUTANT-PROMQL-COUNTER-RESET-COMPENSATION`, `MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT`, `MUTANT-TRACEQL-DESCENDANT-AS-CHILD`, `MUTANT-TRACEQL-SCOPE-SWAP` | 4           | 100.0% (4/4)                 | 0.0% (0/4)                   |
-| mixed         | (none)                                                                                                                                                           | 0           | n/a (zero denominator) (0/0) | n/a (zero denominator) (0/0) |
+| evidence kind | records                                                                                                                                                                                                                | denominator | kill rate                    | escape rate                  |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ---------------------------- | ---------------------------- |
+| golden-text   | `MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741`, `MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED`                                                                                                                             | 2           | 100.0% (2/2)                 | 0.0% (0/2)                   |
+| execution     | `MUTANT-PROMQL-COUNTER-RESET-COMPENSATION`, `MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT`, `MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION`, `MUTANT-TRACEQL-DESCENDANT-AS-CHILD`, `MUTANT-TRACEQL-SCOPE-SWAP` | 5           | 100.0% (5/5)                 | 0.0% (0/5)                   |
+| mixed         | (none)                                                                                                                                                                                                                 | 0           | n/a (zero denominator) (0/0) | n/a (zero denominator) (0/0) |
 
 #### HEAD-LOGQL
 
-| id                                         | disposition | bucket      | detector(s)                                                                                                       | target                      |
-| ------------------------------------------ | ----------- | ----------- | ----------------------------------------------------------------------------------------------------------------- | --------------------------- |
-| MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741 | killed      | denominator | `logql-stream-regex-no-overmatch (golden-text), promql-regex-unanchored-no-overmatch-supplementary (golden-text)` | `internal/chsql/builder.go` |
-| MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED | killed      | denominator | `logql-logfmt-then-numeric-filter-order (golden-text)`                                                            | `internal/logql/lower.go`   |
-
-| status               | count |
-| -------------------- | ----- |
-| killed               | 2     |
-| survived             | 0     |
-| equivalent-reviewed  | 0     |
-| invalid-transform    | 0     |
-| build-failed         | 0     |
-| timeout              | 0     |
-| infrastructure-error | 0     |
-| **total**            | **2** |
-
-denominator (killed+survived): **2** — **SMALL SAMPLE**, treat the percentages below as illustrative, not conclusive
-
-- kill rate: **100.0%** (2/2)
-- escape rate: **0.0%** (0/2)
-- excluded: equivalent **0**, invalid **0**, incomplete **0**
-
-#### HEAD-PROMQL
-
-| id                                              | disposition | bucket      | detector(s)                                                                                                       | target                           |
-| ----------------------------------------------- | ----------- | ----------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741      | killed      | denominator | `logql-stream-regex-no-overmatch (golden-text), promql-regex-unanchored-no-overmatch-supplementary (golden-text)` | `internal/chsql/builder.go`      |
-| MUTANT-PROMQL-COUNTER-RESET-COMPENSATION        | killed      | denominator | `counter-reset-mid-window-compensation (execution)`                                                               | `internal/chsql/builder.go`      |
-| MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT | killed      | denominator | `range-window-boundary-exact-sample (execution)`                                                                  | `internal/chsql/range_window.go` |
+| id                                                 | disposition | bucket      | detector(s)                                                                                                       | target                                |
+| -------------------------------------------------- | ----------- | ----------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741         | killed      | denominator | `logql-stream-regex-no-overmatch (golden-text), promql-regex-unanchored-no-overmatch-supplementary (golden-text)` | `internal/chsql/builder.go`           |
+| MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED         | killed      | denominator | `logql-logfmt-then-numeric-filter-order (golden-text)`                                                            | `internal/logql/lower.go`             |
+| MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION | killed      | denominator | `regex-literal-set-answers-as-anchored-match (execution)`                                                         | `internal/chsql/regex_literal_set.go` |
 
 | status               | count |
 | -------------------- | ----- |
@@ -1796,6 +1782,32 @@ denominator (killed+survived): **3** — **SMALL SAMPLE**, treat the percentages
 
 - kill rate: **100.0%** (3/3)
 - escape rate: **0.0%** (0/3)
+- excluded: equivalent **0**, invalid **0**, incomplete **0**
+
+#### HEAD-PROMQL
+
+| id                                                 | disposition | bucket      | detector(s)                                                                                                       | target                                |
+| -------------------------------------------------- | ----------- | ----------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741         | killed      | denominator | `logql-stream-regex-no-overmatch (golden-text), promql-regex-unanchored-no-overmatch-supplementary (golden-text)` | `internal/chsql/builder.go`           |
+| MUTANT-PROMQL-COUNTER-RESET-COMPENSATION           | killed      | denominator | `counter-reset-mid-window-compensation (execution)`                                                               | `internal/chsql/builder.go`           |
+| MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT    | killed      | denominator | `range-window-boundary-exact-sample (execution)`                                                                  | `internal/chsql/range_window.go`      |
+| MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION | killed      | denominator | `regex-literal-set-answers-as-anchored-match (execution)`                                                         | `internal/chsql/regex_literal_set.go` |
+
+| status               | count |
+| -------------------- | ----- |
+| killed               | 4     |
+| survived             | 0     |
+| equivalent-reviewed  | 0     |
+| invalid-transform    | 0     |
+| build-failed         | 0     |
+| timeout              | 0     |
+| infrastructure-error | 0     |
+| **total**            | **4** |
+
+denominator (killed+survived): **4** — **SMALL SAMPLE**, treat the percentages below as illustrative, not conclusive
+
+- kill rate: **100.0%** (4/4)
+- escape rate: **0.0%** (0/4)
 - excluded: equivalent **0**, invalid **0**, incomplete **0**
 
 #### HEAD-TRACEQL
@@ -1822,7 +1834,7 @@ denominator (killed+survived): **2** — **SMALL SAMPLE**, treat the percentages
 - escape rate: **0.0%** (0/2)
 - excluded: equivalent **0**, invalid **0**, incomplete **0**
 
-**Cross-head mutations** (counted under every head their violated contracts apply to, never double-hidden): `MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741`.
+**Cross-head mutations** (counted under every head their violated contracts apply to, never double-hidden): `MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741`, `MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION`.
 
 ### Synthetic self-test cohort
 

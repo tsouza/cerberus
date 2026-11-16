@@ -12,14 +12,14 @@
     },
     "verifiers": {
       "draft": 0,
-      "active": 25,
+      "active": 26,
       "superseded": 0,
-      "total": 25
+      "total": 26
     },
     "bindings": {
       "draft": 0,
-      "active": 125,
-      "total": 125
+      "active": 128,
+      "total": 128
     },
     "executions": {
       "total": 0
@@ -45,7 +45,7 @@
     "surface-parity-symbol": 0,
     "rejection-parity-site": 1,
     "oracle-inventory-case": 0,
-    "source-path": 78,
+    "source-path": 81,
     "unclassified": 0
   },
   "lane_inventory": {
@@ -71,6 +71,8 @@
           "BINDING-ARCH-NO-CACHING-STATIC",
           "BINDING-ARCH-NO-CACHING-WINDOW-TESTS",
           "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
+          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
+          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
           "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
           "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
@@ -82,7 +84,8 @@
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
-          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
+          "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE"
         ],
         "id": "ci.agpl-clean"
       },
@@ -229,6 +232,7 @@
           "BINDING-ARCH-TYPED-SQL-VERBATIM-SCAN",
           "BINDING-LOGQL-LABEL-FORMAT-SHAPE-PROPERTY",
           "BINDING-LOGQL-LABEL-FORMAT-SPEC-FIXTURE",
+          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC",
           "BINDING-LOGQL-LINE-FILTER-REGEX-SPEC",
           "BINDING-LOGQL-ORACLE-BOUNDARY-DOC-REVIEW",
@@ -244,6 +248,7 @@
           "BINDING-PROMQL-COUNTER-RESET-INSTANT-PROPERTY",
           "BINDING-PROMQL-COUNTER-RESET-INSTANT-WINDOW-PROPERTY",
           "BINDING-PROMQL-FORK-VERSION-SKEW-SCAN",
+          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC",
           "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
           "BINDING-PROMQL-NATIVE-HISTOGRAM-PROPERTY",
@@ -266,6 +271,7 @@
           "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-STUB",
           "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
           "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
+          "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE",
           "BINDING-SIGNAL-MIGRATION-WIRE-TIER1-PARITY",
           "BINDING-SIGNAL-MIGRATION-WIRE-TIER1-SUBSTRATE",
           "BINDING-SIGNAL-MIGRATION-WIRE-TIER2-FIRING",
@@ -314,6 +320,8 @@
           "BINDING-ARCH-NO-CACHING-STATIC",
           "BINDING-ARCH-NO-CACHING-WINDOW-TESTS",
           "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
+          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
+          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
           "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
           "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
@@ -325,7 +333,8 @@
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
-          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
+          "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE"
         ],
         "id": "chdb.ch-server-safety"
       },
@@ -366,6 +375,7 @@
           "BINDING-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL",
           "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
           "BINDING-LOGQL-LABEL-FORMAT-SPEC-FIXTURE",
+          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC",
           "BINDING-LOGQL-LINE-FILTER-REGEX-SPEC",
           "BINDING-LOGQL-PIPELINE-STAGE-ORDER-FILTER-THEN-LINE",
@@ -374,6 +384,7 @@
           "BINDING-LOGQL-STREAM-ROW-PARITY-EXEMPTION-REVIEW",
           "BINDING-LOGQL-STRUCTURED-EXTRACTION-FIXTURE",
           "BINDING-LOGQL-UNWRAP-FIXTURE",
+          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC",
           "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
           "BINDING-PROMQL-RANGE-ALIGNMENT-SPEC",
@@ -390,6 +401,7 @@
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
           "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
           "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
+          "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-UNSCOPED-COALESCE-SPEC",
           "BINDING-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE",
           "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-SPEC",
@@ -470,6 +482,8 @@
           "BINDING-ARCH-NO-CACHING-STATIC",
           "BINDING-ARCH-NO-CACHING-WINDOW-TESTS",
           "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
+          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
+          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
           "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
           "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
@@ -481,7 +495,8 @@
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
-          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
+          "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE"
         ],
         "id": "chdb.regex-jit"
       },
@@ -521,6 +536,7 @@
           "BINDING-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL",
           "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
           "BINDING-LOGQL-LABEL-FORMAT-SPEC-FIXTURE",
+          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC",
           "BINDING-LOGQL-LINE-FILTER-REGEX-SPEC",
           "BINDING-LOGQL-PIPELINE-STAGE-ORDER-FILTER-THEN-LINE",
@@ -529,6 +545,7 @@
           "BINDING-LOGQL-STREAM-ROW-PARITY-EXEMPTION-REVIEW",
           "BINDING-LOGQL-STRUCTURED-EXTRACTION-FIXTURE",
           "BINDING-LOGQL-UNWRAP-FIXTURE",
+          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC",
           "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
           "BINDING-PROMQL-RANGE-ALIGNMENT-SPEC",
@@ -545,6 +562,7 @@
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
           "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
           "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
+          "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-UNSCOPED-COALESCE-SPEC",
           "BINDING-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE",
           "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-SPEC",
@@ -598,6 +616,7 @@
           "BINDING-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL",
           "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
           "BINDING-LOGQL-LABEL-FORMAT-SPEC-FIXTURE",
+          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC",
           "BINDING-LOGQL-LINE-FILTER-REGEX-SPEC",
           "BINDING-LOGQL-PIPELINE-STAGE-ORDER-FILTER-THEN-LINE",
@@ -607,6 +626,7 @@
           "BINDING-LOGQL-STRUCTURED-EXTRACTION-FIXTURE",
           "BINDING-LOGQL-UNWRAP-FIXTURE",
           "BINDING-PROMQL-FORK-VERSION-SKEW-SCAN",
+          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC",
           "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
           "BINDING-PROMQL-ORACLE-ENGINE-FLAG-PARITY-SCAN",
@@ -625,6 +645,7 @@
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
           "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
           "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
+          "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-UNSCOPED-COALESCE-SPEC",
           "BINDING-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE",
           "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-SPEC",
@@ -656,6 +677,8 @@
           "BINDING-ARCH-NO-CACHING-STATIC",
           "BINDING-ARCH-NO-CACHING-WINDOW-TESTS",
           "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
+          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
+          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
           "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
           "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
@@ -668,6 +691,7 @@
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
+          "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE",
           "BINDING-SIGNAL-MIGRATION-WIRE-TIER1-PARITY",
           "BINDING-SIGNAL-MIGRATION-WIRE-TIER1-SUBSTRATE",
           "BINDING-SIGNAL-MIGRATION-WIRE-TIER2-FIRING"
@@ -688,6 +712,8 @@
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
           "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
+          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
+          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
           "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
           "BINDING-SIGNAL-ADMISSION-CROSS-HEAD-ISOLATION",
@@ -698,7 +724,8 @@
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
-          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
+          "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE"
         ],
         "id": "e2e.compose-crawl"
       },
@@ -716,6 +743,8 @@
           "BINDING-ARCH-FANOUT-BOUND-CONCURRENCY-CAP",
           "BINDING-ARCH-FANOUT-BOUND-DENIAL-BREAKER-NEUTRAL",
           "BINDING-ARCH-FANOUT-BOUND-REAL-SERVER-KILL",
+          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
+          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
           "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
           "BINDING-SIGNAL-ADMISSION-CROSS-HEAD-ISOLATION",
@@ -726,7 +755,8 @@
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
-          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
+          "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE"
         ],
         "id": "e2e.compose-smoke"
       },
@@ -750,6 +780,8 @@
           "BINDING-ARCH-NO-CACHING-STATIC",
           "BINDING-ARCH-NO-CACHING-WINDOW-TESTS",
           "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
+          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
+          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
           "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
           "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
@@ -761,7 +793,8 @@
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
-          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
+          "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE"
         ],
         "id": "e2e.quickstart"
       },
@@ -785,6 +818,8 @@
           "BINDING-ARCH-NO-CACHING-STATIC",
           "BINDING-ARCH-NO-CACHING-WINDOW-TESTS",
           "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
+          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
+          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
           "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
           "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
@@ -796,7 +831,8 @@
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
-          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
+          "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE"
         ],
         "id": "e2e.startup-bench"
       },
@@ -823,6 +859,8 @@
           "BINDING-ARCH-PERF-BASELINE-NIGHTLY-GATE",
           "BINDING-ARCH-PERF-BASELINE-PRONG-ORDERING",
           "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
+          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
+          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
           "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
           "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
@@ -834,7 +872,8 @@
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
-          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
+          "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE"
         ],
         "id": "performance.benchmark"
       },
@@ -875,6 +914,7 @@
           "BINDING-ARCH-STRICT-SCAN-CORPUS-DIFFERENTIAL",
           "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
           "BINDING-LOGQL-LABEL-FORMAT-SPEC-FIXTURE",
+          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC",
           "BINDING-LOGQL-LINE-FILTER-REGEX-SPEC",
           "BINDING-LOGQL-PIPELINE-STAGE-ORDER-FILTER-THEN-LINE",
@@ -883,6 +923,7 @@
           "BINDING-LOGQL-STREAM-ROW-PARITY-EXEMPTION-REVIEW",
           "BINDING-LOGQL-STRUCTURED-EXTRACTION-FIXTURE",
           "BINDING-LOGQL-UNWRAP-FIXTURE",
+          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC",
           "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
           "BINDING-PROMQL-RANGE-ALIGNMENT-SPEC",
@@ -899,6 +940,7 @@
           "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
           "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
           "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
+          "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE",
           "BINDING-TRACEQL-ATTRIBUTE-SCOPE-UNSCOPED-COALESCE-SPEC",
           "BINDING-TRACEQL-ORACLE-AUTHORITY-IN-PROCESS-REFERENCE",
           "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-SPEC",
@@ -931,6 +973,8 @@
           "BINDING-ARCH-NO-CACHING-STATIC",
           "BINDING-ARCH-NO-CACHING-WINDOW-TESTS",
           "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
+          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
+          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
           "BINDING-SIGNAL-ADMISSION-CAPACITY-RECOVERY",
           "BINDING-SIGNAL-ADMISSION-CH-CONN-TEARDOWN-BOUNDARY",
@@ -942,7 +986,8 @@
           "BINDING-SIGNAL-ADMISSION-TAIL-INDEPENDENCE",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-ADMITS",
           "BINDING-SIGNAL-ADMISSION-TRACEQL-GRPC-SERVER-WIRING",
-          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING"
+          "BINDING-SIGNAL-ADMISSION-TRACEQL-WIRING",
+          "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE"
         ],
         "id": "quality.coverage-enrollment"
       },
@@ -992,6 +1037,7 @@
           "BINDING-ARCH-STRICT-SCAN-ENUM-RECONCILIATION",
           "BINDING-LOGQL-LABEL-FORMAT-SHAPE-PROPERTY",
           "BINDING-LOGQL-LABEL-FORMAT-SPEC-FIXTURE",
+          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC",
           "BINDING-LOGQL-LINE-FILTER-REGEX-SPEC",
           "BINDING-LOGQL-ORACLE-BOUNDARY-DOC-REVIEW",
@@ -1007,6 +1053,7 @@
           "BINDING-PROMQL-COUNTER-RESET-INSTANT-PROPERTY",
           "BINDING-PROMQL-COUNTER-RESET-INSTANT-WINDOW-PROPERTY",
           "BINDING-PROMQL-FORK-VERSION-SKEW-SCAN",
+          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
           "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC",
           "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
           "BINDING-PROMQL-NATIVE-HISTOGRAM-PROPERTY",
@@ -1029,6 +1076,7 @@
           "BINDING-SIGNAL-CONSUMER-WIRE-REPLAY-STUB",
           "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
           "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
+          "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE",
           "BINDING-SIGNAL-MIGRATION-WIRE-TIER1-PARITY",
           "BINDING-SIGNAL-MIGRATION-WIRE-TIER1-SUBSTRATE",
           "BINDING-SIGNAL-MIGRATION-WIRE-TIER2-FIRING",
@@ -1216,7 +1264,10 @@
         "binding_ids": [
           "BINDING-ARCH-HEAD-OPTIMIZE-PROPERTY",
           "BINDING-ARCH-HEAD-OPTIMIZE-TERMINATION",
-          "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY"
+          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
+          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
+          "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
+          "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE"
         ],
         "id": "quality.mutation"
       },
@@ -1342,7 +1393,10 @@
         "binding_ids": [
           "BINDING-ARCH-PERF-BASELINE-NIGHTLY-GATE",
           "BINDING-ARCH-PERF-BASELINE-PRONG-ORDERING",
-          "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY"
+          "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
+          "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
+          "BINDING-PROMQL-LABEL-REPLACE-REJECTION-BOUNDARY",
+          "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE"
         ],
         "id": "perf-nightly.classic-histogram-report"
       },
@@ -7615,7 +7669,7 @@
     },
     {
       "id": "LOGQL-LABEL-MATCHER-REGEX-ANCHORING",
-      "statement": "A LogQL stream-selector matcher and a `| label=~\"...\"` label-filter matcher (=~ / !~) match a label's value only when the FULL pattern matches, never merely a substring it contains — `service_name=~\"auth\"` matches a stream only when service_name is exactly \"auth\", rejecting service_name=\"auth-service\" even though \"auth-service\" contains \"auth\" as a prefix. This is the same anchoredRegexPattern mechanism internal/chsql/builder.go applies for every head sharing chplan.OpMatch/OpNotMatch (issue #1741).",
+      "statement": "A LogQL stream-selector matcher and a `| label=~\"...\"` label-filter matcher (=~ / !~) match a label's value only when the FULL pattern matches, never merely a substring it contains — `service_name=~\"auth\"` matches a stream only when service_name is exactly \"auth\", rejecting service_name=\"auth-service\" even though \"auth-service\" contains \"auth\" as a prefix. This is the same anchoredRegexPattern mechanism internal/chsql/builder.go applies for every head sharing chplan.OpMatch/OpNotMatch (issue #1741), rendered either as match() over the anchored pattern or, when that pattern's language is a finite set of literals, as `subject IN (set)` (anchoredRegexLiteralSet, internal/chsql/regex_literal_set.go), which answers what match() answers on every value, the empty one an absent label reads as included.",
       "scope": "head",
       "applicable_heads": [
         "HEAD-LOGQL"
@@ -7635,8 +7689,9 @@
       "replaces": null,
       "replaced_by": null,
       "blind_spots": [
-        "The anchoring fix is centralized at the one SQL-emission site chplan.OpMatch/OpNotMatch shares across PromQL, LogQL and TraceQL; this contract claims coverage for LogQL only — the mechanism's PromQL correctness is PROMQL-LABEL-MATCHER-REGEX-ANCHORING's job and TraceQL's is its own head's, not re-proven here.",
-        "compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml is a cerberus-authored addition under cerberus-queries/, not part of the upstream loki-bench corpus — see LOGQL-UPSTREAM-SKIP-BASELINE-PROVENANCE and the compat harness README's third-party-vs-cerberus-owned distinction; this contract's reference evidence discriminates only cerberus's own lowering, since reference Loki has nothing to diverge on for an already-anchored matcher."
+        "The anchoring fix is shared by every head through chplan.OpMatch/OpNotMatch and both of its emission forms, match() over the anchored pattern and the literal-set IN rewrite; this contract claims coverage for LogQL only — the mechanism's PromQL correctness is PROMQL-LABEL-MATCHER-REGEX-ANCHORING's job and TraceQL's is its own head's, not re-proven here.",
+        "compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml is a cerberus-authored addition under cerberus-queries/, not part of the upstream loki-bench corpus — see LOGQL-UPSTREAM-SKIP-BASELINE-PROVENANCE and the compat harness README's third-party-vs-cerberus-owned distinction; this contract's reference evidence discriminates only cerberus's own lowering, since reference Loki has nothing to diverge on for an already-anchored matcher.",
+        "The literal-set IN rewrite's equivalence with match() is executed only on the patterns and values TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB (internal/chsql/regex_literal_set_chdb_test.go) holds; for any other pattern it rests on anchoredRegexLiteralSet's own analysis and on TestAnchoredRegexLiteralSet_AgreesWithGoRegexp, a randomized Go-side property against Go's regexp that executes no SQL."
       ],
       "required_evidence_classes": [
         "execution",
@@ -7644,7 +7699,8 @@
       ],
       "required_independence_groups": [
         "spec-fixture-roundtrip",
-        "reference-differential"
+        "reference-differential",
+        "literal-set-emit-equivalence"
       ],
       "bound_evidence": {
         "covered_evidence_classes": [
@@ -7652,6 +7708,7 @@
           "reference"
         ],
         "covered_independence_groups": [
+          "literal-set-emit-equivalence",
           "reference-differential",
           "spec-fixture-roundtrip"
         ],
@@ -7664,6 +7721,7 @@
           "execution": {
             "status": "unknown",
             "binding_ids": [
+              "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
               "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SPEC"
             ]
           },
@@ -7685,6 +7743,12 @@
             "status": "unknown",
             "binding_ids": [
               "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-COMPAT"
+            ]
+          },
+          "literal-set-emit-equivalence": {
+            "status": "unknown",
+            "binding_ids": [
+              "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE"
             ]
           }
         },
@@ -7725,6 +7789,148 @@
               "context_name": "compatibility/loki",
               "merge_required": false,
               "release_required": true
+            }
+          ]
+        },
+        {
+          "id": "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
+          "verifier": {
+            "id": "VERIFIER-CHDB-EMIT-FORM-EQUIVALENCE",
+            "name": "chDB emit-form equivalence",
+            "substrate": "chdb",
+            "relative_cost": "low",
+            "detects": [
+              "an emitter rewrite that answers differently from the general form it replaces on a value the seeded table holds",
+              "a rewrite that accepts an input outside the class it is sound for, where its answer then diverges on a seeded value"
+            ],
+            "cannot_detect": [
+              "a divergence only on a value or an input shape the test's corpus does not hold",
+              "the general form itself answering differently from the reference engine: both forms can agree on a wrong answer, which only VERIFIER-REFERENCE-DIFFERENTIAL's evidence can show",
+              "chDB-vs-real-ClickHouse execution drift: chDB is a coercive, not a strict, oracle for type mismatches production ClickHouse would reject"
+            ],
+            "complemented_by": [
+              "VERIFIER-REFERENCE-DIFFERENTIAL"
+            ]
+          },
+          "evidence_class": "execution",
+          "independence_group": "literal-set-emit-equivalence",
+          "test_ref": "internal/chsql/regex_literal_set_chdb_test.go:TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB",
+          "evidence_system": "source-path",
+          "observed": {
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0
+          },
+          "obligations": [
+            {
+              "lane_id": "chdb.ch-server-safety",
+              "context_name": "ch-server-safety",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.perf-guards",
+              "context_name": "perf-guards",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "chdb.strict-scan",
+              "context_name": "strict-scan",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.agpl-clean",
+              "context_name": "agpl-clean",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.check",
+              "context_name": "check",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.chaos",
+              "context_name": "chaos",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.compose-crawl",
+              "context_name": "crawl-terminal",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.compose-smoke",
+              "context_name": "compose-smoke",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "e2e.quickstart",
+              "context_name": "quickstart",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "e2e.startup-bench",
+              "context_name": "startup-bench",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "perf-nightly.classic-histogram-report",
+              "context_name": "perf-nightly",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "performance.benchmark",
+              "context_name": "benchstat diff (baseline vs ref)",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "performance.profile",
+              "context_name": "profile",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-enrollment",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.mutation",
+              "context_name": "mutation",
+              "merge_required": false,
+              "release_required": false
             }
           ]
         },
@@ -9585,7 +9791,7 @@
     },
     {
       "id": "PROMQL-LABEL-MATCHER-REGEX-ANCHORING",
-      "statement": "A PromQL regex label matcher (=~ / !~), including one on __name__, matches only a label value the FULL pattern matches, never merely a substring it contains — a bare, non-anchored pattern like job=~\"ap\" matches job=\"ap\" and rejects job=\"api\"/job=\"apiserver\", matching Prometheus's always-implicitly-anchored labels.NewFastRegexMatcher semantics.",
+      "statement": "A PromQL regex label matcher (=~ / !~), including one on __name__, matches only a label value the FULL pattern matches, never merely a substring it contains — a bare, non-anchored pattern like job=~\"ap\" matches job=\"ap\" and rejects job=\"api\"/job=\"apiserver\", matching Prometheus's always-implicitly-anchored labels.NewFastRegexMatcher semantics. The matcher is anchored by anchoredRegexPattern (internal/chsql/builder.go, issue #1741) and rendered either as match() over the anchored pattern or, when that pattern's language is a finite set of literals, as `subject IN (set)` (anchoredRegexLiteralSet, internal/chsql/regex_literal_set.go), which answers what match() answers on every value, the empty one an absent label reads as included.",
       "scope": "head",
       "applicable_heads": [
         "HEAD-PROMQL"
@@ -9604,8 +9810,9 @@
       "replaces": null,
       "replaced_by": null,
       "blind_spots": [
-        "The anchoring fix (anchoredRegexPattern, internal/chsql/builder.go, issue #1741) is centralized at the one SQL-emission site chplan.OpMatch/OpNotMatch shares across PromQL, LogQL and TraceQL; this contract claims coverage for PromQL only — the mechanism's LogQL/TraceQL correctness is SIGNAL-LABEL-MATCHER-CONSISTENCY's and each head's own contract, not re-proven here.",
-        "The compat corpus's discriminating case (query-corpus/header.yml item 4, job=~\"dem\" against a seeded job=\"demo\") is a cerberus-authored addition, not one of the cases copied from the upstream compliance corpus — it discriminates only cerberus's own lowering bug, since reference Prometheus has nothing to diverge on for an already-anchored matcher; see PROMQL-THIRD-PARTY-COMPLIANCE-CORPUS-PROVENANCE."
+        "The anchoring fix (anchoredRegexPattern, internal/chsql/builder.go, issue #1741) and both of its emission forms are shared by every head through chplan.OpMatch/OpNotMatch; this contract claims coverage for PromQL only — the mechanism's LogQL/TraceQL correctness is SIGNAL-LABEL-MATCHER-CONSISTENCY's and each head's own contract, not re-proven here.",
+        "The compat corpus's discriminating case (query-corpus/header.yml item 4, job=~\"dem\" against a seeded job=\"demo\") is a cerberus-authored addition, not one of the cases copied from the upstream compliance corpus — it discriminates only cerberus's own lowering bug, since reference Prometheus has nothing to diverge on for an already-anchored matcher; see PROMQL-THIRD-PARTY-COMPLIANCE-CORPUS-PROVENANCE.",
+        "The literal-set IN rewrite's equivalence with match() is executed only on the patterns and values TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB (internal/chsql/regex_literal_set_chdb_test.go) holds; for any other pattern it rests on anchoredRegexLiteralSet's own analysis and on TestAnchoredRegexLiteralSet_AgreesWithGoRegexp, a randomized Go-side property against Go's regexp that executes no SQL."
       ],
       "required_evidence_classes": [
         "execution",
@@ -9613,7 +9820,8 @@
       ],
       "required_independence_groups": [
         "spec-fixture-roundtrip",
-        "reference-differential"
+        "reference-differential",
+        "literal-set-emit-equivalence"
       ],
       "bound_evidence": {
         "covered_evidence_classes": [
@@ -9621,6 +9829,7 @@
           "reference"
         ],
         "covered_independence_groups": [
+          "literal-set-emit-equivalence",
           "reference-differential",
           "spec-fixture-roundtrip"
         ],
@@ -9633,6 +9842,7 @@
           "execution": {
             "status": "unknown",
             "binding_ids": [
+              "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
               "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SPEC"
             ]
           },
@@ -9654,6 +9864,12 @@
             "status": "unknown",
             "binding_ids": [
               "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-COMPAT"
+            ]
+          },
+          "literal-set-emit-equivalence": {
+            "status": "unknown",
+            "binding_ids": [
+              "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE"
             ]
           }
         },
@@ -9706,6 +9922,148 @@
               "context_name": "compatibility/prometheus-forced-route",
               "merge_required": false,
               "release_required": true
+            }
+          ]
+        },
+        {
+          "id": "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
+          "verifier": {
+            "id": "VERIFIER-CHDB-EMIT-FORM-EQUIVALENCE",
+            "name": "chDB emit-form equivalence",
+            "substrate": "chdb",
+            "relative_cost": "low",
+            "detects": [
+              "an emitter rewrite that answers differently from the general form it replaces on a value the seeded table holds",
+              "a rewrite that accepts an input outside the class it is sound for, where its answer then diverges on a seeded value"
+            ],
+            "cannot_detect": [
+              "a divergence only on a value or an input shape the test's corpus does not hold",
+              "the general form itself answering differently from the reference engine: both forms can agree on a wrong answer, which only VERIFIER-REFERENCE-DIFFERENTIAL's evidence can show",
+              "chDB-vs-real-ClickHouse execution drift: chDB is a coercive, not a strict, oracle for type mismatches production ClickHouse would reject"
+            ],
+            "complemented_by": [
+              "VERIFIER-REFERENCE-DIFFERENTIAL"
+            ]
+          },
+          "evidence_class": "execution",
+          "independence_group": "literal-set-emit-equivalence",
+          "test_ref": "internal/chsql/regex_literal_set_chdb_test.go:TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB",
+          "evidence_system": "source-path",
+          "observed": {
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0
+          },
+          "obligations": [
+            {
+              "lane_id": "chdb.ch-server-safety",
+              "context_name": "ch-server-safety",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.perf-guards",
+              "context_name": "perf-guards",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "chdb.strict-scan",
+              "context_name": "strict-scan",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.agpl-clean",
+              "context_name": "agpl-clean",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.check",
+              "context_name": "check",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.chaos",
+              "context_name": "chaos",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.compose-crawl",
+              "context_name": "crawl-terminal",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.compose-smoke",
+              "context_name": "compose-smoke",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "e2e.quickstart",
+              "context_name": "quickstart",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "e2e.startup-bench",
+              "context_name": "startup-bench",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "perf-nightly.classic-histogram-report",
+              "context_name": "perf-nightly",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "performance.benchmark",
+              "context_name": "benchstat diff (baseline vs ref)",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "performance.profile",
+              "context_name": "profile",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-enrollment",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.mutation",
+              "context_name": "mutation",
+              "merge_required": false,
+              "release_required": false
             }
           ]
         },
@@ -12915,7 +13273,7 @@
     },
     {
       "id": "SIGNAL-LABEL-MATCHER-CONSISTENCY",
-      "statement": "A label matcher's equality and regex semantics behave identically across every head that parses one, independent of that head's own query syntax.",
+      "statement": "A label matcher's equality and regex semantics behave identically across every head that parses one, independent of that head's own query syntax. Every head's regex matcher renders through the one shared emitter, Builder.regexMatcher (internal/chsql/builder.go): match() over the anchored pattern, or `subject IN (set)` when that pattern's language is a finite set of literals (internal/chsql/regex_literal_set.go), the two answering alike on every value, the empty one included.",
       "scope": "signal",
       "applicable_heads": [
         "HEAD-LOGQL",
@@ -12935,20 +13293,23 @@
       "replaces": null,
       "replaced_by": null,
       "blind_spots": [
-        "TraceQL's attribute matcher is a distinct grammar and is not yet covered by this contract."
+        "TraceQL's attribute matcher is a distinct grammar and is not yet covered by this contract.",
+        "The literal-set IN rewrite's equivalence with match() is executed only on the patterns and values TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB (internal/chsql/regex_literal_set_chdb_test.go) holds; for any other pattern it rests on anchoredRegexLiteralSet's own analysis and on TestAnchoredRegexLiteralSet_AgreesWithGoRegexp, a randomized Go-side property against Go's regexp that executes no SQL."
       ],
       "required_evidence_classes": [
         "execution"
       ],
       "required_independence_groups": [
         "promql-parser",
-        "logql-parser"
+        "logql-parser",
+        "literal-set-emit-equivalence"
       ],
       "bound_evidence": {
         "covered_evidence_classes": [
           "execution"
         ],
         "covered_independence_groups": [
+          "literal-set-emit-equivalence",
           "logql-parser",
           "promql-parser"
         ],
@@ -12962,7 +13323,8 @@
             "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-LABEL-MATCHER-LOGQL",
-              "BINDING-SIGNAL-LABEL-MATCHER-PROMQL"
+              "BINDING-SIGNAL-LABEL-MATCHER-PROMQL",
+              "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE"
             ]
           }
         },
@@ -12977,6 +13339,12 @@
             "status": "unknown",
             "binding_ids": [
               "BINDING-SIGNAL-LABEL-MATCHER-LOGQL"
+            ]
+          },
+          "literal-set-emit-equivalence": {
+            "status": "unknown",
+            "binding_ids": [
+              "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE"
             ]
           }
         },
@@ -13158,9 +13526,157 @@
               "release_required": false
             }
           ]
+        },
+        {
+          "id": "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE",
+          "verifier": {
+            "id": "VERIFIER-CHDB-EMIT-FORM-EQUIVALENCE",
+            "name": "chDB emit-form equivalence",
+            "substrate": "chdb",
+            "relative_cost": "low",
+            "detects": [
+              "an emitter rewrite that answers differently from the general form it replaces on a value the seeded table holds",
+              "a rewrite that accepts an input outside the class it is sound for, where its answer then diverges on a seeded value"
+            ],
+            "cannot_detect": [
+              "a divergence only on a value or an input shape the test's corpus does not hold",
+              "the general form itself answering differently from the reference engine: both forms can agree on a wrong answer, which only VERIFIER-REFERENCE-DIFFERENTIAL's evidence can show",
+              "chDB-vs-real-ClickHouse execution drift: chDB is a coercive, not a strict, oracle for type mismatches production ClickHouse would reject"
+            ],
+            "complemented_by": [
+              "VERIFIER-REFERENCE-DIFFERENTIAL"
+            ]
+          },
+          "evidence_class": "execution",
+          "independence_group": "literal-set-emit-equivalence",
+          "test_ref": "internal/chsql/regex_literal_set_chdb_test.go:TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB",
+          "evidence_system": "source-path",
+          "observed": {
+            "status": "unknown",
+            "observed_at": null,
+            "run_ref": null,
+            "execution_id": null,
+            "execution_count": 0
+          },
+          "obligations": [
+            {
+              "lane_id": "chdb.ch-server-safety",
+              "context_name": "ch-server-safety",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.perf-guards",
+              "context_name": "perf-guards",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "chdb.regex-jit",
+              "context_name": "regex-jit",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "chdb.strict-scan",
+              "context_name": "strict-scan",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.agpl-clean",
+              "context_name": "agpl-clean",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "ci.check",
+              "context_name": "check",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "compatibility.gate",
+              "context_name": "gate",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.chaos",
+              "context_name": "chaos",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.compose-crawl",
+              "context_name": "crawl-terminal",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "e2e.compose-smoke",
+              "context_name": "compose-smoke",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "e2e.quickstart",
+              "context_name": "quickstart",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "e2e.startup-bench",
+              "context_name": "startup-bench",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "perf-nightly.classic-histogram-report",
+              "context_name": "perf-nightly",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "performance.benchmark",
+              "context_name": "benchstat diff (baseline vs ref)",
+              "merge_required": false,
+              "release_required": false
+            },
+            {
+              "lane_id": "performance.profile",
+              "context_name": "profile",
+              "merge_required": false,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-enrollment",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.coverage-measured",
+              "context_name": "coverage",
+              "merge_required": true,
+              "release_required": true
+            },
+            {
+              "lane_id": "quality.mutation",
+              "context_name": "mutation",
+              "merge_required": false,
+              "release_required": false
+            }
+          ]
         }
       ],
       "complement_gaps": [
+        {
+          "verifier": "VERIFIER-CHDB-EMIT-FORM-EQUIVALENCE",
+          "missing_complements": [
+            "VERIFIER-REFERENCE-DIFFERENTIAL"
+          ]
+        },
         {
           "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
           "missing_complements": [
@@ -16063,7 +16579,7 @@
   ],
   "mutation_cohort": {
     "schema_version": 1,
-    "cohort_revision": "5b2c6ba05cee06f2686bd42a52188c7415010ba24dbeb3df17a3073e98aee56d",
+    "cohort_revision": "d8432609ce5cf0818541aaedd6a0eb885f97b15fcc11128da16a805338a0ed54",
     "generated_from": "test/semantic/mutants/*.json",
     "records": [
       {
@@ -16117,7 +16633,7 @@
         "status": "killed",
         "bucket": "denominator",
         "equivalence_review": null,
-        "notes": "Blanks anchoredRegexPattern's anchorPrefix/anchorSuffix constants (internal/chsql/builder.go:847-848) from \"^(?:\" / \")$\" to \"\", reopening issue #1741: job=~\"ap\" (or, here, LogQL's env=~\"prod|stg\" stream selector) would again match \"production\" as a substring instead of rejecting it, since ClickHouse's match() is a substring search and Prometheus/Loki/Tempo regex matchers are always fully anchored. Scoped to the label-matcher path deliberately: anchoredRegexPattern is called only from chplan.OpMatch/OpNotMatch sites (internal/chsql/builder.go's exprBinary and exprNestedArrayExists) — LogQL line filters (`|~`/`!~` against the log line) lower to a distinct chplan.LineContent node in internal/logql/lower.go's lineFilterPart and never call this function, so their already-unanchored (Loki-correct) substring semantics are untouched by this mutation, preserving the stream-selector/line-filter distinction the grounding issue calls out. THIS MUTATION IS NOT LOGQL-ONLY: anchoredRegexPattern is the one SQL-emission site chplan.OpMatch/OpNotMatch shares across PromQL, LogQL and TraceQL (see LOGQL-LABEL-MATCHER-REGEX-ANCHORING's and PROMQL-LABEL-MATCHER-REGEX-ANCHORING's own blind_spots, and the cross-head SIGNAL-LABEL-MATCHER-CONSISTENCY contract) — the primary detector is the LogQL fixture (test/spec/logql/stream_regex_no_overmatch.txtar, the regression fixture #1741 itself added), and the second detector is PromQL's own regression twin (test/spec/promql/regex_unanchored_no_overmatch.txtar) included as SUPPLEMENTARY, disclosed evidence of the same shared-emitter blast radius rather than a second independent bug — both are expected to report killed for the identical root cause, not two uncorrelated findings. Both detectors share test/spec's generic spec.Walk/spec.Match golden-comparison harness (structural sql/args/chplan text diffing) — that harness is head-agnostic plumbing, not part of either head's own independent evidence; what differs per detector is the head-specific Lower() entry point and its own fixture corpus. Neither detector needs the chdb build tag or a live ClickHouse: the kill is a static sql/args/chplan text mismatch against the golden, verified before chDB round-trip execution is even reached (see internal/logql/lower_test.go's TestLower and internal/promql/lower_test.go's TestLower, both gated on no build tag). Independent real-Loki confirmation that the CONTROL behavior (anchored, no over-match) matches reference Loki lives in compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml, run via `just compat-logql` — that lane cannot itself execute against a mutated overlay (it needs a live docker-compose Loki + ClickHouse stack, not go test -overlay), so it is evidence for the control's correctness, not a third mutation detector."
+        "notes": "Blanks anchoredRegexPattern's anchorPrefix/anchorSuffix constants (internal/chsql/builder.go) from \"^(?:\" / \")$\" to \"\", reopening issue #1741: job=~\"ap\" (or, here, LogQL's env=~\"prod|stg\" stream selector) would again match \"production\" as a substring instead of rejecting it, since ClickHouse's match() is a substring search and Prometheus/Loki/Tempo regex matchers are always fully anchored. Scoped to the label-matcher path deliberately: anchoredRegexPattern is called only from chplan.OpMatch/OpNotMatch sites (internal/chsql/builder.go's exprBinary and exprNestedArrayExists) — LogQL line filters (`|~`/`!~` against the log line) lower to a distinct chplan.LineContent node in internal/logql/lower.go's lineFilterPart and never call this function, so their already-unanchored (Loki-correct) substring semantics are untouched by this mutation, preserving the stream-selector/line-filter distinction the grounding issue calls out. THIS MUTATION IS NOT LOGQL-ONLY: anchoredRegexPattern is the one anchoring step chplan.OpMatch/OpNotMatch shares across PromQL, LogQL and TraceQL, ahead of both of Builder.regexMatcher's emission forms — match() over the anchored pattern, and the literal-set IN rewrite (internal/chsql/regex_literal_set.go), which accepts only a pattern that begins with ^ and ends with $, so with the anchors blanked a matcher whose pattern carries no anchors of its own falls back to an unanchored match(); the IN rewrite's own equivalence is MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION's target, not this record's (see LOGQL-LABEL-MATCHER-REGEX-ANCHORING's and PROMQL-LABEL-MATCHER-REGEX-ANCHORING's own blind_spots, and the cross-head SIGNAL-LABEL-MATCHER-CONSISTENCY contract) — the primary detector is the LogQL fixture (test/spec/logql/stream_regex_no_overmatch.txtar, the regression fixture #1741 itself added), and the second detector is PromQL's own regression twin (test/spec/promql/regex_unanchored_no_overmatch.txtar) included as SUPPLEMENTARY, disclosed evidence of the same shared-emitter blast radius rather than a second independent bug — both are expected to report killed for the identical root cause, not two uncorrelated findings. Both detectors share test/spec's generic spec.Walk/spec.Match golden-comparison harness (structural sql/args/chplan text diffing) — that harness is head-agnostic plumbing, not part of either head's own independent evidence; what differs per detector is the head-specific Lower() entry point and its own fixture corpus. Neither detector needs the chdb build tag or a live ClickHouse: the kill is a static sql/args/chplan text mismatch against the golden, verified before chDB round-trip execution is even reached (see internal/logql/lower_test.go's TestLower and internal/promql/lower_test.go's TestLower, both gated on no build tag). Independent real-Loki confirmation that the CONTROL behavior (anchored, no over-match) matches reference Loki lives in compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml, run via `just compat-logql` — that lane cannot itself execute against a mutated overlay (it needs a live docker-compose Loki + ClickHouse stack, not go test -overlay), so it is evidence for the control's correctness, not a third mutation detector."
       },
       {
         "id": "MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED",
@@ -16239,6 +16755,52 @@
         "bucket": "denominator",
         "equivalence_review": null,
         "notes": "Real production seam: emitRangeWindowOverTimeDirectInstant (internal/chsql/range_window.go ~3378-3412) is the row-level WHERE that answers an instant count_over_time()/min_over_time()/max_over_time()/present_over_time() query -- the incrementally-reducible *_over_time family internal/chsql/range_window.go's emitRangeWindowOverTimeDirect routes to a direct CH aggregate rather than the groupArray+arrayFilter windowed-array path. The patch changes its start-boundary comparison from `Gt` to `Gte`, widening the (T-range, T] window to closed-left. This is deliberately NOT a mutation of chsql.RangeWindowFilter/windowFilterPairsFrag (builder.go ~2454-2477, the array path's own boundary predicate): that predicate sits BEHIND an equally strict scan-time WHERE (instantWindowScanBoundsFrags, pushed by pushInstantScanBound before the sample array is ever built), so mutating either one alone there is silently absorbed by the other -- confirmed by direct experiment (a Gt->Gte edit to RangeWindowFilter, and separately to instantWindowScanBoundsFrags, each left every existing and newly-added property test green). emitRangeWindowOverTimeDirectInstant's WHERE has no such redundant twin, so it is genuinely observable. gen.RangeBoundaryCase (test/property/gen/range_boundary.go) seeds one sample exactly at t=T-range (must be excluded) and one exactly at t=T (must be included). Locally reproduced end to end: the unmutated code returns the Prometheus-correct count_over_time() = 2; with this patch applied to a scratch copy the same query returns 3 (the boundary sample wrongly counted), and TestPromQL_RangeWindowBoundaryExactSample fails with exactly that drift. TestPromQL_CounterResetMidWindowCompensation (the sibling MUTANT-PROMQL-COUNTER-RESET-COMPENSATION's own detector) was re-run against this same patch and still passes, confirming the two mutants are independently attributable."
+      },
+      {
+        "id": "MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION",
+        "title": "literalSet reads x+ as x, so a regex matcher with an unbounded repetition is rewritten to a finite IN set",
+        "synthetic": false,
+        "synthetic_rationale": null,
+        "violated_contracts": [
+          "LOGQL-LABEL-MATCHER-REGEX-ANCHORING",
+          "PROMQL-LABEL-MATCHER-REGEX-ANCHORING",
+          "SIGNAL-LABEL-MATCHER-CONSISTENCY"
+        ],
+        "heads": [
+          "HEAD-LOGQL",
+          "HEAD-PROMQL"
+        ],
+        "contract_scopes": {
+          "PROMQL-LABEL-MATCHER-REGEX-ANCHORING": "head",
+          "LOGQL-LABEL-MATCHER-REGEX-ANCHORING": "head",
+          "SIGNAL-LABEL-MATCHER-CONSISTENCY": "signal"
+        },
+        "unresolved_contracts": [],
+        "target_path": "internal/chsql/regex_literal_set.go",
+        "patch_path": "test/semantic/mutants/patches/regex-literal-set-accepts-plus.patch",
+        "detectors": [
+          {
+            "id": "regex-literal-set-answers-as-anchored-match",
+            "package": "./internal/chsql",
+            "test_run": "^TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB$",
+            "build_tags": [
+              "chdb"
+            ],
+            "timeout_seconds": 90,
+            "evidence_kind": "execution",
+            "requires_chdb": true
+          }
+        ],
+        "evidence_kind": "execution",
+        "isolation": {
+          "requires_chdb": true,
+          "memory_max": "2GiB",
+          "memory_hold": "2s"
+        },
+        "status": "killed",
+        "bucket": "denominator",
+        "equivalence_review": null,
+        "notes": "Adds syntax.OpPlus to the OpCapture arm of literalSet (internal/chsql/regex_literal_set.go), so `x+` is read as the language of `x` alone. anchoredRegexLiteralSet then accepts a pattern whose language is infinite: job=~\"a+\" is rewritten to job = 'a', and job=~\"\\\\d+\" to job IN ('0', …, '9'). The rewritten matcher no longer answers what match() over the anchored pattern ^(?:a+)$ answers: it rejects \"aa\" where match() accepts it, and the negated matcher keeps \"aa\" where NOT match() drops it. The rewrite is the second of the two SQL forms a chplan.OpMatch/OpNotMatch label matcher renders through (Builder.regexMatcher in internal/chsql/builder.go), and it is shared by every head, so the mutation breaks PromQL and LogQL matchers alike. The detector, TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB, renders each pattern of its corpus both ways — through the production Builder path and through anchoredRegexMatch, the match() form the rewrite replaces — executes both for =~ and !~ against one chDB table, and fails on every row where they differ. The table holds the absent label, the empty value, invalid UTF-8 and the near misses of every member, both of the hand-written member lists the test carries and of the sets the rewrite returns; the near misses include the member repeated, which is the value this mutation gets wrong. The kill is an answer divergence on chDB, not a shape assertion: the detector asserts only that the patterns it marks rewritten are rewritten, never that the others are not. It needs the chdb build tag and libchdb.so."
       },
       {
         "id": "MUTANT-SYNTH-BUILD-BREAK",
@@ -16637,13 +17199,14 @@
         "MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED",
         "MUTANT-PROMQL-COUNTER-RESET-COMPENSATION",
         "MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT",
+        "MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION",
         "MUTANT-TRACEQL-DESCENDANT-AS-CHILD",
         "MUTANT-TRACEQL-SCOPE-SWAP"
       ],
       "rates": {
-        "total": 6,
+        "total": 7,
         "by_status": {
-          "killed": 6,
+          "killed": 7,
           "survived": 0,
           "equivalent-reviewed": 0,
           "invalid-transform": 0,
@@ -16652,13 +17215,13 @@
           "infrastructure-error": 0
         },
         "by_bucket": {
-          "denominator": 6,
+          "denominator": 7,
           "equivalent": 0,
           "incomplete": 0,
           "invalid": 0
         },
-        "denominator": 6,
-        "killed": 6,
+        "denominator": 7,
+        "killed": 7,
         "survived": 0,
         "escape_rate": 0,
         "kill_rate": 1,
@@ -16699,13 +17262,14 @@
           "record_ids": [
             "MUTANT-PROMQL-COUNTER-RESET-COMPENSATION",
             "MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT",
+            "MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION",
             "MUTANT-TRACEQL-DESCENDANT-AS-CHILD",
             "MUTANT-TRACEQL-SCOPE-SWAP"
           ],
           "rates": {
-            "total": 4,
+            "total": 5,
             "by_status": {
-              "killed": 4,
+              "killed": 5,
               "survived": 0,
               "equivalent-reviewed": 0,
               "invalid-transform": 0,
@@ -16714,13 +17278,13 @@
               "infrastructure-error": 0
             },
             "by_bucket": {
-              "denominator": 4,
+              "denominator": 5,
               "equivalent": 0,
               "incomplete": 0,
               "invalid": 0
             },
-            "denominator": 4,
-            "killed": 4,
+            "denominator": 5,
+            "killed": 5,
             "survived": 0,
             "escape_rate": 0,
             "kill_rate": 1,
@@ -16760,38 +17324,8 @@
       "HEAD-LOGQL": {
         "record_ids": [
           "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741",
-          "MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED"
-        ],
-        "rates": {
-          "total": 2,
-          "by_status": {
-            "killed": 2,
-            "survived": 0,
-            "equivalent-reviewed": 0,
-            "invalid-transform": 0,
-            "build-failed": 0,
-            "timeout": 0,
-            "infrastructure-error": 0
-          },
-          "by_bucket": {
-            "denominator": 2,
-            "equivalent": 0,
-            "incomplete": 0,
-            "invalid": 0
-          },
-          "denominator": 2,
-          "killed": 2,
-          "survived": 0,
-          "escape_rate": 0,
-          "kill_rate": 1,
-          "small_sample": true
-        }
-      },
-      "HEAD-PROMQL": {
-        "record_ids": [
-          "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741",
-          "MUTANT-PROMQL-COUNTER-RESET-COMPENSATION",
-          "MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT"
+          "MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED",
+          "MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION"
         ],
         "rates": {
           "total": 3,
@@ -16812,6 +17346,38 @@
           },
           "denominator": 3,
           "killed": 3,
+          "survived": 0,
+          "escape_rate": 0,
+          "kill_rate": 1,
+          "small_sample": true
+        }
+      },
+      "HEAD-PROMQL": {
+        "record_ids": [
+          "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741",
+          "MUTANT-PROMQL-COUNTER-RESET-COMPENSATION",
+          "MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT",
+          "MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION"
+        ],
+        "rates": {
+          "total": 4,
+          "by_status": {
+            "killed": 4,
+            "survived": 0,
+            "equivalent-reviewed": 0,
+            "invalid-transform": 0,
+            "build-failed": 0,
+            "timeout": 0,
+            "infrastructure-error": 0
+          },
+          "by_bucket": {
+            "denominator": 4,
+            "equivalent": 0,
+            "incomplete": 0,
+            "invalid": 0
+          },
+          "denominator": 4,
+          "killed": 4,
           "survived": 0,
           "escape_rate": 0,
           "kill_rate": 1,
@@ -16851,13 +17417,16 @@
     },
     "by_contract": {
       "LOGQL-LABEL-MATCHER-REGEX-ANCHORING": [
-        "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741"
+        "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741",
+        "MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION"
       ],
       "PROMQL-LABEL-MATCHER-REGEX-ANCHORING": [
-        "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741"
+        "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741",
+        "MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION"
       ],
       "SIGNAL-LABEL-MATCHER-CONSISTENCY": [
-        "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741"
+        "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741",
+        "MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION"
       ],
       "LOGQL-PIPELINE-STAGE-ORDER": [
         "MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED"
@@ -16876,7 +17445,8 @@
       ]
     },
     "cross_head_record_ids": [
-      "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741"
+      "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741",
+      "MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION"
     ]
   }
 }

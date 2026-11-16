@@ -1,0 +1,13 @@
+diff --git a/internal/chsql/regex_literal_set.go b/internal/chsql/regex_literal_set.go
+index 3b66ef215..d9ac2fa91 100644
+--- a/internal/chsql/regex_literal_set.go
++++ b/internal/chsql/regex_literal_set.go
+@@ -76,7 +76,7 @@ func literalSet(re *syntax.Regexp) ([]string, bool) {
+ 		return []string{string(re.Rune)}, true
+ 	case syntax.OpCharClass:
+ 		return charClassLiterals(re.Rune)
+-	case syntax.OpCapture:
++	case syntax.OpCapture, syntax.OpPlus:
+ 		return literalSet(re.Sub[0])
+ 	case syntax.OpQuest:
+ 		set, ok := literalSet(re.Sub[0])
