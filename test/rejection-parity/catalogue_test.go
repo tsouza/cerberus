@@ -866,3 +866,63 @@ func loadCatalogue(t *testing.T) *Catalogue {
 	}
 	return cat
 }
+
+// TestValidationSitesResolveOrFailTheScan pins how the scanner treats
+// validationPackage: a ValidationError built from a constant or a literal
+// is catalogued with the constant's text, a prefixed fmt.Errorf there is
+// not a site, newValidationError's own formatting body is exempt, and a
+// message the scan cannot resolve fails the scan rather than leaving a
+// rejection uncatalogued.
+func TestValidationSitesResolveOrFailTheScan(t *testing.T) {
+	t.Parallel()
+
+	const header = `package ast
+
+import "fmt"
+
+type ValidationError struct{ msg string }
+
+const limitMsg = "limit must be greater than 0"
+const shapeFormat = "bad shape: %s"
+
+func newValidationError(format string, args ...any) *ValidationError {
+	return &ValidationError{msg: fmt.Sprintf(format, args...)}
+}
+
+func grammar() error { return fmt.Errorf("traceql: grammar error") }
+
+func a() error { return &ValidationError{msg: limitMsg} }
+
+func b(s string) error { return newValidationError(shapeFormat, s) }
+`
+	write := func(t *testing.T, src string) string {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "validate.go"), []byte(src), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+
+	sc, err := scanDir(write(t, header), validationPackage, "traceql")
+	if err != nil {
+		t.Fatalf("scanDir: %v", err)
+	}
+	got := map[string]string{}
+	for _, s := range sc.sites {
+		fn, _, _ := strings.Cut(strings.TrimPrefix(s.Site, validationPackage+"/validate.go:"), siteHashSeparator)
+		got[fn] = s.Message
+	}
+	want := map[string]string{"a": "limit must be greater than 0", "b": "bad shape: %s"}
+	if !maps.Equal(got, want) {
+		t.Fatalf("sites = %v, want %v", got, want)
+	}
+
+	unresolved := header + `
+func c(m string) error { return &ValidationError{msg: m} }
+`
+	if _, err := scanDir(write(t, unresolved), validationPackage, "traceql"); err == nil ||
+		!strings.Contains(err.Error(), "validate.go:c") {
+		t.Fatalf("scanDir with an unresolvable validation message = %v, want an error naming validate.go:c", err)
+	}
+}

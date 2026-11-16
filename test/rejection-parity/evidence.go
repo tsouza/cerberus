@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -159,12 +160,15 @@ type astScope struct {
 	calls map[string][]string
 	// callers is the reverse of calls.
 	callers map[string][]string
-	// consts maps the package's string constants to their values, so an
-	// error constructor may name its message by constant.
+	// consts maps validationPackage's string constants to their values,
+	// so a validation site may name its message by constant.
 	consts map[string]string
 	// validation marks validationPackage, whose validation constructors
-	// are error sites (see isErrorConstructor).
+	// are its only error sites (see errorSite).
 	validation bool
+	// unresolved lists the validation sites whose message the scan could
+	// not resolve; scanDir fails on any.
+	unresolved []string
 }
 
 // guardChain renders the conditions that must hold for the node at the
@@ -502,8 +506,8 @@ func citedFunctions(rationale string) []string {
 // names it is rewritten — which is the human re-statement the whole gate
 // exists to force.
 func (p *pkgScan) citationsOf(s Site, rationale string, prevCited []string) []string {
-	sc := p.scopes[siteDir(s)]
-	if sc == nil {
+	scopes := p.citationScopes(s)
+	if len(scopes) == 0 {
 		return nil
 	}
 	remembered := map[string]bool{}
@@ -512,8 +516,26 @@ func (p *pkgScan) citationsOf(s Site, rationale string, prevCited []string) []st
 	}
 	var out []string
 	for _, name := range citedFunctions(rationale) {
-		if sc.funcs[name] || remembered[name] {
+		if remembered[name] || slices.ContainsFunc(scopes, func(sc *astScope) bool { return sc.funcs[name] }) {
 			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// citationScopes is the packages a site's rationale may cite functions
+// of: the site's own, and — for a TraceQL lowering site — validationPackage
+// too, since a lowering rejection is often unreachable because a parse-time
+// validation rule rejects the query first.
+func (p *pkgScan) citationScopes(s Site) []*astScope {
+	var out []*astScope
+	dir := siteDir(s)
+	if sc := p.scopes[dir]; sc != nil {
+		out = append(out, sc)
+	}
+	if s.Head == heads[validationPackage] && dir != validationPackage {
+		if sc := p.scopes[validationPackage]; sc != nil {
+			out = append(out, sc)
 		}
 	}
 	return out
@@ -525,7 +547,7 @@ func (p *pkgScan) citationsOf(s Site, rationale string, prevCited []string) []st
 // under a claim that still names it as the thing that intercepts first.
 //
 // The predicate is deliberately about the CITED function alone — it must
-// still be declared in the site's lowering package, and, unless it is an
+// still be declared in one of the site's citationScopes, and, unless it is an
 // exported entry point (whose callers are outside the package by
 // definition), something in the package must still call it. It is not
 // about the shape of the neighbourhood around the site, because a
@@ -544,13 +566,15 @@ func (p *pkgScan) citationsOf(s Site, rationale string, prevCited []string) []st
 // so regenerating cannot clear it — only editing the code back, or
 // re-stating the rationale to describe what the code now does.
 func (p *pkgScan) unsupportedCitations(s Site, cited []string) []string {
-	sc := p.scopes[siteDir(s)]
-	if sc == nil {
+	scopes := p.citationScopes(s)
+	if len(scopes) == 0 {
 		return nil
 	}
 	var out []string
 	for _, name := range cited {
-		if sc.funcs[name] && (isExported(name) || len(sc.callers[name]) > 0) {
+		if slices.ContainsFunc(scopes, func(sc *astScope) bool {
+			return sc.funcs[name] && (isExported(name) || len(sc.callers[name]) > 0)
+		}) {
 			continue
 		}
 		out = append(out, name)

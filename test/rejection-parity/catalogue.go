@@ -17,15 +17,13 @@ import (
 )
 
 // heads maps each scanned package directory (relative to the repo
-// root) to its head identifier: the three lowering packages, plus the
-// TraceQL validation package, whose static rules reject at parse what
-// the reference rejects in its own validation. The head identifier
-// doubles as the required error-message prefix ("promql: ..."), which
-// every lowering error site carries by convention — except a site built
-// through [verbatimErrorConstructor] or validationPackage's own error
-// constructors,
-// whose message is a reference backend's own wording and is exempt; see
-// isErrorConstructor.
+// root) to its head identifier: the three lowering packages, plus
+// [validationPackage]. The head identifier doubles as the required
+// error-message prefix ("promql: ..."), which every lowering error site
+// carries by convention — except a site built through
+// [verbatimErrorConstructor], whose message is a reference backend's own
+// wording and is exempt; see isErrorConstructor. validationPackage's
+// sites are all in the reference's wording and carry no prefix.
 var heads = map[string]string{
 	"internal/promql":      "promql",
 	"internal/logql":       "logql",
@@ -35,15 +33,21 @@ var heads = map[string]string{
 
 // validationPackage is the scanned package whose sites reject at parse,
 // in the static validation ast.Parse runs, rather than in lowering. Its
-// rejections reach the wire as a 400, the reference's own status.
+// rejections reach the wire as a 400, the reference's own status. Its
+// only sites are the [validationConstructor] calls and
+// [validationErrorType] literals; its grammar errors are not rejections
+// of a valid query and are not scanned.
 const validationPackage = "internal/traceql/ast"
 
 // validationConstructor is the function validationPackage builds its
 // errors with, and validationErrorType the error type it also builds
-// directly, as `&validationErrorType{msg: ...}`, for a message that must
-// not pass through a format. Both carry the reference's own wording, so
-// their sites are exempt from the head prefix, as a
-// [verbatimErrorConstructor] site is.
+// directly, as `&validationErrorType{validationMsgField: ...}`, for a
+// message that must not pass through a format. Both carry the
+// reference's own wording, so their sites are exempt from the head
+// prefix, as a [verbatimErrorConstructor] site is. A validation site
+// whose message does not resolve to a string literal or package-level
+// string constant fails the scan, so no rejection leaves the catalogue
+// unseen.
 const (
 	validationConstructor = "newValidationError"
 	validationErrorType   = "ValidationError"
@@ -52,7 +56,8 @@ const (
 
 // Site is one error-construction site discovered by ScanSites: a
 // fmt.Errorf / errors.New call in a lowering package whose format
-// string starts with the head prefix.
+// string starts with the head prefix, a verbatimErrorConstructor call,
+// or a validationPackage site.
 type Site struct {
 	// Head is "promql" / "logql" / "traceql".
 	Head string `json:"head"`
@@ -363,7 +368,7 @@ func BuildCases(cat *Catalogue, head string) ([]Case, error) {
 	return out, nil
 }
 
-// ScanSites walks the three lowering packages under repoRoot and
+// ScanSites walks the packages in heads under repoRoot and
 // returns every prefixed error-construction site, sorted by site key.
 // Test files and testdata are excluded — they construct errors for
 // assertions, not for the wire.
@@ -375,7 +380,7 @@ func ScanSites(repoRoot string) ([]Site, error) {
 	return sc.sites, nil
 }
 
-// scanLowerings parses all three lowering packages once and returns
+// scanLowerings parses every package in heads once and returns
 // both halves of the scan: the mechanical site inventory and the
 // derived evidence for each site. They come out of a single parse
 // deliberately — a guard chain and the reaching set that surrounds it
@@ -426,7 +431,10 @@ func scanDir(absDir, relDir, head string) (*pkgScan, error) {
 	declared, funcs, calls, callers := callGraph(files)
 	sc := &astScope{
 		fset: fset, declared: declared, funcs: funcs, calls: calls, callers: callers,
-		consts: stringConsts(files), validation: relDir == validationPackage,
+		validation: relDir == validationPackage,
+	}
+	if sc.validation {
+		sc.consts = stringConsts(files)
 	}
 
 	out := &pkgScan{evidence: map[string]*Evidence{}, scopes: map[string]*astScope{relDir: sc}}
@@ -441,6 +449,11 @@ func scanDir(absDir, relDir, head string) (*pkgScan, error) {
 			out.sites = append(out.sites, sites...)
 			maps.Copy(out.evidence, ev)
 		}
+	}
+	if len(sc.unresolved) > 0 {
+		return nil, fmt.Errorf("%s: validation error sites whose message is not a string literal or "+
+			"package-level string constant, so the catalogue cannot record them: %s",
+			relDir, strings.Join(sc.unresolved, ", "))
 	}
 	return out, nil
 }
@@ -466,8 +479,18 @@ func scanFunc(sc *astScope, fn *ast.FuncDecl, relPath, head, prefix string) ([]S
 			return true
 		}
 		stack = append(stack, n)
-		verbatim, msg, ok := sc.errorSite(n)
+		verbatim, msgExpr, ok := sc.errorSite(n)
 		if !ok {
+			return true
+		}
+		msg, ok := sc.messageLiteral(msgExpr)
+		if !ok {
+			// newValidationError's own body formats its message; every
+			// other validation site must name its wording statically.
+			if sc.validation && fn.Name.Name != validationConstructor {
+				sc.unresolved = append(sc.unresolved, fmt.Sprintf("%s:%s (%s)",
+					relPath, fn.Name.Name, sc.fset.Position(n.Pos())))
+			}
 			return true
 		}
 		if !verbatim && !strings.HasPrefix(msg, prefix) {
@@ -504,27 +527,26 @@ func scanFunc(sc *astScope, fn *ast.FuncDecl, relPath, head, prefix string) ([]S
 const verbatimErrorConstructor = "verbatimErrorf"
 
 // errorSite reports whether n constructs an error the scanner catalogues,
-// and with which message: a call isErrorConstructor accepts, whose first
-// argument messageLiteral resolves, or — in validationPackage — a
-// validationErrorType composite literal whose message field does.
-func (sc *astScope) errorSite(n ast.Node) (verbatim bool, msg string, ok bool) {
+// and returns the expression holding its message: the first argument of
+// a call isErrorConstructor accepts, or — in validationPackage — the
+// message field of a validationErrorType composite literal.
+func (sc *astScope) errorSite(n ast.Node) (verbatim bool, msg ast.Expr, ok bool) {
 	switch v := n.(type) {
 	case *ast.CallExpr:
 		if len(v.Args) == 0 {
-			return false, "", false
+			return false, nil, false
 		}
 		verbatim, ok := sc.isErrorConstructor(v.Fun)
 		if !ok {
-			return false, "", false
+			return false, nil, false
 		}
-		msg, ok := sc.messageLiteral(v.Args[0])
-		return verbatim, msg, ok
+		return verbatim, v.Args[0], true
 	case *ast.CompositeLit:
 		if !sc.validation {
-			return false, "", false
+			return false, nil, false
 		}
 		if id, isIdent := v.Type.(*ast.Ident); !isIdent || id.Name != validationErrorType {
-			return false, "", false
+			return false, nil, false
 		}
 		for _, elt := range v.Elts {
 			kv, isKV := elt.(*ast.KeyValueExpr)
@@ -532,12 +554,11 @@ func (sc *astScope) errorSite(n ast.Node) (verbatim bool, msg string, ok bool) {
 				continue
 			}
 			if key, isIdent := kv.Key.(*ast.Ident); isIdent && key.Name == validationMsgField {
-				msg, ok := sc.messageLiteral(kv.Value)
-				return true, msg, ok
+				return true, kv.Value, true
 			}
 		}
 	}
-	return false, "", false
+	return false, nil, false
 }
 
 // isErrorConstructor reports whether fun is a call shape the scanner
@@ -553,13 +574,15 @@ func (sc *astScope) errorSite(n ast.Node) (verbatim bool, msg string, ok bool) {
 // reports, and prefixing it would fabricate an annotation reference
 // never wrote.
 //
-// In validationPackage, a validationConstructor call is a site too, and
-// verbatim: its static rules return no other error.
+// In validationPackage the only call shape accepted is a
+// validationConstructor call, and it is verbatim; errorSite adds the
+// package's validationErrorType literals.
 func (sc *astScope) isErrorConstructor(fun ast.Expr) (verbatim, ok bool) {
+	if sc.validation {
+		id, isIdent := fun.(*ast.Ident)
+		return isIdent && id.Name == validationConstructor, isIdent && id.Name == validationConstructor
+	}
 	if id, isIdent := fun.(*ast.Ident); isIdent {
-		if sc.validation && id.Name == validationConstructor {
-			return true, true
-		}
 		return id.Name == verbatimErrorConstructor, id.Name == verbatimErrorConstructor
 	}
 	sel, isSel := fun.(*ast.SelectorExpr)
@@ -579,13 +602,11 @@ func (sc *astScope) isErrorConstructor(fun ast.Expr) (verbatim, ok bool) {
 	return false, false
 }
 
-// stringLiteral folds an expression into its constant string value:
-// a plain string literal or a `+` concatenation of string literals.
 // messageLiteral resolves an error constructor's message argument: a
-// string literal, or a package-level string constant naming one, the form
-// validationPackage keeps the reference's wording in.
+// string literal, or — in validationPackage, which keeps the reference's
+// wording in package-level constants — a string constant naming one.
 func (sc *astScope) messageLiteral(e ast.Expr) (string, bool) {
-	if id, ok := e.(*ast.Ident); ok {
+	if id, ok := e.(*ast.Ident); ok && sc.validation {
 		s, found := sc.consts[id.Name]
 		return s, found
 	}
@@ -618,6 +639,8 @@ func stringConsts(files []*ast.File) map[string]string {
 	return out
 }
 
+// stringLiteral folds an expression into its constant string value:
+// a plain string literal or a `+` concatenation of string literals.
 func stringLiteral(e ast.Expr) (string, bool) {
 	switch v := e.(type) {
 	case *ast.BasicLit:
