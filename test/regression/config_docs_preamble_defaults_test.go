@@ -220,25 +220,18 @@ func TestConfigDocsPreambleDefaultsMatchBinary(t *testing.T) {
 	} else if !strings.Contains(string(raw), "`"+derived+"` at the 1 GiB default") {
 		t.Errorf("%s: CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES: the preamble does not state the derived default `%s` at the 1 GiB default cap", configDocsPath, derived)
 	}
-	// The two classic window ceilings are derived the same way; each entry
-	// must state the value the default cap derives.
+	// The classic per-series window ceiling is derived the same way; its
+	// entry must state the value the default cap derives.
 	raw, err := os.ReadFile(configDocsPath)
 	if err != nil {
 		t.Fatalf("read %s: %v", configDocsPath, err)
 	}
-	for name, value := range map[string]int64{
-		"CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_MAX_COST_UNITS":     promql.ClassicBucketWindowCostUnitsForMemory(config.DefaultCHQueryMaxMemory),
-		"CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_SERIES_MAX_ENTRIES": promql.ClassicBucketWindowSeriesEntriesForMemory(config.DefaultCHQueryMaxMemory),
-	} {
-		_, entry, ok := strings.Cut(string(raw), "**`"+name+"`**")
-		if !ok {
-			t.Errorf("%s: %s is not documented", configDocsPath, name)
-			continue
-		}
-		entry, _, _ = strings.Cut(entry, "\n- **")
-		if !strings.Contains(entry, "`"+strconv.FormatInt(value, 10)+"`") {
-			t.Errorf("%s: %s: the entry does not state the derived default `%d` at the 1 GiB default cap", configDocsPath, name, value)
-		}
+	const seriesCeilingName = "CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_SERIES_MAX_ENTRIES"
+	seriesCeiling := promql.ClassicBucketWindowSeriesEntriesForMemory(config.DefaultCHQueryMaxMemory)
+	if _, entry, ok := strings.Cut(string(raw), "**`"+seriesCeilingName+"`**"); !ok {
+		t.Errorf("%s: %s is not documented", configDocsPath, seriesCeilingName)
+	} else if entry, _, _ = strings.Cut(entry, "\n- **"); !strings.Contains(entry, "`"+strconv.FormatInt(seriesCeiling, 10)+"`") {
+		t.Errorf("%s: %s: the entry does not state the derived default `%d` at the 1 GiB default cap", configDocsPath, seriesCeilingName, seriesCeiling)
 	}
 
 	// internal/chsql may not be imported for its unexported ceilings; the

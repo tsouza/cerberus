@@ -1806,6 +1806,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	chMillis := time.Since(start).Milliseconds()
 	execT.Done(ctx)
 	if err != nil {
+		err = wrapClassicHistogramMemoryLimit(err, plan)
 		// The eager path drains the whole result inside Client.Query, so a
 		// sample-budget 422 (or a breaker fast-fail) surfaces here. Stamp the
 		// cerberus-side outcome onto the corpus before wrapping the error.
@@ -2216,6 +2217,7 @@ func (e *Engine) executeRouted(
 		), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	if err != nil {
+		err = wrapClassicHistogramMemoryLimit(err, plan)
 		execT.Done(ctx)
 		// Same stamping route A's eager path does at its own dispatch
 		// failure (cerberus issue #3184): a breaker rejection or a
@@ -2241,7 +2243,7 @@ func (e *Engine) executeRouted(
 	for cursor.Next() {
 		samples = append(samples, cursor.Sample())
 	}
-	if cerr := cursor.Err(); cerr != nil {
+	if cerr := wrapClassicHistogramMemoryLimit(cursor.Err(), plan); cerr != nil {
 		execT.Done(ctx)
 		// The route-B eager path drains inside this function, so this is the
 		// ONLY site that can stamp a drain outcome for it — the streaming
@@ -2588,8 +2590,9 @@ func (e *Engine) dispatchRouteACursor(
 	cursor, err := cq.QueryCursor(execCtx, sql, args...)
 	execT.Done(ctx)
 	if err != nil {
-		return routeACursorAttempt{openErr: err, queryID: queryID}, nil
+		return routeACursorAttempt{openErr: wrapClassicHistogramMemoryLimit(err, plan), queryID: queryID}, nil
 	}
+	cursor = wrapClassicHistogramCursor(cursor, plan)
 
 	nodes := cerbtrace.CountNodes(plan)
 	strategy := strategyFor(meta)
@@ -2656,7 +2659,7 @@ func (e *Engine) buildRoutedCursorResult(
 	}
 	headers[HeaderRouteDecision] = solver.StrategyShardedTimeslice + ";k=" + strconv.Itoa(decision.K) + ";reason=" + via
 	return CursorResult{
-		Cursor:        cursor,
+		Cursor:        wrapClassicHistogramCursor(cursor, plan),
 		SQL:           sql,
 		Args:          args,
 		Strategy:      strategy,
@@ -2764,6 +2767,7 @@ func (e *Engine) executeRoutedCursor(
 	)
 	execT.Done(ctx)
 	if err != nil {
+		err = wrapClassicHistogramMemoryLimit(err, plan)
 		e.logQueryFailure(lang.Name(), plan, decision, time.Since(start), "", err)
 		return CursorResult{}, fmt.Errorf("engine: solver execute: %w", err)
 	}
@@ -2772,7 +2776,7 @@ func (e *Engine) executeRoutedCursor(
 	// evidence-based per-rung refinement, which supplies its OWN drain-time
 	// site by wrapping the cursor below.
 	e.observeRoutedQuery(info, plan, lang.Name(), decision)
-	cursor = wrapPerRungObserver(cursor, e.PerRungAdmission, e.RouteMemo, plan, decision)
+	cursor = wrapClassicHistogramCursor(wrapPerRungObserver(cursor, e.PerRungAdmission, e.RouteMemo, plan, decision), plan)
 
 	nodes := cerbtrace.CountNodes(plan)
 	strategy := strategyFor(meta)

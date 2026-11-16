@@ -36,6 +36,14 @@ export const CH_QUERY_MAX_MEMORY_BYTES = 1_073_741_824;
 // internal/api/prom/handler_memory_limit_test.go.
 export const MEMORY_LIMIT_MESSAGE = `query processing would use too much memory in query execution (ClickHouse memory limit exceeded; per-query cap ${CH_QUERY_MAX_MEMORY_BYTES} bytes)`;
 
+// The exact 422 errorType=execution wire message the Prom head emits in
+// place of MEMORY_LIMIT_MESSAGE when the statement ClickHouse aborted at
+// the per-query memory cap carries a classic-histogram quantile. Byte-for-byte the production message from
+// internal/api/prom/handler.go (classicHistogramMemoryLimitMessage over
+// internal/chplan.ClassicHistogramMemoryLimitMessage) — pinned in lock-step
+// with internal/api/prom/handler_classic_histogram_memory_limit_test.go.
+export const CLASSIC_HISTOGRAM_MEMORY_LIMIT_MESSAGE = `classic-histogram quantile exceeds the ClickHouse memory limit (per-query cap ${CH_QUERY_MAX_MEMORY_BYTES} bytes)`;
+
 // cerberus's own emitter-planted resource-bound guard messages (issue
 // #3468) — the pre-rejection alternative to MEMORY_LIMIT_MESSAGE above.
 // Byte-for-byte the production constants:
@@ -65,8 +73,9 @@ type PinnedErrorEnvelope = {
 
 /**
  * True iff status/body is exactly a pinned resource-exhausted rejection:
- * a 422 with errorType=execution and either MEMORY_LIMIT_MESSAGE or one
- * of RESOURCE_BOUND_GUARD_MESSAGES, byte-for-byte. A malformed body, a
+ * a 422 with errorType=execution and MEMORY_LIMIT_MESSAGE,
+ * CLASSIC_HISTOGRAM_MEMORY_LIMIT_MESSAGE or one of
+ * RESOURCE_BOUND_GUARD_MESSAGES, byte-for-byte. A malformed body, a
  * different status, or a 422 with any other message is NOT a pinned
  * rejection — the caller is expected to treat those as hard failures.
  */
@@ -86,6 +95,7 @@ export function isPinnedResourceBoundRejection(
   }
   return (
     parsed.error === MEMORY_LIMIT_MESSAGE ||
+    parsed.error === CLASSIC_HISTOGRAM_MEMORY_LIMIT_MESSAGE ||
     RESOURCE_BOUND_GUARD_MESSAGES.includes(parsed.error ?? '')
   );
 }
@@ -109,6 +119,7 @@ export function isPinnedResourceBoundRejection(
 export function bodyContainsPinnedResourceBoundMessage(body: string): boolean {
   return (
     body.includes(MEMORY_LIMIT_MESSAGE) ||
+    body.includes(CLASSIC_HISTOGRAM_MEMORY_LIMIT_MESSAGE) ||
     RESOURCE_BOUND_GUARD_MESSAGES.some((m) => body.includes(m))
   );
 }

@@ -80,6 +80,12 @@ type planShapeFacts struct {
 	// (chplan.Scan.TimeShiftMillis), so no literal in the plan names the
 	// window it reads.
 	timeShifted bool
+	// classicHistogramQuantile: the plan carries a classic-histogram
+	// quantile (chplan.HistogramQuantile, alone or inside a
+	// chplan.HistogramQuantiles) anywhere, embedded plans included. It
+	// decides whether a ClickHouse memory-limit abort of the statement is
+	// reported as the quantile's (wrapClassicHistogramMemoryLimit).
+	classicHistogramQuantile bool
 
 	// lazyLimits counts Limit(OrderBy(...)) nodes with a positive Count;
 	// lazyLimit is the Count of the last one seen. EligibleForLazyMaterialization
@@ -204,6 +210,10 @@ func (f *planShapeFacts) recordNode(n chplan.Node, spine bool) {
 		f.hasCompare = true
 	case *chplan.StructuralJoin:
 		f.hasStructuralJoin = true
+	case *chplan.HistogramQuantile, *chplan.HistogramQuantiles:
+		// HistogramQuantiles' Children() skip the HistogramQuantile it
+		// wraps, so the plural node is matched itself.
+		f.classicHistogramQuantile = true
 	case *chplan.HistogramQuantileNative, *chplan.HistogramQuantilesNative, *chplan.HistogramProjection:
 		f.nativeHistogramAnalyzerHazard = true
 		f.expHistogramNode = true
