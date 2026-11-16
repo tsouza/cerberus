@@ -1,0 +1,81 @@
+# A metrics pipeline over the nested-set numbering reads the spans its
+# RangeWindow reads: the window is start 00:01:00, end 00:02:00, step 60s,
+# so the RangeWindow, and with it the numbering's recursive scope, reads
+# (00:00:00, 00:02:00].
+#
+#   trace ...01  root 0001 00:00:20, child 0002 00:00:30  (both before start)
+#   trace ...02  root 0010 00:01:20, child 0011 00:01:30
+#   trace ...03  root 0020 00:00:50 (before start), child 0021 00:01:30
+#   trace ...04  root 0030 00:00:00 (on the exclusive lower bound), child 0031 00:00:10
+#
+# Every span is numbered from its trace's root, so each bucket counts its
+# three spans. Numbered over [start, end] alone, no span of the first bucket
+# and not 0021, whose root 0020 precedes start, would be numbered, and the
+# buckets would read 0 and 2.
+#
+# Root 0030 sits on the span's exclusive lower bound, so it is not numbered
+# and neither is its child 0031: neither is counted. A bound that included
+# 00:00:00 would number 0031, and the first bucket would read 4.
+-- query.traceql --
+{ nestedSetLeft > 0 } | count_over_time()
+-- metrics_window --
+1704067260 1704067320 60
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = MergeTree ORDER BY (Timestamp, SpanId);
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, SpanName) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '',                 toDateTime64('2024-01-01 00:00:20', 9), 1000000, 'r'),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', toDateTime64('2024-01-01 00:00:30', 9), 1000000, 'c'),
+    ('a0000000000000000000000000000002', '0000000000000010', '',                 toDateTime64('2024-01-01 00:01:20', 9), 1000000, 'r'),
+    ('a0000000000000000000000000000002', '0000000000000011', '0000000000000010', toDateTime64('2024-01-01 00:01:30', 9), 1000000, 'c'),
+    ('a0000000000000000000000000000003', '0000000000000020', '',                 toDateTime64('2024-01-01 00:00:50', 9), 1000000, 'r'),
+    ('a0000000000000000000000000000003', '0000000000000021', '0000000000000020', toDateTime64('2024-01-01 00:01:30', 9), 1000000, 'c'),
+    ('a0000000000000000000000000000004', '0000000000000030', '',                 toDateTime64('2024-01-01 00:00:00', 9), 1000000, 'r'),
+    ('a0000000000000000000000000000004', '0000000000000031', '0000000000000030', toDateTime64('2024-01-01 00:00:10', 9), 1000000, 'c');
+-- expected_rows --
+[
+  ["2024-01-01T00:01:00Z", 3],
+  ["2024-01-01T00:02:00Z", 3]
+]
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{ nestedSetLeft > 0 } | count_over_time()` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare
+-- args --
+[0] int64 = 0
+-- args_optimized --
+[0] int64 = 0
+-- chplan --
+RangeWindow func= range=1m0s step=1m0s ts=Timestamp start=2024-01-01T00:01:00Z end=2024-01-01T00:02:00Z
+  MetricsAggregate op=count_over_time valueAlias=Value perTraceLookback=1h0m0s
+    Filter predicate=(__cerberus_ns_left > 0)
+      NestedSetAnnotate table=otel_traces
+        Scan(otel_traces)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:rw;rw;join
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_join=536870912
+max_bytes_before_external_sort=536870912
+query_cache_nondeterministic_function_handling=ignore
+query_cache_ttl=300
+use_query_cache=1
+use_query_condition_cache=1
+-- sql --
+SELECT `anchor_ts`, toFloat64(sum(in_window)) AS `Value` FROM ((SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) - 60000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) - 60000000000, toInt64(60000000000)) < 0) + 1), least(2, intDiv(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts`, 1 AS `in_window` FROM (SELECT * FROM (SELECT m.*, ifNull(`ns`.`_ns_left`, 0) AS `__cerberus_ns_left`, ifNull(`ns`.`_ns_right`, 0) AS `__cerberus_ns_right`, ifNull(`ns`.`_ns_parent`, 0) AS `__cerberus_ns_parent` FROM (SELECT * FROM `otel_traces`) AS m LEFT JOIN (WITH RECURSIVE _cerberus_ns_paths AS (SELECT `TraceId`, `SpanId`, `ParentSpanId`, concat(leftPad(toString(toUnixTimestamp64Nano(`Timestamp`)), 20, '0'), leftPad(toString(sipHash64(`SpanId`)), 20, '0')) AS `_path`, 0 AS `_depth` FROM `otel_traces` WHERE `ParentSpanId` = '' AND `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces`)) AND `Timestamp` >= fromUnixTimestamp64Nano(1704067200000000001) AND `Timestamp` <= fromUnixTimestamp64Nano(1704067320000000000) UNION ALL SELECT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, concat(c.`_path`, concat(leftPad(toString(toUnixTimestamp64Nano(`t`.`Timestamp`)), 20, '0'), leftPad(toString(sipHash64(`t`.`SpanId`)), 20, '0'))), c.`_depth` + 1 AS `_depth` FROM `otel_traces` AS t INNER JOIN `_cerberus_ns_paths` AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId` WHERE c._depth < 128 AND t.`TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces`)) AND `Timestamp` >= fromUnixTimestamp64Nano(1704067200000000001) AND `Timestamp` <= fromUnixTimestamp64Nano(1704067320000000000)) SELECT `TraceId`, `SpanId`, toInt64(maxIf(`_erank`, `_etype` = 0)) AS `_ns_left`, toInt64(maxIf(`_erank`, `_etype` = 2)) AS `_ns_right`, if(countIf(`_etype` = 1) = 0, toInt64(-1), toInt64(maxIf(`_keyrank`, `_etype` = 1))) AS `_ns_parent` FROM (SELECT `TraceId`, `SpanId`, `_etype`, `_erank`, first_value(`_erank`) OVER (PARTITION BY `TraceId`, `_ekey` ORDER BY `_etype` ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `_keyrank` FROM (SELECT `TraceId`, `SpanId`, `_ekey`, `_etype`, sum(`_etype` != 1) OVER (PARTITION BY `TraceId` ORDER BY `_ekey`, `_etype` ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `_erank` FROM (SELECT `TraceId`, `SpanId`, `_ev`.1 AS `_ekey`, `_ev`.2 AS `_etype` FROM `_cerberus_ns_paths` ARRAY JOIN arrayFilter(e -> NOT (e.2 = 1 AND e.1 = ''), [(`_path`, 0), (concat(`_path`, '~'), 2), (substring(`_path`, 1, length(`_path`) - 40), 1)]) AS `_ev`))) GROUP BY `TraceId`, `SpanId`) AS ns ON m.`TraceId` = ns.`TraceId` AND m.`SpanId` = ns.`SpanId`) WHERE (`__cerberus_ns_left` > ?)) WHERE `Timestamp` > parseDateTime64BestEffort('2024-01-01 00:01:00.000000000Z', 9) - toIntervalNanosecond(60000000000) AND `Timestamp` <= parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) UNION ALL (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000), range(0, 2))) AS `anchor_ts`, 0 AS `in_window` FROM (SELECT 1 FROM `system`.`one`))) GROUP BY `anchor_ts`
+-- sql_optimized --
+SELECT `anchor_ts`, toFloat64(sum(in_window)) AS `Value` FROM ((SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) - 60000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) - 60000000000, toInt64(60000000000)) < 0) + 1), least(2, intDiv(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts`, 1 AS `in_window` FROM (SELECT * FROM (SELECT m.*, ifNull(`ns`.`_ns_left`, 0) AS `__cerberus_ns_left`, ifNull(`ns`.`_ns_right`, 0) AS `__cerberus_ns_right`, ifNull(`ns`.`_ns_parent`, 0) AS `__cerberus_ns_parent` FROM (SELECT * FROM `otel_traces`) AS m LEFT JOIN (WITH RECURSIVE _cerberus_ns_paths AS (SELECT `TraceId`, `SpanId`, `ParentSpanId`, concat(leftPad(toString(toUnixTimestamp64Nano(`Timestamp`)), 20, '0'), leftPad(toString(sipHash64(`SpanId`)), 20, '0')) AS `_path`, 0 AS `_depth` FROM `otel_traces` WHERE `ParentSpanId` = '' AND `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces`)) AND `Timestamp` >= fromUnixTimestamp64Nano(1704067200000000001) AND `Timestamp` <= fromUnixTimestamp64Nano(1704067320000000000) UNION ALL SELECT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, concat(c.`_path`, concat(leftPad(toString(toUnixTimestamp64Nano(`t`.`Timestamp`)), 20, '0'), leftPad(toString(sipHash64(`t`.`SpanId`)), 20, '0'))), c.`_depth` + 1 AS `_depth` FROM `otel_traces` AS t INNER JOIN `_cerberus_ns_paths` AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId` WHERE c._depth < 128 AND t.`TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces`)) AND `Timestamp` >= fromUnixTimestamp64Nano(1704067200000000001) AND `Timestamp` <= fromUnixTimestamp64Nano(1704067320000000000)) SELECT `TraceId`, `SpanId`, toInt64(maxIf(`_erank`, `_etype` = 0)) AS `_ns_left`, toInt64(maxIf(`_erank`, `_etype` = 2)) AS `_ns_right`, if(countIf(`_etype` = 1) = 0, toInt64(-1), toInt64(maxIf(`_keyrank`, `_etype` = 1))) AS `_ns_parent` FROM (SELECT `TraceId`, `SpanId`, `_etype`, `_erank`, first_value(`_erank`) OVER (PARTITION BY `TraceId`, `_ekey` ORDER BY `_etype` ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `_keyrank` FROM (SELECT `TraceId`, `SpanId`, `_ekey`, `_etype`, sum(`_etype` != 1) OVER (PARTITION BY `TraceId` ORDER BY `_ekey`, `_etype` ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `_erank` FROM (SELECT `TraceId`, `SpanId`, `_ev`.1 AS `_ekey`, `_ev`.2 AS `_etype` FROM `_cerberus_ns_paths` ARRAY JOIN arrayFilter(e -> NOT (e.2 = 1 AND e.1 = ''), [(`_path`, 0), (concat(`_path`, '~'), 2), (substring(`_path`, 1, length(`_path`) - 40), 1)]) AS `_ev`))) GROUP BY `TraceId`, `SpanId`) AS ns ON m.`TraceId` = ns.`TraceId` AND m.`SpanId` = ns.`SpanId`) WHERE (`__cerberus_ns_left` > ?)) WHERE `Timestamp` > parseDateTime64BestEffort('2024-01-01 00:01:00.000000000Z', 9) - toIntervalNanosecond(60000000000) AND `Timestamp` <= parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) UNION ALL (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000), range(0, 2))) AS `anchor_ts`, 0 AS `in_window` FROM (SELECT 1 FROM `system`.`one`))) GROUP BY `anchor_ts`

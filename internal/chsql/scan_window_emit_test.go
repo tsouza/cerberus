@@ -214,20 +214,20 @@ func anchorArmScope(s string) string {
 }
 
 // assertAnchorArmsWindowed asserts every recursive structural closure in sql
-// bounds its anchor arm with the inline request window. The anchor arm is a
+// bounds its anchor arm with the inline window [loNano, hiNano]. The anchor arm is a
 // `WITH RECURSIVE` arm, so no enclosing predicate — not the outer search
 // filter, not the metrics RangeWindow wrap — reaches its `_seed` scan;
 // `otel_traces` is `PARTITION BY toDate(Timestamp)`, so without the arm's own
 // bound the seed reads full retention (#1942).
-func assertAnchorArmsWindowed(t *testing.T, sql string, wantClosures int) {
+func assertAnchorArmsWindowed(t *testing.T, sql string, wantClosures int, loNano, hiNano int64) {
 	t.Helper()
 	arms := structuralAnchorArmScopes(sql)
 	if len(arms) != wantClosures {
 		t.Fatalf("found %d structural closure anchor arms, want %d — shape changed, assertion vacuous:\n%s",
 			len(arms), wantClosures, sql)
 	}
-	lo := fmt.Sprintf("%s(%d)", fromUnixNanoCall, scanWindowEmitStartNano)
-	hi := fmt.Sprintf("%s(%d)", fromUnixNanoCall, scanWindowEmitEndNano)
+	lo := fmt.Sprintf("%s(%d)", fromUnixNanoCall, loNano)
+	hi := fmt.Sprintf("%s(%d)", fromUnixNanoCall, hiNano)
 	for i, arm := range arms {
 		if !strings.Contains(arm, lo) || !strings.Contains(arm, hi) {
 			t.Errorf("closure %d: anchor arm's `_seed` scope carries no request window (missing inline %s / %s) — the seed scan reads full retention:\narm: %s\nfull SQL:\n%s",
@@ -272,22 +272,23 @@ func TestEmitStructuralRecursiveAnchorWindowed(t *testing.T) {
 				if err != nil {
 					t.Fatalf("windowed structural emit: %v", err)
 				}
-				assertAnchorArmsWindowed(t, sql, tc.closures)
+				assertAnchorArmsWindowed(t, sql, tc.closures, scanWindowEmitStartNano, scanWindowEmitEndNano)
 			})
 		}
 	})
 
 	t.Run("metrics", func(t *testing.T) {
 		t.Parallel()
-		// The metrics path threads the request window but folds NO window onto
-		// the chplan leaves (the RangeWindow wrap bounds the metrics leaf, and
-		// it cannot reach below a WITH RECURSIVE), so the anchor arm's own
-		// bound is the whole fix here.
+		// The metrics path folds NO window onto the chplan leaves (the
+		// RangeWindow wrap bounds the metrics leaf, and it cannot reach below
+		// a WITH RECURSIVE), so the anchor arm's own bound is the whole fix
+		// here. It reads the RangeWindow's input span (start - step, end]:
+		// inclusive from the nanosecond after start - step.
 		sql, err := emitStructuralMetricsRange(t, `{ } >> { } | rate()`, start, end)
 		if err != nil {
 			t.Fatalf("windowed metrics structural emit: %v", err)
 		}
-		assertAnchorArmsWindowed(t, sql, 1)
+		assertAnchorArmsWindowed(t, sql, 1, scanWindowEmitStartNano-scanWindowEmitStep.Nanoseconds()+1, scanWindowEmitEndNano)
 	})
 }
 

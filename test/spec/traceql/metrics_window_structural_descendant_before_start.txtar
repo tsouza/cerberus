@@ -1,0 +1,88 @@
+# A metrics pipeline over a structural descendant relation reads the spans
+# its RangeWindow reads: the window is start 00:01:00, end 00:02:00, step
+# 60s, so the RangeWindow, and with it every anchor and step arm of the
+# recursive closure, reads (00:00:00, 00:02:00].
+#
+#   trace ...01  root 0001 00:00:20, child 0002 00:00:30  (both before start)
+#   trace ...02  root 0010 00:01:20, child 0011 00:01:30
+#   trace ...03  root 0020 00:00:50 (before start), child 0021 00:01:30
+#   trace ...04  root 0030 00:00:00 (on the exclusive lower bound), child 0031 00:00:10
+#
+# The first bucket counts 0002, a descendant whose ancestor precedes start;
+# the second counts 0011 and 0021, whose ancestor 0020 also precedes start.
+# Read over [start, end] alone, the closure would see neither 0001 nor 0020
+# and the buckets would read 0 and 1.
+#
+# Root 0030 sits on the span's exclusive lower bound, so the closure does not
+# read it and its child 0031 is not counted. A bound that included 00:00:00
+# would count 0031, and the first bucket would read 2.
+-- query.traceql --
+{ } >> { } | count_over_time()
+-- metrics_window --
+1704067260 1704067320 60
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = MergeTree ORDER BY (Timestamp, SpanId);
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, SpanName) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '',                 toDateTime64('2024-01-01 00:00:20', 9), 1000000, 'r'),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', toDateTime64('2024-01-01 00:00:30', 9), 1000000, 'c'),
+    ('a0000000000000000000000000000002', '0000000000000010', '',                 toDateTime64('2024-01-01 00:01:20', 9), 1000000, 'r'),
+    ('a0000000000000000000000000000002', '0000000000000011', '0000000000000010', toDateTime64('2024-01-01 00:01:30', 9), 1000000, 'c'),
+    ('a0000000000000000000000000000003', '0000000000000020', '',                 toDateTime64('2024-01-01 00:00:50', 9), 1000000, 'r'),
+    ('a0000000000000000000000000000003', '0000000000000021', '0000000000000020', toDateTime64('2024-01-01 00:01:30', 9), 1000000, 'c'),
+    ('a0000000000000000000000000000004', '0000000000000030', '',                 toDateTime64('2024-01-01 00:00:00', 9), 1000000, 'r'),
+    ('a0000000000000000000000000000004', '0000000000000031', '0000000000000030', toDateTime64('2024-01-01 00:00:10', 9), 1000000, 'c');
+-- expected_rows --
+[
+  ["2024-01-01T00:01:00Z", 1],
+  ["2024-01-01T00:02:00Z", 2]
+]
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{ } >> { } | count_over_time()` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare
+-- args --
+[0] bool = true
+[1] bool = true
+[2] bool = true
+-- args_optimized --
+[0] bool = true
+[1] bool = true
+[2] bool = true
+-- chplan --
+RangeWindow func= range=1m0s step=1m0s ts=Timestamp start=2024-01-01T00:01:00Z end=2024-01-01T00:02:00Z
+  MetricsAggregate op=count_over_time valueAlias=Value perTraceLookback=1h0m0s
+    StructuralJoin op=>>
+      Filter predicate=true
+        Scan(otel_traces)
+      Filter predicate=true
+        Scan(otel_traces)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:rw;rw;join
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_join=536870912
+max_bytes_before_external_sort=536870912
+min_table_rows_to_use_projection_index=0
+query_cache_nondeterministic_function_handling=ignore
+query_cache_ttl=300
+use_query_cache=1
+use_query_condition_cache=1
+-- sql --
+SELECT `anchor_ts`, toFloat64(sum(in_window)) AS `Value` FROM ((SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) - 60000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) - 60000000000, toInt64(60000000000)) < 0) + 1), least(2, intDiv(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts`, 1 AS `in_window` FROM (SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.`SpanName` AS `SpanName`, R.`Duration` AS `Duration`, R.`Timestamp` AS `Timestamp`, R.`ResourceAttributes` AS `ResourceAttributes`, R.`SpanAttributes` AS `SpanAttributes`, R.`StatusCode` AS `StatusCode`, R.`StatusMessage` AS `StatusMessage`, R.`SpanKind` AS `SpanKind`, R.`ScopeName` AS `ScopeName`, R.`ScopeVersion` AS `ScopeVersion` FROM (WITH RECURSIVE _struct_closure_2 AS (SELECT DISTINCT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS _depth FROM (SELECT * FROM (SELECT * FROM `otel_traces` WHERE ?) AS _rooted_l WHERE (`TraceId`, `SpanId`) GLOBAL IN (WITH RECURSIVE _struct_rooted_1 AS (SELECT DISTINCT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS _depth FROM `otel_traces` WHERE `ParentSpanId` = '' AND `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE ?)) AND `Timestamp` >= fromUnixTimestamp64Nano(1704067200000000001) AND `Timestamp` <= fromUnixTimestamp64Nano(1704067320000000000) UNION ALL SELECT DISTINCT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c._depth + 1 FROM `otel_traces` AS t INNER JOIN _struct_rooted_1 AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId` WHERE c._depth < 128 AND `Timestamp` >= fromUnixTimestamp64Nano(1704067200000000001) AND `Timestamp` <= fromUnixTimestamp64Nano(1704067320000000000)) SELECT DISTINCT `TraceId`, `SpanId` FROM _struct_rooted_1)) AS _seed WHERE `Timestamp` >= fromUnixTimestamp64Nano(1704067200000000001) AND `Timestamp` <= fromUnixTimestamp64Nano(1704067320000000000) UNION ALL SELECT DISTINCT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c._depth + 1 FROM `otel_traces` AS t INNER JOIN _struct_closure_2 AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId` WHERE c._depth < 128 AND `Timestamp` >= fromUnixTimestamp64Nano(1704067200000000001) AND `Timestamp` <= fromUnixTimestamp64Nano(1704067320000000000)) SELECT DISTINCT `TraceId`, `SpanId` FROM _struct_closure_2 WHERE _depth > 0) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE ?) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`SpanId`) WHERE `Timestamp` > parseDateTime64BestEffort('2024-01-01 00:01:00.000000000Z', 9) - toIntervalNanosecond(60000000000) AND `Timestamp` <= parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) UNION ALL (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000), range(0, 2))) AS `anchor_ts`, 0 AS `in_window` FROM (SELECT 1 FROM `system`.`one`))) GROUP BY `anchor_ts`
+-- sql_optimized --
+SELECT `anchor_ts`, toFloat64(sum(in_window)) AS `Value` FROM ((SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) - 60000000000, toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) - 60000000000, toInt64(60000000000)) < 0) + 1), least(2, intDiv(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)), toInt64(60000000000)) - (modulo(dateDiff('nanosecond', `Timestamp`, parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)), toInt64(60000000000)) < 0) + 1)))) AS `anchor_ts`, 1 AS `in_window` FROM (SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.`SpanName` AS `SpanName`, R.`Duration` AS `Duration`, R.`Timestamp` AS `Timestamp`, R.`ResourceAttributes` AS `ResourceAttributes`, R.`SpanAttributes` AS `SpanAttributes`, R.`StatusCode` AS `StatusCode`, R.`StatusMessage` AS `StatusMessage`, R.`SpanKind` AS `SpanKind`, R.`ScopeName` AS `ScopeName`, R.`ScopeVersion` AS `ScopeVersion` FROM (WITH RECURSIVE _struct_closure_2 AS (SELECT DISTINCT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS _depth FROM (SELECT * FROM (SELECT * FROM `otel_traces` WHERE ?) AS _rooted_l WHERE (`TraceId`, `SpanId`) GLOBAL IN (WITH RECURSIVE _struct_rooted_1 AS (SELECT DISTINCT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS _depth FROM `otel_traces` WHERE `ParentSpanId` = '' AND `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE ?)) AND `Timestamp` >= fromUnixTimestamp64Nano(1704067200000000001) AND `Timestamp` <= fromUnixTimestamp64Nano(1704067320000000000) UNION ALL SELECT DISTINCT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c._depth + 1 FROM `otel_traces` AS t INNER JOIN _struct_rooted_1 AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId` WHERE c._depth < 128 AND `Timestamp` >= fromUnixTimestamp64Nano(1704067200000000001) AND `Timestamp` <= fromUnixTimestamp64Nano(1704067320000000000)) SELECT DISTINCT `TraceId`, `SpanId` FROM _struct_rooted_1)) AS _seed WHERE `Timestamp` >= fromUnixTimestamp64Nano(1704067200000000001) AND `Timestamp` <= fromUnixTimestamp64Nano(1704067320000000000) UNION ALL SELECT DISTINCT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c._depth + 1 FROM `otel_traces` AS t INNER JOIN _struct_closure_2 AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId` WHERE c._depth < 128 AND `Timestamp` >= fromUnixTimestamp64Nano(1704067200000000001) AND `Timestamp` <= fromUnixTimestamp64Nano(1704067320000000000)) SELECT DISTINCT `TraceId`, `SpanId` FROM _struct_closure_2 WHERE _depth > 0) AS L INNER JOIN (SELECT * FROM `otel_traces` WHERE ?) AS R ON L.`TraceId` = R.`TraceId` AND L.`SpanId` = R.`SpanId`) WHERE `Timestamp` > parseDateTime64BestEffort('2024-01-01 00:01:00.000000000Z', 9) - toIntervalNanosecond(60000000000) AND `Timestamp` <= parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9)) UNION ALL (SELECT arrayJoin(arrayMap(i -> parseDateTime64BestEffort('2024-01-01 00:02:00.000000000Z', 9) - toIntervalNanosecond(i * 60000000000), range(0, 2))) AS `anchor_ts`, 0 AS `in_window` FROM (SELECT 1 FROM `system`.`one`))) GROUP BY `anchor_ts`
