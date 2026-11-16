@@ -1246,7 +1246,9 @@ key and the renamed tables and its rate-by-route sentinel on the stock key
 run with the query condition cache off, where the server has it, so a repeat
 cannot read what an earlier one cached. Its self-check breaks the decision on
 each side: forcing the emitter's split on 25.9 (label values 39 MB against a
-31 MB ceiling), bypassing the emitter's partition so its PREWHERE holds the
+31 MB ceiling, caught on the dispatched statement, which must carry no
+explicit `PREWHERE` there, because the runners' spread of the label-values
+peaks leaves no memory ceiling that separates the split), bypassing the emitter's partition so its PREWHERE holds the
 attribute matcher on 24.8, 26.6 and 26.9 (rate by route 696 MB, 416 MB and
 389 MB against 58 MB, 40 MB and 34 MB unmutated), and widening the auto range past 26.6 (rate by
 route 296 MB against 40 MB). The

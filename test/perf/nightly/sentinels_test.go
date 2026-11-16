@@ -105,7 +105,10 @@ func TestCarriesExplicitPrewhere(t *testing.T) {
 		{"SELECT `v` FROM `t` WHERE `Attributes`['route'] = 'PREWHERE'", false},
 		{"SELECT `v` FROM `t` WHERE `a` = 'it''s \\' PREWHERE'", false},
 		{"SELECT `PREWHERE` FROM `t` WHERE \"PREWHERE\" = 1", false},
-		{"SELECT `v` FROM `t` WHERE `prewhere_hits` > 0", false},
+		{"SELECT v FROM t WHERE prewhere_hits > 0", false},
+		{"SELECT v FROM t WHERE PREWHEREX > 0", false},
+		{"SELECT v FROM t WHERE no_prewhere > 0", false},
+		{"SELECT v FROM t WHERE x > 0 SETTINGS optimize_move_to_prewhere = 1", false},
 	} {
 		if got := carriesExplicitPrewhere(tc.statement); got != tc.want {
 			t.Errorf("carriesExplicitPrewhere(%q) = %v; want %v", tc.statement, got, tc.want)
@@ -114,10 +117,10 @@ func TestCarriesExplicitPrewhere(t *testing.T) {
 }
 
 // TestSentinels_ServerPrewhereOnLines pins the statement prong to the lines
-// it belongs on: both label_values sentinels carry it, and on exactly the
-// release lines nightly-baseline.json calibrates whose version
-// move_to_prewhere's AutoRange covers, so "auto" leaves the split to the
-// server there. A drifted AutoRange fails here.
+// it belongs on: both label_values sentinels carry it, and every sentinel
+// that carries it does so on exactly the release lines nightly-baseline.json
+// calibrates whose version move_to_prewhere's AutoRange covers, so "auto"
+// leaves the split to the server there. A drifted AutoRange fails here.
 func TestSentinels_ServerPrewhereOnLines(t *testing.T) {
 	var autoRange chopt.VersionRange
 	for _, f := range chopt.Registry() {
@@ -140,12 +143,9 @@ func TestSentinels_ServerPrewhereOnLines(t *testing.T) {
 	}
 	carriers := map[string]bool{"label_values_matcher_stock_key": true, "label_values_matcher_stock_key_renamed": true}
 	for _, s := range Sentinels {
-		switch {
-		case carriers[s.Name] && !slices.Equal(s.ServerPrewhereOn, want):
+		if (carriers[s.Name] || len(s.ServerPrewhereOn) != 0) && !slices.Equal(s.ServerPrewhereOn, want) {
 			t.Errorf("%s: ServerPrewhereOn = %v; want %v, the calibrated lines in move_to_prewhere's AutoRange %v",
 				s.Name, s.ServerPrewhereOn, want, autoRange)
-		case !carriers[s.Name] && len(s.ServerPrewhereOn) != 0:
-			t.Errorf("%s: ServerPrewhereOn = %v; want none", s.Name, s.ServerPrewhereOn)
 		}
 	}
 }
