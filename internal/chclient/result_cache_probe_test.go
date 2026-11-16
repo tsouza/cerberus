@@ -5,19 +5,20 @@ import (
 	"fmt"
 	"testing"
 
+	chproto "github.com/ClickHouse/ch-go/proto"
 	"github.com/ClickHouse/clickhouse-go/v2"
 
 	"github.com/tsouza/cerberus/internal/chopt"
 )
 
-// TestClassifyCapabilityFromProbeErr_ResultCacheShapes pins the shared
+// TestCanaryErrAnswer_ResultCacheShapes pins the shared
 // classifier against the specific rejection shapes a hardened deployment
 // profile raises for use_query_cache — a SEPARATE setting name from the
 // ts-grid experimental gate ts_grid_probe_test.go pins, confirming the
 // shared classifier's mapping does not depend on the setting name at all
-// (nil -> Available, typed exception -> Forbidden, transport error ->
+// (nil -> Available, a refused setting -> Forbidden, transport error ->
 // Unreachable).
-func TestClassifyCapabilityFromProbeErr_ResultCacheShapes(t *testing.T) {
+func TestCanaryErrAnswer_ResultCacheShapes(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -36,9 +37,18 @@ func TestClassifyCapabilityFromProbeErr_ResultCacheShapes(t *testing.T) {
 			want: chopt.CapabilityForbidden,
 		},
 		{
+			name: "query cache under a non-throw overflow mode (731) is forbidden",
+			err: &clickhouse.Exception{
+				Code:    int32(chproto.ErrQueryCacheUsedWithNonThrowOverflowMode),
+				Name:    "QUERY_CACHE_USED_WITH_NON_THROW_OVERFLOW_MODE",
+				Message: "use_query_cache and overflow_mode != 'throw' cannot be used together",
+			},
+			want: chopt.CapabilityForbidden,
+		},
+		{
 			name: "readonly user on use_query_cache is forbidden",
 			err: &clickhouse.Exception{
-				Code:    chCodeReadonly,
+				Code:    int32(chproto.ErrReadonly),
 				Name:    "READONLY",
 				Message: "Cannot modify 'use_query_cache' setting in readonly mode",
 			},
@@ -59,8 +69,8 @@ func TestClassifyCapabilityFromProbeErr_ResultCacheShapes(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := classifyCapabilityFromProbeErr(tc.err); got != tc.want {
-				t.Errorf("classifyCapabilityFromProbeErr(%v) = %v; want %v", tc.err, got, tc.want)
+			if got := canaryErrAnswer(tc.err, isSettingsRefusal).verdict; got != tc.want {
+				t.Errorf("canaryErrAnswer(%v) = %v; want %v", tc.err, got, tc.want)
 			}
 		})
 	}
