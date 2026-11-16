@@ -16,462 +16,229 @@ INSERT INTO otel_logs (Body) VALUES
     ('ts=2026-01-01 msg="no_status"');
 -- expected_rows --
 [
-  ["ts=2026-01-01 status=500 msg=\"server_error\""]
+  ["ts=2026-01-01 status=500 msg=\"server_error\"", {"detected_level": "unknown", "job": "api", "msg": "server_error", "status": "500", "ts": "2026-01-01"}, "1970-01-01T00:00:00Z", {}]
 ]
 -- args --
-[0] string = "job"
-[1] string = "api"
-[2] string = "_extracted"
-[3] int64 = 1
+[0] string = ""
+[1] string = "detected_level"
+[2] string = ""
+[3] string = "_extracted"
 [4] int64 = 1
-[5] string = "="
-[6] string = " "
-[7] string = "\""
-[8] string = "Array(Tuple(String,String))"
+[5] int64 = 1
+[6] string = "="
+[7] string = " "
+[8] string = "\""
 [9] string = "Array(Tuple(String,String))"
-[10] string = "Map(String,String)"
-[11] string = "status"
-[12] string = "status"
-[13] bool = false
-[14] string = "_extracted"
-[15] int64 = 1
-[16] int64 = 1
-[17] string = "="
-[18] string = " "
-[19] string = "\""
-[20] string = "Array(Tuple(String,String))"
-[21] string = "Array(Tuple(String,String))"
-[22] string = "Map(String,String)"
+[10] string = "Array(Tuple(String,String))"
+[11] string = "Map(String,String)"
+[12] string = "__error__"
+[13] string = "status"
+[14] string = "status"
+[15] string = "status"
+[16] string = "status"
+[17] string = "status"
+[18] string = "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$"
+[19] string = "__error__"
+[20] string = "LabelFilterErr"
+[21] string = "__error_details__"
+[22] string = "strconv.ParseFloat: parsing \""
 [23] string = "status"
-[24] string = "_extracted"
-[25] int64 = 1
-[26] int64 = 1
-[27] string = "="
-[28] string = " "
-[29] string = "\""
-[30] string = "Array(Tuple(String,String))"
-[31] string = "Array(Tuple(String,String))"
-[32] string = "Map(String,String)"
-[33] string = "status"
-[34] string = "status"
-[35] string = "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$"
-[36] bool = true
-[37] string = "_extracted"
-[38] int64 = 1
-[39] int64 = 1
-[40] string = "="
-[41] string = " "
-[42] string = "\""
-[43] string = "Array(Tuple(String,String))"
-[44] string = "Array(Tuple(String,String))"
-[45] string = "Map(String,String)"
-[46] string = "status"
-[47] string = "_extracted"
-[48] int64 = 1
-[49] int64 = 1
-[50] string = "="
-[51] string = " "
-[52] string = "\""
-[53] string = "Array(Tuple(String,String))"
-[54] string = "Array(Tuple(String,String))"
-[55] string = "Map(String,String)"
-[56] string = "status"
-[57] string = "status"
-[58] float64 = 400
-[59] string = "_extracted"
-[60] int64 = 1
-[61] int64 = 1
-[62] string = "="
-[63] string = " "
-[64] string = "\""
-[65] string = "Array(Tuple(String,String))"
-[66] string = "Array(Tuple(String,String))"
-[67] string = "Map(String,String)"
-[68] string = "_extracted"
-[69] int64 = 1
-[70] int64 = 1
-[71] string = "="
-[72] string = " "
-[73] string = "\""
-[74] string = "Array(Tuple(String,String))"
-[75] string = "Array(Tuple(String,String))"
-[76] string = "Map(String,String)"
-[77] string = "__error__"
-[78] string = "_extracted"
-[79] int64 = 1
-[80] int64 = 1
-[81] string = "="
-[82] string = " "
-[83] string = "\""
-[84] string = "Array(Tuple(String,String))"
-[85] string = "Array(Tuple(String,String))"
-[86] string = "Map(String,String)"
+[24] string = "status"
+[25] string = "status"
+[26] string = "\": invalid syntax"
+[27] string = "detected_level"
+[28] string = ""
+[29] string = "detected_level"
+[30] string = "level"
+[31] string = ""
+[32] string = "level"
+[33] string = "log.level"
+[34] string = ""
+[35] string = "log.level"
+[36] string = "severity"
+[37] string = ""
+[38] string = "severity"
+[39] string = "severity_text"
+[40] string = ""
+[41] string = "severity_text"
+[42] string = ""
+[43] int64 = 0
+[44] string = ""
+[45] int64 = 4
+[46] string = "trace"
+[47] int64 = 8
+[48] string = "debug"
+[49] int64 = 12
+[50] string = "info"
+[51] int64 = 16
+[52] string = "warn"
+[53] int64 = 20
+[54] string = "error"
+[55] int64 = 24
+[56] string = "fatal"
+[57] string = ""
+[58] string = ""
+[59] string = "unknown"
+[60] string = "trace"
+[61] string = "trc"
+[62] string = "trace"
+[63] string = "debug"
+[64] string = "dbg"
+[65] string = "debug"
+[66] string = "info"
+[67] string = "inf"
+[68] string = "information"
+[69] string = "info"
+[70] string = "warn"
+[71] string = "wrn"
+[72] string = "warning"
+[73] string = "warn"
+[74] string = "error"
+[75] string = "err"
+[76] string = "error"
+[77] string = "critical"
+[78] string = "critical"
+[79] string = "fatal"
+[80] string = "fatal"
+[81] string = "job"
+[82] string = "api"
+[83] string = "status"
+[84] string = "status"
+[85] bool = false
+[86] string = "status"
 [87] string = "status"
 [88] string = "status"
-[89] string = "_extracted"
-[90] int64 = 1
-[91] int64 = 1
-[92] string = "="
-[93] string = " "
-[94] string = "\""
-[95] string = "Array(Tuple(String,String))"
-[96] string = "Array(Tuple(String,String))"
-[97] string = "Map(String,String)"
-[98] string = "status"
-[99] string = "_extracted"
-[100] int64 = 1
-[101] int64 = 1
-[102] string = "="
-[103] string = " "
-[104] string = "\""
-[105] string = "Array(Tuple(String,String))"
-[106] string = "Array(Tuple(String,String))"
-[107] string = "Map(String,String)"
-[108] string = "status"
-[109] string = "status"
-[110] string = "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$"
-[111] string = "__error__"
-[112] string = "LabelFilterErr"
-[113] string = "__error_details__"
-[114] string = "strconv.ParseFloat: parsing \""
-[115] string = "_extracted"
-[116] int64 = 1
-[117] int64 = 1
-[118] string = "="
-[119] string = " "
-[120] string = "\""
-[121] string = "Array(Tuple(String,String))"
-[122] string = "Array(Tuple(String,String))"
-[123] string = "Map(String,String)"
-[124] string = "status"
-[125] string = "_extracted"
-[126] int64 = 1
-[127] int64 = 1
-[128] string = "="
-[129] string = " "
-[130] string = "\""
-[131] string = "Array(Tuple(String,String))"
-[132] string = "Array(Tuple(String,String))"
-[133] string = "Map(String,String)"
-[134] string = "status"
-[135] string = "status"
-[136] string = "\": invalid syntax"
-[137] string = "__error__"
-[138] string = "_extracted"
-[139] int64 = 1
-[140] int64 = 1
-[141] string = "="
-[142] string = " "
-[143] string = "\""
-[144] string = "Array(Tuple(String,String))"
-[145] string = "Array(Tuple(String,String))"
-[146] string = "Map(String,String)"
-[147] string = "_extracted"
-[148] int64 = 1
-[149] int64 = 1
-[150] string = "="
-[151] string = " "
-[152] string = "\""
-[153] string = "Array(Tuple(String,String))"
-[154] string = "Array(Tuple(String,String))"
-[155] string = "Map(String,String)"
-[156] string = "__error__"
-[157] string = "_extracted"
-[158] int64 = 1
-[159] int64 = 1
-[160] string = "="
-[161] string = " "
-[162] string = "\""
-[163] string = "Array(Tuple(String,String))"
-[164] string = "Array(Tuple(String,String))"
-[165] string = "Map(String,String)"
-[166] string = "status"
-[167] string = "status"
-[168] string = "_extracted"
-[169] int64 = 1
-[170] int64 = 1
-[171] string = "="
-[172] string = " "
-[173] string = "\""
-[174] string = "Array(Tuple(String,String))"
-[175] string = "Array(Tuple(String,String))"
-[176] string = "Map(String,String)"
-[177] string = "status"
-[178] string = "_extracted"
-[179] int64 = 1
-[180] int64 = 1
-[181] string = "="
-[182] string = " "
-[183] string = "\""
-[184] string = "Array(Tuple(String,String))"
-[185] string = "Array(Tuple(String,String))"
-[186] string = "Map(String,String)"
-[187] string = "status"
-[188] string = "status"
-[189] string = "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$"
-[190] string = "__error__"
-[191] string = "LabelFilterErr"
-[192] string = "__error_details__"
-[193] string = "strconv.ParseFloat: parsing \""
-[194] string = "_extracted"
-[195] int64 = 1
-[196] int64 = 1
-[197] string = "="
-[198] string = " "
-[199] string = "\""
-[200] string = "Array(Tuple(String,String))"
-[201] string = "Array(Tuple(String,String))"
-[202] string = "Map(String,String)"
-[203] string = "status"
-[204] string = "_extracted"
-[205] int64 = 1
-[206] int64 = 1
-[207] string = "="
-[208] string = " "
-[209] string = "\""
-[210] string = "Array(Tuple(String,String))"
-[211] string = "Array(Tuple(String,String))"
-[212] string = "Map(String,String)"
-[213] string = "status"
-[214] string = "status"
-[215] string = "\": invalid syntax"
-[216] string = "__error__"
-[217] string = "__error__"
-[218] string = ""
+[89] string = "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$"
+[90] bool = true
+[91] string = "status"
+[92] string = "status"
+[93] string = "status"
+[94] float64 = 400
+[95] string = "__error__"
+[96] string = "__error__"
+[97] string = "__error__"
+[98] string = ""
 -- chplan --
-Filter predicate=(((ResourceAttributes["job"] = "api") AND FnMultiIf(FnNot((FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "status") OR FnMapContainsKey(LogAttributes, "status"))), false, FnNot(FnRegexMatch(FnIf(FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "status"), FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)")))["status"], LogAttributes["status"]), "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$")), true, (FnToFloat64OrZero(FnIf(FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "status"), FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)")))["status"], LogAttributes["status"])) > 400))) AND (FnIf(FnMapContainsKey(FnMapMerge(FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))), FnIf((FnNot(FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "__error__")) AND ((FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "status") OR FnMapContainsKey(LogAttributes, "status")) AND FnNot(FnRegexMatch(FnIf(FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "status"), FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)")))["status"], LogAttributes["status"]), "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$")))), FnMap("__error__", "LabelFilterErr", "__error_details__", FnConcat("strconv.ParseFloat: parsing \"", FnIf(FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "status"), FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)")))["status"], LogAttributes["status"]), "\": invalid syntax")), FnMap())), "__error__"), FnMapMerge(FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))), FnIf((FnNot(FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "__error__")) AND ((FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "status") OR FnMapContainsKey(LogAttributes, "status")) AND FnNot(FnRegexMatch(FnIf(FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "status"), FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)")))["status"], LogAttributes["status"]), "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$")))), FnMap("__error__", "LabelFilterErr", "__error_details__", FnConcat("strconv.ParseFloat: parsing \"", FnIf(FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "status"), FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)")))["status"], LogAttributes["status"]), "\": invalid syntax")), FnMap()))["__error__"], LogAttributes["__error__"]) = ""))
-  Scan(otel_logs)
+Project [Body AS Line, FnMapMerge(_logql_labels_1, FnMapFilter((k, v) -> (v != ""), FnMap("detected_level", _logql_detected_level))) AS Attributes, Timestamp AS TimeUnix, FnToJSONString(FnMapFilter((k, v) -> (v != ""), LogAttributes)) AS Metadata] oneScopeRows
+  Project [Body, LogAttributes, Timestamp, _logql_labels_1, FnMultiIf((FnLower(_logql_level_source) = ""), "unknown", ((FnLower(_logql_level_source) = "trace") OR (FnLower(_logql_level_source) = "trc")), "trace", ((FnLower(_logql_level_source) = "debug") OR (FnLower(_logql_level_source) = "dbg")), "debug", (((FnLower(_logql_level_source) = "info") OR (FnLower(_logql_level_source) = "inf")) OR (FnLower(_logql_level_source) = "information")), "info", (((FnLower(_logql_level_source) = "warn") OR (FnLower(_logql_level_source) = "wrn")) OR (FnLower(_logql_level_source) = "warning")), "warn", ((FnLower(_logql_level_source) = "error") OR (FnLower(_logql_level_source) = "err")), "error", (FnLower(_logql_level_source) = "critical"), "critical", (FnLower(_logql_level_source) = "fatal"), "fatal", _logql_level_source) AS _logql_detected_level]
+    Project [Body, LogAttributes, Timestamp, _logql_labels_1, FnMultiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], FnMultiIf((SeverityText != ""), SeverityText, FnMultiIf((SeverityNumber <= 0), "", (SeverityNumber <= 4), "trace", (SeverityNumber <= 8), "debug", (SeverityNumber <= 12), "info", (SeverityNumber <= 16), "warn", (SeverityNumber <= 20), "error", (SeverityNumber <= 24), "fatal", ""))) AS _logql_level_source]
+      Filter predicate=(FnIf(FnMapContainsKey(_logql_labels_1, "__error__"), _logql_labels_1["__error__"], LogAttributes["__error__"]) = "")
+        Project [Body, LogAttributes, SeverityNumber, SeverityText, Timestamp, FnMapMerge(_logql_labels_0, FnIf((FnNot(FnMapContainsKey(_logql_labels_0, "__error__")) AND ((FnMapContainsKey(_logql_labels_0, "status") OR FnMapContainsKey(LogAttributes, "status")) AND FnNot(FnRegexMatch(FnIf(FnMapContainsKey(_logql_labels_0, "status"), _logql_labels_0["status"], LogAttributes["status"]), "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$")))), FnMap("__error__", "LabelFilterErr", "__error_details__", FnConcat("strconv.ParseFloat: parsing \"", FnIf(FnMapContainsKey(_logql_labels_0, "status"), _logql_labels_0["status"], LogAttributes["status"]), "\": invalid syntax")), FnMap())) AS _logql_labels_1]
+          Filter predicate=FnMultiIf(FnNot((FnMapContainsKey(_logql_labels_0, "status") OR FnMapContainsKey(LogAttributes, "status"))), false, FnNot(FnRegexMatch(FnIf(FnMapContainsKey(_logql_labels_0, "status"), _logql_labels_0["status"], LogAttributes["status"]), "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$")), true, (FnToFloat64OrZero(FnIf(FnMapContainsKey(_logql_labels_0, "status"), _logql_labels_0["status"], LogAttributes["status"])) > 400))
+            Project [Body, LogAttributes, SeverityNumber, SeverityText, Timestamp, FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))) AS _logql_labels_0]
+              Filter predicate=(ResourceAttributes["job"] = "api")
+                Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND multiIf(not((mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?) OR mapContains(`LogAttributes`, ?))), ?, not(match(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], `LogAttributes`[?]), ?)), ?, (toFloat64OrZero(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], `LogAttributes`[?])) > toFloat64(?))) AND (if(mapContains(mapConcat(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), if((not(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?)) AND ((mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?) OR mapContains(`LogAttributes`, ?)) AND not(match(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], `LogAttributes`[?]), ?)))), map(?, ?, ?, concat(?, if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], `LogAttributes`[?]), ?)), map())), ?), mapConcat(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), if((not(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?)) AND ((mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?) OR mapContains(`LogAttributes`, ?)) AND not(match(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], `LogAttributes`[?]), ?)))), map(?, ?, ?, concat(?, if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], `LogAttributes`[?]), ?)), map()))[?], `LogAttributes`[?]) = ?)
+SELECT `Body` AS `Line`, mapConcat(`_logql_labels_1`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`))) AS `Attributes`, `Timestamp` AS `TimeUnix`, toJSONString(mapFilter((k, v) -> (v != ?), `LogAttributes`)) AS `Metadata` FROM (SELECT `Body`, `LogAttributes`, `Timestamp`, mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))) AS `_logql_labels_0`, mapConcat(`_logql_labels_0`, if((not(mapContains(`_logql_labels_0`, ?)) AND ((mapContains(`_logql_labels_0`, ?) OR mapContains(`LogAttributes`, ?)) AND not(match(if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?]), ?)))), map(?, ?, ?, concat(?, if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?]), ?)), map())) AS `_logql_labels_1`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level` FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND multiIf(not((mapContains(`_logql_labels_0`, ?) OR mapContains(`LogAttributes`, ?))), ?, not(match(if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?]), ?)), ?, (toFloat64OrZero(if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?])) > toFloat64(?))) AND (if(mapContains(`_logql_labels_1`, ?), `_logql_labels_1`[?], `LogAttributes`[?]) = ?))
 -- parity_exempt --
 reason: log-query-answer
 detail: log query `{job="api"} | logfmt | status > 400 | __error__ = ""` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
-[0] string = "job"
-[1] string = "api"
-[2] string = "_extracted"
-[3] int64 = 1
+[0] string = ""
+[1] string = "detected_level"
+[2] string = ""
+[3] string = "_extracted"
 [4] int64 = 1
-[5] string = "="
-[6] string = " "
-[7] string = "\""
-[8] string = "Array(Tuple(String,String))"
+[5] int64 = 1
+[6] string = "="
+[7] string = " "
+[8] string = "\""
 [9] string = "Array(Tuple(String,String))"
-[10] string = "Map(String,String)"
-[11] string = "status"
-[12] string = "status"
-[13] bool = false
-[14] string = "_extracted"
-[15] int64 = 1
-[16] int64 = 1
-[17] string = "="
-[18] string = " "
-[19] string = "\""
-[20] string = "Array(Tuple(String,String))"
-[21] string = "Array(Tuple(String,String))"
-[22] string = "Map(String,String)"
+[10] string = "Array(Tuple(String,String))"
+[11] string = "Map(String,String)"
+[12] string = "__error__"
+[13] string = "status"
+[14] string = "status"
+[15] string = "status"
+[16] string = "status"
+[17] string = "status"
+[18] string = "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$"
+[19] string = "__error__"
+[20] string = "LabelFilterErr"
+[21] string = "__error_details__"
+[22] string = "strconv.ParseFloat: parsing \""
 [23] string = "status"
-[24] string = "_extracted"
-[25] int64 = 1
-[26] int64 = 1
-[27] string = "="
-[28] string = " "
-[29] string = "\""
-[30] string = "Array(Tuple(String,String))"
-[31] string = "Array(Tuple(String,String))"
-[32] string = "Map(String,String)"
-[33] string = "status"
-[34] string = "status"
-[35] string = "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$"
-[36] bool = true
-[37] string = "_extracted"
-[38] int64 = 1
-[39] int64 = 1
-[40] string = "="
-[41] string = " "
-[42] string = "\""
-[43] string = "Array(Tuple(String,String))"
-[44] string = "Array(Tuple(String,String))"
-[45] string = "Map(String,String)"
-[46] string = "status"
-[47] string = "_extracted"
-[48] int64 = 1
-[49] int64 = 1
-[50] string = "="
-[51] string = " "
-[52] string = "\""
-[53] string = "Array(Tuple(String,String))"
-[54] string = "Array(Tuple(String,String))"
-[55] string = "Map(String,String)"
-[56] string = "status"
-[57] string = "status"
-[58] float64 = 400
-[59] string = "_extracted"
-[60] int64 = 1
-[61] int64 = 1
-[62] string = "="
-[63] string = " "
-[64] string = "\""
-[65] string = "Array(Tuple(String,String))"
-[66] string = "Array(Tuple(String,String))"
-[67] string = "Map(String,String)"
-[68] string = "_extracted"
-[69] int64 = 1
-[70] int64 = 1
-[71] string = "="
-[72] string = " "
-[73] string = "\""
-[74] string = "Array(Tuple(String,String))"
-[75] string = "Array(Tuple(String,String))"
-[76] string = "Map(String,String)"
-[77] string = "__error__"
-[78] string = "_extracted"
-[79] int64 = 1
-[80] int64 = 1
-[81] string = "="
-[82] string = " "
-[83] string = "\""
-[84] string = "Array(Tuple(String,String))"
-[85] string = "Array(Tuple(String,String))"
-[86] string = "Map(String,String)"
+[24] string = "status"
+[25] string = "status"
+[26] string = "\": invalid syntax"
+[27] string = "detected_level"
+[28] string = ""
+[29] string = "detected_level"
+[30] string = "level"
+[31] string = ""
+[32] string = "level"
+[33] string = "log.level"
+[34] string = ""
+[35] string = "log.level"
+[36] string = "severity"
+[37] string = ""
+[38] string = "severity"
+[39] string = "severity_text"
+[40] string = ""
+[41] string = "severity_text"
+[42] string = ""
+[43] int64 = 0
+[44] string = ""
+[45] int64 = 4
+[46] string = "trace"
+[47] int64 = 8
+[48] string = "debug"
+[49] int64 = 12
+[50] string = "info"
+[51] int64 = 16
+[52] string = "warn"
+[53] int64 = 20
+[54] string = "error"
+[55] int64 = 24
+[56] string = "fatal"
+[57] string = ""
+[58] string = ""
+[59] string = "unknown"
+[60] string = "trace"
+[61] string = "trc"
+[62] string = "trace"
+[63] string = "debug"
+[64] string = "dbg"
+[65] string = "debug"
+[66] string = "info"
+[67] string = "inf"
+[68] string = "information"
+[69] string = "info"
+[70] string = "warn"
+[71] string = "wrn"
+[72] string = "warning"
+[73] string = "warn"
+[74] string = "error"
+[75] string = "err"
+[76] string = "error"
+[77] string = "critical"
+[78] string = "critical"
+[79] string = "fatal"
+[80] string = "fatal"
+[81] string = "job"
+[82] string = "api"
+[83] string = "status"
+[84] string = "status"
+[85] bool = false
+[86] string = "status"
 [87] string = "status"
 [88] string = "status"
-[89] string = "_extracted"
-[90] int64 = 1
-[91] int64 = 1
-[92] string = "="
-[93] string = " "
-[94] string = "\""
-[95] string = "Array(Tuple(String,String))"
-[96] string = "Array(Tuple(String,String))"
-[97] string = "Map(String,String)"
-[98] string = "status"
-[99] string = "_extracted"
-[100] int64 = 1
-[101] int64 = 1
-[102] string = "="
-[103] string = " "
-[104] string = "\""
-[105] string = "Array(Tuple(String,String))"
-[106] string = "Array(Tuple(String,String))"
-[107] string = "Map(String,String)"
-[108] string = "status"
-[109] string = "status"
-[110] string = "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$"
-[111] string = "__error__"
-[112] string = "LabelFilterErr"
-[113] string = "__error_details__"
-[114] string = "strconv.ParseFloat: parsing \""
-[115] string = "_extracted"
-[116] int64 = 1
-[117] int64 = 1
-[118] string = "="
-[119] string = " "
-[120] string = "\""
-[121] string = "Array(Tuple(String,String))"
-[122] string = "Array(Tuple(String,String))"
-[123] string = "Map(String,String)"
-[124] string = "status"
-[125] string = "_extracted"
-[126] int64 = 1
-[127] int64 = 1
-[128] string = "="
-[129] string = " "
-[130] string = "\""
-[131] string = "Array(Tuple(String,String))"
-[132] string = "Array(Tuple(String,String))"
-[133] string = "Map(String,String)"
-[134] string = "status"
-[135] string = "status"
-[136] string = "\": invalid syntax"
-[137] string = "__error__"
-[138] string = "_extracted"
-[139] int64 = 1
-[140] int64 = 1
-[141] string = "="
-[142] string = " "
-[143] string = "\""
-[144] string = "Array(Tuple(String,String))"
-[145] string = "Array(Tuple(String,String))"
-[146] string = "Map(String,String)"
-[147] string = "_extracted"
-[148] int64 = 1
-[149] int64 = 1
-[150] string = "="
-[151] string = " "
-[152] string = "\""
-[153] string = "Array(Tuple(String,String))"
-[154] string = "Array(Tuple(String,String))"
-[155] string = "Map(String,String)"
-[156] string = "__error__"
-[157] string = "_extracted"
-[158] int64 = 1
-[159] int64 = 1
-[160] string = "="
-[161] string = " "
-[162] string = "\""
-[163] string = "Array(Tuple(String,String))"
-[164] string = "Array(Tuple(String,String))"
-[165] string = "Map(String,String)"
-[166] string = "status"
-[167] string = "status"
-[168] string = "_extracted"
-[169] int64 = 1
-[170] int64 = 1
-[171] string = "="
-[172] string = " "
-[173] string = "\""
-[174] string = "Array(Tuple(String,String))"
-[175] string = "Array(Tuple(String,String))"
-[176] string = "Map(String,String)"
-[177] string = "status"
-[178] string = "_extracted"
-[179] int64 = 1
-[180] int64 = 1
-[181] string = "="
-[182] string = " "
-[183] string = "\""
-[184] string = "Array(Tuple(String,String))"
-[185] string = "Array(Tuple(String,String))"
-[186] string = "Map(String,String)"
-[187] string = "status"
-[188] string = "status"
-[189] string = "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$"
-[190] string = "__error__"
-[191] string = "LabelFilterErr"
-[192] string = "__error_details__"
-[193] string = "strconv.ParseFloat: parsing \""
-[194] string = "_extracted"
-[195] int64 = 1
-[196] int64 = 1
-[197] string = "="
-[198] string = " "
-[199] string = "\""
-[200] string = "Array(Tuple(String,String))"
-[201] string = "Array(Tuple(String,String))"
-[202] string = "Map(String,String)"
-[203] string = "status"
-[204] string = "_extracted"
-[205] int64 = 1
-[206] int64 = 1
-[207] string = "="
-[208] string = " "
-[209] string = "\""
-[210] string = "Array(Tuple(String,String))"
-[211] string = "Array(Tuple(String,String))"
-[212] string = "Map(String,String)"
-[213] string = "status"
-[214] string = "status"
-[215] string = "\": invalid syntax"
-[216] string = "__error__"
-[217] string = "__error__"
-[218] string = ""
+[89] string = "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$"
+[90] bool = true
+[91] string = "status"
+[92] string = "status"
+[93] string = "status"
+[94] float64 = 400
+[95] string = "__error__"
+[96] string = "__error__"
+[97] string = "__error__"
+[98] string = ""
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
-log_comment=cerb:filter
+log_comment=cerb:project
 max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND multiIf(not((mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?) OR mapContains(`LogAttributes`, ?))), ?, not(match(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], `LogAttributes`[?]), ?)), ?, (toFloat64OrZero(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], `LogAttributes`[?])) > toFloat64(?))) AND (if(mapContains(mapConcat(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), if((not(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?)) AND ((mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?) OR mapContains(`LogAttributes`, ?)) AND not(match(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], `LogAttributes`[?]), ?)))), map(?, ?, ?, concat(?, if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], `LogAttributes`[?]), ?)), map())), ?), mapConcat(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), if((not(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?)) AND ((mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?) OR mapContains(`LogAttributes`, ?)) AND not(match(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], `LogAttributes`[?]), ?)))), map(?, ?, ?, concat(?, if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], `LogAttributes`[?]), ?)), map()))[?], `LogAttributes`[?]) = ?)
+SELECT `Body` AS `Line`, mapConcat(`_logql_labels_1`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`))) AS `Attributes`, `Timestamp` AS `TimeUnix`, toJSONString(mapFilter((k, v) -> (v != ?), `LogAttributes`)) AS `Metadata` FROM (SELECT `Body`, `LogAttributes`, `Timestamp`, mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))) AS `_logql_labels_0`, mapConcat(`_logql_labels_0`, if((not(mapContains(`_logql_labels_0`, ?)) AND ((mapContains(`_logql_labels_0`, ?) OR mapContains(`LogAttributes`, ?)) AND not(match(if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?]), ?)))), map(?, ?, ?, concat(?, if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?]), ?)), map())) AS `_logql_labels_1`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level` FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND multiIf(not((mapContains(`_logql_labels_0`, ?) OR mapContains(`LogAttributes`, ?))), ?, not(match(if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?]), ?)), ?, (toFloat64OrZero(if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?])) > toFloat64(?))) AND (if(mapContains(`_logql_labels_1`, ?), `_logql_labels_1`[?], `LogAttributes`[?]) = ?))

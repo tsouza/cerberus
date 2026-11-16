@@ -1,0 +1,18 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/log_rows.go:lowerLogQuery#6e0c0981",
+      "message": "logql: log query is %T (not MatchersExpr or PipelineExpr)",
+      "class": "",
+      "evidence": {
+        "guard": [
+          "default of switch e := sel.(type) over [case *syntax.MatchersExpr; case *syntax.PipelineExpr; default]"
+        ],
+        "callers": [
+          "lower"
+        ]
+      }
+    }
+  ]
+}

@@ -1,38 +1,83 @@
 -- query.logql --
 {job="api"} | logfmt level="severity" | level="error"
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)[?])), ?), mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)[?]))[?], `LogAttributes`[?]) = ?)
+SELECT `Body` AS `Line`, mapConcat(`_logql_labels_0`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`))) AS `Attributes`, `Timestamp` AS `TimeUnix`, toJSONString(mapFilter((k, v) -> (v != ?), `LogAttributes`)) AS `Metadata` FROM (SELECT `Body`, `LogAttributes`, `Timestamp`, mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)[?])) AS `_logql_labels_0`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level` FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?]) = ?))
 -- args --
-[0] string = "job"
-[1] string = "api"
-[2] string = "level"
-[3] string = "level_extracted"
-[4] string = "level"
-[5] int64 = 1
+[0] string = ""
+[1] string = "detected_level"
+[2] string = ""
+[3] string = "level"
+[4] string = "level_extracted"
+[5] string = "level"
 [6] int64 = 1
-[7] string = "="
-[8] string = " "
-[9] string = "\""
-[10] string = "Array(Tuple(String,String))"
+[7] int64 = 1
+[8] string = "="
+[9] string = " "
+[10] string = "\""
 [11] string = "Array(Tuple(String,String))"
-[12] string = "Map(String,String)"
-[13] string = "severity"
-[14] string = "level"
-[15] string = "level"
-[16] string = "level_extracted"
-[17] string = "level"
-[18] int64 = 1
-[19] int64 = 1
-[20] string = "="
-[21] string = " "
-[22] string = "\""
-[23] string = "Array(Tuple(String,String))"
-[24] string = "Array(Tuple(String,String))"
-[25] string = "Map(String,String)"
+[12] string = "Array(Tuple(String,String))"
+[13] string = "Map(String,String)"
+[14] string = "severity"
+[15] string = "detected_level"
+[16] string = ""
+[17] string = "detected_level"
+[18] string = "level"
+[19] string = ""
+[20] string = "level"
+[21] string = "log.level"
+[22] string = ""
+[23] string = "log.level"
+[24] string = "severity"
+[25] string = ""
 [26] string = "severity"
-[27] string = "level"
-[28] string = "level"
-[29] string = "error"
+[27] string = "severity_text"
+[28] string = ""
+[29] string = "severity_text"
+[30] string = ""
+[31] int64 = 0
+[32] string = ""
+[33] int64 = 4
+[34] string = "trace"
+[35] int64 = 8
+[36] string = "debug"
+[37] int64 = 12
+[38] string = "info"
+[39] int64 = 16
+[40] string = "warn"
+[41] int64 = 20
+[42] string = "error"
+[43] int64 = 24
+[44] string = "fatal"
+[45] string = ""
+[46] string = ""
+[47] string = "unknown"
+[48] string = "trace"
+[49] string = "trc"
+[50] string = "trace"
+[51] string = "debug"
+[52] string = "dbg"
+[53] string = "debug"
+[54] string = "info"
+[55] string = "inf"
+[56] string = "information"
+[57] string = "info"
+[58] string = "warn"
+[59] string = "wrn"
+[60] string = "warning"
+[61] string = "warn"
+[62] string = "error"
+[63] string = "err"
+[64] string = "error"
+[65] string = "critical"
+[66] string = "critical"
+[67] string = "fatal"
+[68] string = "fatal"
+[69] string = "job"
+[70] string = "api"
+[71] string = "level"
+[72] string = "level"
+[73] string = "level"
+[74] string = "error"
 -- seed --
 CREATE TABLE otel_logs (
     LogAttributes Map(String, String) MATERIALIZED map(),
@@ -48,52 +93,102 @@ INSERT INTO otel_logs (Body) VALUES
     ('ts=2025-01-01 severity=error msg="retry"');
 -- expected_rows --
 [
-  ["ts=2025-01-01 severity=error msg=\"oops\""],
-  ["ts=2025-01-01 severity=error msg=\"retry\""]
+  ["ts=2025-01-01 severity=error msg=\"oops\"", {"detected_level": "unknown", "job": "api", "level": "error"}, "1970-01-01T00:00:00Z", {}],
+  ["ts=2025-01-01 severity=error msg=\"retry\"", {"detected_level": "unknown", "job": "api", "level": "error"}, "1970-01-01T00:00:00Z", {}]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND (FnIf(FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMap(FnIf(FnMapContainsKey(ResourceAttributes, "level"), "level_extracted", "level"), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)")["severity"])), "level"), FnMapMerge(ResourceAttributes, FnMap(FnIf(FnMapContainsKey(ResourceAttributes, "level"), "level_extracted", "level"), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)")["severity"]))["level"], LogAttributes["level"]) = "error"))
-  Scan(otel_logs)
+Project [Body AS Line, FnMapMerge(_logql_labels_0, FnMapFilter((k, v) -> (v != ""), FnMap("detected_level", _logql_detected_level))) AS Attributes, Timestamp AS TimeUnix, FnToJSONString(FnMapFilter((k, v) -> (v != ""), LogAttributes)) AS Metadata] oneScopeRows
+  Project [Body, LogAttributes, Timestamp, _logql_labels_0, FnMultiIf((FnLower(_logql_level_source) = ""), "unknown", ((FnLower(_logql_level_source) = "trace") OR (FnLower(_logql_level_source) = "trc")), "trace", ((FnLower(_logql_level_source) = "debug") OR (FnLower(_logql_level_source) = "dbg")), "debug", (((FnLower(_logql_level_source) = "info") OR (FnLower(_logql_level_source) = "inf")) OR (FnLower(_logql_level_source) = "information")), "info", (((FnLower(_logql_level_source) = "warn") OR (FnLower(_logql_level_source) = "wrn")) OR (FnLower(_logql_level_source) = "warning")), "warn", ((FnLower(_logql_level_source) = "error") OR (FnLower(_logql_level_source) = "err")), "error", (FnLower(_logql_level_source) = "critical"), "critical", (FnLower(_logql_level_source) = "fatal"), "fatal", _logql_level_source) AS _logql_detected_level]
+    Project [Body, LogAttributes, Timestamp, _logql_labels_0, FnMultiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], FnMultiIf((SeverityText != ""), SeverityText, FnMultiIf((SeverityNumber <= 0), "", (SeverityNumber <= 4), "trace", (SeverityNumber <= 8), "debug", (SeverityNumber <= 12), "info", (SeverityNumber <= 16), "warn", (SeverityNumber <= 20), "error", (SeverityNumber <= 24), "fatal", ""))) AS _logql_level_source]
+      Filter predicate=(FnIf(FnMapContainsKey(_logql_labels_0, "level"), _logql_labels_0["level"], LogAttributes["level"]) = "error")
+        Project [Body, LogAttributes, SeverityNumber, SeverityText, Timestamp, FnMapMerge(ResourceAttributes, FnMap(FnIf(FnMapContainsKey(ResourceAttributes, "level"), "level_extracted", "level"), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)")["severity"])) AS _logql_labels_0]
+          Filter predicate=(ResourceAttributes["job"] = "api")
+            Scan(otel_logs)
 -- parity_exempt --
 reason: log-query-answer
 detail: log query `{job="api"} | logfmt level="severity" | level="error"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
-[0] string = "job"
-[1] string = "api"
-[2] string = "level"
-[3] string = "level_extracted"
-[4] string = "level"
-[5] int64 = 1
+[0] string = ""
+[1] string = "detected_level"
+[2] string = ""
+[3] string = "level"
+[4] string = "level_extracted"
+[5] string = "level"
 [6] int64 = 1
-[7] string = "="
-[8] string = " "
-[9] string = "\""
-[10] string = "Array(Tuple(String,String))"
+[7] int64 = 1
+[8] string = "="
+[9] string = " "
+[10] string = "\""
 [11] string = "Array(Tuple(String,String))"
-[12] string = "Map(String,String)"
-[13] string = "severity"
-[14] string = "level"
-[15] string = "level"
-[16] string = "level_extracted"
-[17] string = "level"
-[18] int64 = 1
-[19] int64 = 1
-[20] string = "="
-[21] string = " "
-[22] string = "\""
-[23] string = "Array(Tuple(String,String))"
-[24] string = "Array(Tuple(String,String))"
-[25] string = "Map(String,String)"
+[12] string = "Array(Tuple(String,String))"
+[13] string = "Map(String,String)"
+[14] string = "severity"
+[15] string = "detected_level"
+[16] string = ""
+[17] string = "detected_level"
+[18] string = "level"
+[19] string = ""
+[20] string = "level"
+[21] string = "log.level"
+[22] string = ""
+[23] string = "log.level"
+[24] string = "severity"
+[25] string = ""
 [26] string = "severity"
-[27] string = "level"
-[28] string = "level"
-[29] string = "error"
+[27] string = "severity_text"
+[28] string = ""
+[29] string = "severity_text"
+[30] string = ""
+[31] int64 = 0
+[32] string = ""
+[33] int64 = 4
+[34] string = "trace"
+[35] int64 = 8
+[36] string = "debug"
+[37] int64 = 12
+[38] string = "info"
+[39] int64 = 16
+[40] string = "warn"
+[41] int64 = 20
+[42] string = "error"
+[43] int64 = 24
+[44] string = "fatal"
+[45] string = ""
+[46] string = ""
+[47] string = "unknown"
+[48] string = "trace"
+[49] string = "trc"
+[50] string = "trace"
+[51] string = "debug"
+[52] string = "dbg"
+[53] string = "debug"
+[54] string = "info"
+[55] string = "inf"
+[56] string = "information"
+[57] string = "info"
+[58] string = "warn"
+[59] string = "wrn"
+[60] string = "warning"
+[61] string = "warn"
+[62] string = "error"
+[63] string = "err"
+[64] string = "error"
+[65] string = "critical"
+[66] string = "critical"
+[67] string = "fatal"
+[68] string = "fatal"
+[69] string = "job"
+[70] string = "api"
+[71] string = "level"
+[72] string = "level"
+[73] string = "level"
+[74] string = "error"
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
-log_comment=cerb:filter
+log_comment=cerb:project
 max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)[?])), ?), mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)[?]))[?], `LogAttributes`[?]) = ?)
+SELECT `Body` AS `Line`, mapConcat(`_logql_labels_0`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`))) AS `Attributes`, `Timestamp` AS `TimeUnix`, toJSONString(mapFilter((k, v) -> (v != ?), `LogAttributes`)) AS `Metadata` FROM (SELECT `Body`, `LogAttributes`, `Timestamp`, mapConcat(`ResourceAttributes`, map(if(mapContains(`ResourceAttributes`, ?), ?, ?), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)[?])) AS `_logql_labels_0`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level` FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?]) = ?))

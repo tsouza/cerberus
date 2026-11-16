@@ -43,40 +43,157 @@ INSERT INTO otel_logs (Timestamp, Body) VALUES
     (toDateTime64('2026-05-20 12:03:00.000000000', 9), 'other-row');
 -- expected_rows --
 [
-  ["2026-05-20T12:00:00Z", "self-row"],
-  ["2026-05-20T12:01:00Z", "seed-underscored"],
-  ["2026-05-20T12:02:00Z", "seed-dotted"]
+  ["seed-dotted", {"detected_level": "unknown", "service.name": "cerberus"}, "2026-05-20T12:02:00Z", {}],
+  ["seed-underscored", {"detected_level": "unknown", "service_name": "cerberus"}, "2026-05-20T12:01:00Z", {}],
+  ["self-row", {"detected_level": "unknown"}, "2026-05-20T12:00:00Z", {}]
 ]
 -- args --
 [0] string = ""
-[1] string = "service_name"
-[2] string = "service_name"
-[3] string = "service.name"
-[4] string = "service.name"
-[5] string = "service/name"
-[6] string = "cerberus"
+[1] string = "detected_level"
+[2] string = ""
+[3] string = ""
+[4] string = "unknown"
+[5] string = "trace"
+[6] string = "trc"
+[7] string = "trace"
+[8] string = "debug"
+[9] string = "dbg"
+[10] string = "debug"
+[11] string = "info"
+[12] string = "inf"
+[13] string = "information"
+[14] string = "info"
+[15] string = "warn"
+[16] string = "wrn"
+[17] string = "warning"
+[18] string = "warn"
+[19] string = "error"
+[20] string = "err"
+[21] string = "error"
+[22] string = "critical"
+[23] string = "critical"
+[24] string = "fatal"
+[25] string = "fatal"
+[26] string = "detected_level"
+[27] string = ""
+[28] string = "detected_level"
+[29] string = "level"
+[30] string = ""
+[31] string = "level"
+[32] string = "log.level"
+[33] string = ""
+[34] string = "log.level"
+[35] string = "severity"
+[36] string = ""
+[37] string = "severity"
+[38] string = "severity_text"
+[39] string = ""
+[40] string = "severity_text"
+[41] string = ""
+[42] int64 = 0
+[43] string = ""
+[44] int64 = 4
+[45] string = "trace"
+[46] int64 = 8
+[47] string = "debug"
+[48] int64 = 12
+[49] string = "info"
+[50] int64 = 16
+[51] string = "warn"
+[52] int64 = 20
+[53] string = "error"
+[54] int64 = 24
+[55] string = "fatal"
+[56] string = ""
+[57] string = ""
+[58] string = "service_name"
+[59] string = "service_name"
+[60] string = "service.name"
+[61] string = "service.name"
+[62] string = "service/name"
+[63] string = "cerberus"
 -- chplan --
-Filter predicate=(FnCoalesce(FnNullIf(ServiceName, ""), FnIf(FnMapContainsKey(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], FnIf(FnMapContainsKey(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "cerberus")
-  Scan(otel_logs)
+Project [Body AS Line, FnMapMerge(ResourceAttributes, FnMapFilter((k, v) -> (v != ""), FnMap("detected_level", _logql_detected_level))) AS Attributes, Timestamp AS TimeUnix, FnToJSONString(FnMapFilter((k, v) -> (v != ""), LogAttributes)) AS Metadata] oneScopeRows
+  Project [Body, LogAttributes, ResourceAttributes, Timestamp, FnMultiIf((FnLower(_logql_level_source) = ""), "unknown", ((FnLower(_logql_level_source) = "trace") OR (FnLower(_logql_level_source) = "trc")), "trace", ((FnLower(_logql_level_source) = "debug") OR (FnLower(_logql_level_source) = "dbg")), "debug", (((FnLower(_logql_level_source) = "info") OR (FnLower(_logql_level_source) = "inf")) OR (FnLower(_logql_level_source) = "information")), "info", (((FnLower(_logql_level_source) = "warn") OR (FnLower(_logql_level_source) = "wrn")) OR (FnLower(_logql_level_source) = "warning")), "warn", ((FnLower(_logql_level_source) = "error") OR (FnLower(_logql_level_source) = "err")), "error", (FnLower(_logql_level_source) = "critical"), "critical", (FnLower(_logql_level_source) = "fatal"), "fatal", _logql_level_source) AS _logql_detected_level]
+    Project [Body, LogAttributes, ResourceAttributes, Timestamp, FnMultiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], FnMultiIf((SeverityText != ""), SeverityText, FnMultiIf((SeverityNumber <= 0), "", (SeverityNumber <= 4), "trace", (SeverityNumber <= 8), "debug", (SeverityNumber <= 12), "info", (SeverityNumber <= 16), "warn", (SeverityNumber <= 20), "error", (SeverityNumber <= 24), "fatal", ""))) AS _logql_level_source]
+      Filter predicate=(FnCoalesce(FnNullIf(ServiceName, ""), FnIf(FnMapContainsKey(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], FnIf(FnMapContainsKey(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "cerberus")
+        Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?)
+SELECT `Body` AS `Line`, mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`))) AS `Attributes`, `Timestamp` AS `TimeUnix`, toJSONString(mapFilter((k, v) -> (v != ?), `LogAttributes`)) AS `Metadata` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `Timestamp`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `Timestamp`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source` FROM (SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?))))
 -- parity_exempt --
 reason: log-query-answer
 detail: log query `{service_name="cerberus"}` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
 [0] string = ""
-[1] string = "service_name"
-[2] string = "service_name"
-[3] string = "service.name"
-[4] string = "service.name"
-[5] string = "service/name"
-[6] string = "cerberus"
+[1] string = "detected_level"
+[2] string = ""
+[3] string = ""
+[4] string = "unknown"
+[5] string = "trace"
+[6] string = "trc"
+[7] string = "trace"
+[8] string = "debug"
+[9] string = "dbg"
+[10] string = "debug"
+[11] string = "info"
+[12] string = "inf"
+[13] string = "information"
+[14] string = "info"
+[15] string = "warn"
+[16] string = "wrn"
+[17] string = "warning"
+[18] string = "warn"
+[19] string = "error"
+[20] string = "err"
+[21] string = "error"
+[22] string = "critical"
+[23] string = "critical"
+[24] string = "fatal"
+[25] string = "fatal"
+[26] string = "detected_level"
+[27] string = ""
+[28] string = "detected_level"
+[29] string = "level"
+[30] string = ""
+[31] string = "level"
+[32] string = "log.level"
+[33] string = ""
+[34] string = "log.level"
+[35] string = "severity"
+[36] string = ""
+[37] string = "severity"
+[38] string = "severity_text"
+[39] string = ""
+[40] string = "severity_text"
+[41] string = ""
+[42] int64 = 0
+[43] string = ""
+[44] int64 = 4
+[45] string = "trace"
+[46] int64 = 8
+[47] string = "debug"
+[48] int64 = 12
+[49] string = "info"
+[50] int64 = 16
+[51] string = "warn"
+[52] int64 = 20
+[53] string = "error"
+[54] int64 = 24
+[55] string = "fatal"
+[56] string = ""
+[57] string = ""
+[58] string = "service_name"
+[59] string = "service_name"
+[60] string = "service.name"
+[61] string = "service.name"
+[62] string = "service/name"
+[63] string = "cerberus"
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
-log_comment=cerb:filter
+log_comment=cerb:project
 max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?)
+SELECT `Body` AS `Line`, mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`))) AS `Attributes`, `Timestamp` AS `TimeUnix`, toJSONString(mapFilter((k, v) -> (v != ?), `LogAttributes`)) AS `Metadata` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `Timestamp`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `Timestamp`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `ServiceName`, `SeverityNumber`, `SeverityText`, `Timestamp` FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?))))

@@ -1,0 +1,17 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/lang.go:ProjectSamples#5982b4f6",
+      "message": "logql: log query plan is %T, not the log-row projection the lowering builds",
+      "class": "",
+      "evidence": {
+        "guard": [
+          "past returning if meta.IsMetric",
+          "if !isLogRowProjection(plan)"
+        ],
+        "callers": null
+      }
+    }
+  ]
+}
