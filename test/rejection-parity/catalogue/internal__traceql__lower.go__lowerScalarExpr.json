@@ -14,11 +14,10 @@
           "lowerSimpleScalarFilter"
         ],
         "cited": [
-          "isBareAggregate",
-          "isBareStatic",
+          "Parse",
           "lowerScalarExpr",
-          "lowerScalarFilter",
-          "lowerSimpleScalarFilter"
+          "lowerSimpleScalarFilter",
+          "validateScalarFilterStage"
         ]
       }
     }

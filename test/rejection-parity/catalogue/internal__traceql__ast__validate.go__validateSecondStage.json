@@ -6,7 +6,17 @@
       "message": "limit must be greater than 0",
       "class": "rejection",
       "trigger_query": "{ } | rate() by (span.name) | topk(0)",
-      "endpoint": "traceql_metrics"
+      "endpoint": "traceql_metrics",
+      "evidence": {
+        "guard": [
+          "case *TopKBottomK of switch s := ss.(type)",
+          "if s.Limit() \u003c= 0"
+        ],
+        "callers": [
+          "validate",
+          "validateSecondStage"
+        ]
+      }
     }
   ]
 }

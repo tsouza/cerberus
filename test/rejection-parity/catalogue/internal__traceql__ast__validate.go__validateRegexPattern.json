@@ -5,14 +5,34 @@
       "site": "internal/traceql/ast/validate.go:validateRegexPattern#29b284c3",
       "message": "invalid type for %s or %s: %s",
       "class": "rejection",
-      "trigger_query": "{ span.a =~ span.b }"
+      "trigger_query": "{ span.a =~ span.b }",
+      "evidence": {
+        "guard": [
+          "past returning if o.Op != OpRegex \u0026\u0026 o.Op != OpNotRegex",
+          "if !ok"
+        ],
+        "callers": [
+          "validateFieldExpr"
+        ]
+      }
     },
     {
       "head": "traceql",
       "site": "internal/traceql/ast/validate.go:validateRegexPattern#900aa0b9",
       "message": "invalid regex: %s",
       "class": "rejection",
-      "trigger_query": "{ span.x =~ \"[\" }"
+      "trigger_query": "{ span.x =~ \"[\" }",
+      "evidence": {
+        "guard": [
+          "past returning if o.Op != OpRegex \u0026\u0026 o.Op != OpNotRegex",
+          "past returning if !ok",
+          "past returning if static.Type != TypeString",
+          "if _, err := regexp.Compile(static.EncodeToString(false)); err != nil"
+        ],
+        "callers": [
+          "validateFieldExpr"
+        ]
+      }
     }
   ]
 }

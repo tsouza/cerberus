@@ -17,9 +17,9 @@
           "lowerScalarFilter"
         ],
         "cited": [
-          "isBareStatic",
+          "Parse",
           "lowerScalarExpr",
-          "lowerScalarFilter"
+          "validateScalarFilterStage"
         ]
       }
     },
@@ -39,9 +39,9 @@
           "lowerScalarFilter"
         ],
         "cited": [
-          "isBareAggregate",
+          "Parse",
           "lowerScalarExpr",
-          "lowerScalarFilter"
+          "validateScalarFilterStage"
         ]
       }
     }

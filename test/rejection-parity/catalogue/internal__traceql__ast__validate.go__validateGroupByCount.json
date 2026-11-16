@@ -6,7 +6,16 @@
       "message": "metrics group by %v values not yet supported",
       "class": "rejection",
       "trigger_query": "{ } | rate() by (span.a, span.b, span.c, span.d, span.e, span.f)",
-      "endpoint": "traceql_metrics"
+      "endpoint": "traceql_metrics",
+      "evidence": {
+        "guard": [
+          "if n \u003e limit"
+        ],
+        "callers": [
+          "validateFirstStage",
+          "validateMetricsAggregate"
+        ]
+      }
     }
   ]
 }

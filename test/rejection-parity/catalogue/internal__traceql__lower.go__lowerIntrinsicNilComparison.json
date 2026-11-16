@@ -31,7 +31,9 @@
           "lowerNilComparison"
         ],
         "cited": [
-          "lowerIntrinsicNilComparison"
+          "Parse",
+          "lowerIntrinsicNilComparison",
+          "validateNilComparison"
         ]
       }
     },

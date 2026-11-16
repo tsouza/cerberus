@@ -5,7 +5,18 @@
       "site": "internal/traceql/ast/validate.go:validateSpansetFilterResult#b5add9fd",
       "message": "span filter field expressions must resolve to a boolean: %s",
       "class": "rejection",
-      "trigger_query": "{ duration }"
+      "trigger_query": "{ duration }",
+      "evidence": {
+        "guard": [
+          "past returning if err := validateFieldExpr(expr); err != nil",
+          "if t != TypeAttribute \u0026\u0026 t != TypeBoolean"
+        ],
+        "callers": [
+          "validate",
+          "validatePipelineElement",
+          "validateSpansetExpr"
+        ]
+      }
     }
   ]
 }

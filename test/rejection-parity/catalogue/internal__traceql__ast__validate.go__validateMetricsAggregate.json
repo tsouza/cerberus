@@ -6,7 +6,17 @@
       "message": "quantile must be between 0 and 1: %v",
       "class": "rejection",
       "trigger_query": "{ } | quantile_over_time(duration, 1.5)",
-      "endpoint": "traceql_metrics"
+      "endpoint": "traceql_metrics",
+      "evidence": {
+        "guard": [
+          "past returning if err := validateGroupByCount(len(a.GroupBy()), limit); err != nil",
+          "past returning if a.Op() != MetricsAggregateQuantileOverTime",
+          "if q \u003c 0 || q \u003e 1"
+        ],
+        "callers": [
+          "validateFirstStage"
+        ]
+      }
     }
   ]
 }

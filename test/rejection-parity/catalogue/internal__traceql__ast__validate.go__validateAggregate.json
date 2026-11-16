@@ -5,14 +5,37 @@
       "site": "internal/traceql/ast/validate.go:validateAggregate#36d74e4f",
       "message": "aggregate field expressions must resolve to a number type: %s",
       "class": "rejection",
-      "trigger_query": "{ } | max(name) > \"a\""
+      "trigger_query": "{ } | max(name) \u003e \"a\"",
+      "evidence": {
+        "guard": [
+          "past returning if inner == nil",
+          "past returning if err := validateFieldExpr(inner); err != nil",
+          "if t != TypeAttribute \u0026\u0026 !t.isNumeric()"
+        ],
+        "callers": [
+          "validatePipelineElement",
+          "validateScalarExpr"
+        ]
+      }
     },
     {
       "head": "traceql",
       "site": "internal/traceql/ast/validate.go:validateAggregate#a05a763c",
       "message": "aggregate field expressions must reference the span: %s",
       "class": "rejection",
-      "trigger_query": "{ } | avg(1) > 2"
+      "trigger_query": "{ } | avg(1) \u003e 2",
+      "evidence": {
+        "guard": [
+          "past returning if inner == nil",
+          "past returning if err := validateFieldExpr(inner); err != nil",
+          "past returning if t != TypeAttribute \u0026\u0026 !t.isNumeric()",
+          "if !referencesSpan(inner)"
+        ],
+        "callers": [
+          "validatePipelineElement",
+          "validateScalarExpr"
+        ]
+      }
     }
   ]
 }
