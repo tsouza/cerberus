@@ -16,6 +16,7 @@ label_replace_backref_above_ch_ceiling.txtar
 label_replace_probed_shared_capture_name.txtar
 label_replace_shared_capture_name.txtar
 literal_scalar.txtar
+metric_json_label_filter_only.txtar
 pipeline_keep_on_aggregation.txtar
 range_agg_without_grouping_unwrap.txtar
 range_mode_sum_count_over_time.txtar

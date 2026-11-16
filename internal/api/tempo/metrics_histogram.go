@@ -98,10 +98,6 @@ type histogramBucket struct {
 // For the first bucket (no predecessor) the lower boundary is taken one octave
 // below max, matching the power-of-two spacing.
 func log2QuantileWithBucket(p float64, buckets []histogramBucket) (float64, int) {
-	if len(buckets) == 0 {
-		return 0, -1
-	}
-
 	total := 0
 	for _, b := range buckets {
 		total += b.Count
@@ -109,30 +105,32 @@ func log2QuantileWithBucket(p float64, buckets []histogramBucket) (float64, int)
 	if total == 0 {
 		return 0, -1
 	}
-
 	// Round up so low-sample-count quantiles still read at least one sample.
 	target := max(int(math.Ceil(p*float64(total))), 1)
 
-	// Walk buckets, consuming whole buckets until the next one would overshoot
-	// the target sample. `consumed` is the count strictly before `idx`.
-	idx := 0
-	consumed := 0
+	// The target sample sits in the first bucket whose running count
+	// reaches it: on that bucket's upper boundary when the running count
+	// equals it, inside the bucket otherwise. A target beyond every sample
+	// (p above 1) is placed past the last bucket's boundary.
+	below := 0
 	for i, b := range buckets {
-		idx = i
-		if consumed+b.Count > target {
-			break
-		}
-		consumed += b.Count
-		if consumed == target {
-			// Target lands exactly on this bucket's upper boundary; no
-			// interpolation needed.
+		through := below + b.Count
+		if through == target {
 			return b.Max, i
 		}
+		if through > target {
+			return log2Interpolate(buckets, i, float64(target-below)/float64(b.Count)), i
+		}
+		below = through
 	}
+	last := len(buckets) - 1
+	return log2Interpolate(buckets, last, float64(target-below)/float64(buckets[last].Count)), last
+}
 
-	frac := float64(target-consumed) / float64(buckets[idx].Count)
-
-	upper := math.Log2(buckets[idx].Max)
+// log2Interpolate places a sample frac of the way through bucket i, linearly
+// in log2 space between the bucket's lower and upper boundaries.
+func log2Interpolate(buckets []histogramBucket, i int, frac float64) float64 {
+	upper := math.Log2(buckets[i].Max)
 	// One octave below is the lower boundary whenever the predecessor
 	// carries none. That covers the first bucket, which has no predecessor
 	// at all, and equally a predecessor whose Max is not positive: log2 of
@@ -142,8 +140,8 @@ func log2QuantileWithBucket(p float64, buckets []histogramBucket) (float64, int)
 	// response — so the boundary convention has to be total, not merely
 	// correct on well-formed input.
 	lower := upper - 1
-	if idx > 0 && buckets[idx-1].Max > 0 {
-		lower = math.Log2(buckets[idx-1].Max)
+	if i > 0 && buckets[i-1].Max > 0 {
+		lower = math.Log2(buckets[i-1].Max)
 	}
-	return math.Pow(2, lower+(upper-lower)*frac), idx
+	return math.Pow(2, lower+(upper-lower)*frac)
 }

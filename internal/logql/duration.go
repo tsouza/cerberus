@@ -91,13 +91,32 @@ const (
 	errSampleExtractionKind = "SampleExtractionErr"
 )
 
+// defineFunc names a value a parse reads more than once and returns
+// the expression every read uses in its place. role is a short name for
+// the value within the parse. [inlineDefine] reads the value inline at
+// each use; a [rowLayers] stack defines it once per row as a column (see
+// [rowLayers.definer]).
+type defineFunc func(role string, expr chplan.Expr) chplan.Expr
+
+// inlineDefine is the [defineFunc] that defines nothing: every read
+// embeds the value's whole expression.
+func inlineDefine(_ string, expr chplan.Expr) chplan.Expr { return expr }
+
 // durationParse bundles the CH expressions that evaluate one
-// Go-duration-shaped label value. All fields reference `raw` (the label
-// access expression) — CH's common-subexpression handling collapses the
-// repeats at execution time.
+// Go-duration-shaped label value.
+//
+// The parse reads several of its intermediate values more than once:
+// the sign-stripped value, its (number, unit) components, the
+// overflow-replay fold, the validity predicate and the nanosecond total.
+// Each one goes through the [defineFunc] [newDurationParse] receives.
+// Defined inline, every read repeats the value's expression in the
+// statement text. ClickHouse evaluates an identical sub-expression once
+// per block, so the repeats cost no extra execution, but the server
+// parses and analyses every copy, and the copies multiply when one value
+// nests inside another. For a query that converts an unwrap source that
+// analysis outweighed the query's execution, so the unwrap stage defines
+// the values as columns of the row instead ([applyUnwrapRowSemantics]).
 type durationParse struct {
-	// raw is the label access expression the parse reads.
-	raw chplan.Expr
 	// valid is a UInt8 predicate: Go's time.ParseDuration would accept
 	// raw.
 	valid chplan.Expr
@@ -115,20 +134,28 @@ type durationParse struct {
 	details chplan.Expr
 }
 
-// newDurationParse builds the parse expressions for one label access.
-func newDurationParse(raw chplan.Expr) durationParse {
+// newDurationParse builds the parse expressions for one label access,
+// naming each intermediate value it reads more than once through define.
+func newDurationParse(raw chplan.Expr, define defineFunc) durationParse {
 	// stripped = raw minus one leading sign character — Go consumes a
 	// single optional [+-] before anything else.
-	stripped := &chplan.FuncCall{
+	stripped := define("stripped", &chplan.FuncCall{
 		Fn:   chplan.FnRegexReplaceAll,
 		Args: []chplan.Expr{raw, &chplan.LitString{V: `^[+-]`}, &chplan.LitString{V: ``}},
-	}
+	})
+	// components holds Go's (number, fraction, unit) triples, one array
+	// per capture group, read by both the overflow replay and the
+	// seconds sum.
+	components := define("components", &chplan.FuncCall{
+		Fn:   chplan.FnRegexExtractAllGroupsHorizontal,
+		Args: []chplan.Expr{stripped, &chplan.LitString{V: goDurationComponentRe}},
+	})
 	isZero := &chplan.Binary{Op: chplan.OpEq, Left: stripped, Right: &chplan.LitString{V: "0"}}
 	// A regex-shaped value is only valid when it also fits Go's int64
 	// nanosecond range — the regex alone accepts "123456789h", which Go
 	// rejects at overflow (cerberus issue #3686). The bare-zero special
 	// case never overflows, so isZero skips the overflow check.
-	valid := &chplan.Binary{
+	valid := define("valid", &chplan.Binary{
 		Op:   chplan.OpOr,
 		Left: isZero,
 		Right: &chplan.Binary{
@@ -137,9 +164,9 @@ func newDurationParse(raw chplan.Expr) durationParse {
 				Fn:   chplan.FnRegexMatch,
 				Args: []chplan.Expr{stripped, &chplan.LitString{V: goDurationValidRe}},
 			},
-			Right: notExpr(goDurationOverflows(raw, stripped)),
+			Right: notExpr(goDurationOverflows(raw, components, define)),
 		},
-	}
+	})
 
 	// seconds: a zero magnitude sits OUTSIDE the sign multiplier so "-0",
 	// "-0s" and "-0.1ns" yield +0.0 like Go, which negates an integer
@@ -154,15 +181,16 @@ func newDurationParse(raw chplan.Expr) durationParse {
 			&chplan.LitFloat{V: 1},
 		},
 	}
+	magnitude := define("magnitude", goDurationSeconds(components, define))
 	seconds := &chplan.FuncCall{
 		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
 			&chplan.Binary{
 				Op:    chplan.OpAnd,
 				Left:  valid,
-				Right: &chplan.Binary{Op: chplan.OpNe, Left: goDurationSeconds(stripped), Right: &chplan.LitFloat{V: 0}},
+				Right: &chplan.Binary{Op: chplan.OpNe, Left: magnitude, Right: &chplan.LitFloat{V: 0}},
 			},
-			&chplan.Binary{Op: chplan.OpMul, Left: sign, Right: goDurationSeconds(stripped)},
+			&chplan.Binary{Op: chplan.OpMul, Left: sign, Right: magnitude},
 			&chplan.LitFloat{V: 0},
 		},
 	}
@@ -209,7 +237,7 @@ func newDurationParse(raw chplan.Expr) durationParse {
 		},
 	}
 
-	return durationParse{raw: raw, valid: valid, seconds: seconds, details: details}
+	return durationParse{valid: valid, seconds: seconds, details: details}
 }
 
 // labelFilterMark is one potential `__error__` stamping event produced
@@ -426,11 +454,7 @@ func pow2_63() chplan.Expr {
 // so mirroring Go's explicit bound checks — each evaluated before the
 // value it guards could wrap — reproduces its overflow behaviour
 // bit-for-bit rather than merely approximating it.
-func goDurationOverflows(raw, stripped chplan.Expr) chplan.Expr {
-	groups := &chplan.FuncCall{
-		Fn:   chplan.FnRegexExtractAllGroupsHorizontal,
-		Args: []chplan.Expr{stripped, &chplan.LitString{V: goDurationComponentRe}},
-	}
+func goDurationOverflows(raw, groups chplan.Expr, define defineFunc) chplan.Expr {
 	group := func(n int64) chplan.Expr {
 		return &chplan.FuncCall{Fn: chplan.FnArrayElement, Args: []chplan.Expr{groups, &chplan.LitInt{V: n}}}
 	}
@@ -506,7 +530,7 @@ func goDurationOverflows(raw, stripped chplan.Expr) chplan.Expr {
 		&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{newOvf}},
 	}}
 
-	folded := &chplan.FuncCall{
+	folded := define("overflow_fold", &chplan.FuncCall{
 		Fn: chplan.FnArrayFold,
 		Args: []chplan.Expr{
 			&chplan.Lambda{Params: []string{accParam, digitIParam, digitFParam, digitUParam}, Body: step},
@@ -516,7 +540,7 @@ func goDurationOverflows(raw, stripped chplan.Expr) chplan.Expr {
 				&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{&chplan.LitInt{V: 0}}},
 			}},
 		},
-	}
+	})
 	foldedD := &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{folded, &chplan.LitInt{V: 1}}}
 	foldedOvf := &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{folded, &chplan.LitInt{V: 2}}}
 
@@ -537,11 +561,7 @@ func goDurationOverflows(raw, stripped chplan.Expr) chplan.Expr {
 	}
 }
 
-func goDurationSeconds(stripped chplan.Expr) chplan.Expr {
-	groups := &chplan.FuncCall{
-		Fn:   chplan.FnRegexExtractAllGroupsHorizontal,
-		Args: []chplan.Expr{stripped, &chplan.LitString{V: goDurationComponentRe}},
-	}
+func goDurationSeconds(groups chplan.Expr, define defineFunc) chplan.Expr {
 	group := func(n int64) chplan.Expr {
 		return &chplan.FuncCall{Fn: chplan.FnArrayElement, Args: []chplan.Expr{groups, &chplan.LitInt{V: n}}}
 	}
@@ -570,7 +590,7 @@ func goDurationSeconds(stripped chplan.Expr) chplan.Expr {
 			},
 		}},
 	}
-	nanos := &chplan.FuncCall{
+	nanos := define("nanos", &chplan.FuncCall{
 		Fn: chplan.FnArraySum,
 		Args: []chplan.Expr{&chplan.FuncCall{
 			Fn: chplan.FnArrayMap,
@@ -582,7 +602,7 @@ func goDurationSeconds(stripped chplan.Expr) chplan.Expr {
 				group(1), group(2), group(3),
 			},
 		}},
-	}
+	})
 
 	sec := &chplan.FuncCall{Fn: chplan.FnIntDiv, Args: []chplan.Expr{nanos, &chplan.LitInt{V: nanosPerSecond}}}
 	nsec := &chplan.Binary{

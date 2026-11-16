@@ -144,20 +144,18 @@ func attrLiteralOperands(fe FieldExpression, ops ...Operator) (Attribute, Static
 	if !ok || !operatorIn(bin.Op, ops) {
 		return Attribute{}, StaticNil, false
 	}
-	attr, ok := bin.LHS.(Attribute)
-	lit := bin.RHS
-	if !ok {
-		attr, ok = bin.RHS.(Attribute)
-		if !ok {
-			return Attribute{}, StaticNil, false
-		}
-		lit = bin.LHS
+	// The left operand is the attribute side whenever it is an attribute;
+	// otherwise the right one is tried.
+	attrSide, literalSide := bin.LHS, bin.RHS
+	if _, leftIsAttr := attrSide.(Attribute); !leftIsAttr {
+		attrSide, literalSide = literalSide, attrSide
 	}
-	val, ok := lit.(Static)
-	if !ok {
+	attr, isAttr := attrSide.(Attribute)
+	literal, isLiteral := literalSide.(Static)
+	if !isAttr || !isLiteral {
 		return Attribute{}, StaticNil, false
 	}
-	return attr, val, true
+	return attr, literal, true
 }
 
 func operatorIn(op Operator, ops []Operator) bool {

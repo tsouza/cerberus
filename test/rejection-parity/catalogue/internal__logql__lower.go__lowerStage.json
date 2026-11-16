@@ -11,7 +11,7 @@
           "default of switch st := stage.(type) over [case *syntax.LineFilterExpr; case *syntax.LabelFilterExpr; case *syntax.LineFmtExpr; case *syntax.DecolorizeExpr; case *syntax.LabelFmtExpr; case *syntax.LineParserExpr; case *syntax.LogfmtParserExpr; case *syntax.JSONExpressionParserExpr; case *syntax.LogfmtExpressionParserExpr; case *syntax.DropLabelsExpr; case *syntax.KeepLabelsExpr; default]"
         ],
         "callers": [
-          "lowerPipelineWithLabels"
+          "lowerPipelineStages"
         ]
       }
     },
@@ -27,7 +27,7 @@
           "past exhaustive switch st.Op over [case syntax.OpParserTypePattern; case syntax.OpParserTypeUnpack; case syntax.OpParserTypeJSON; case syntax.OpParserTypeRegexp]"
         ],
         "callers": [
-          "lowerPipelineWithLabels"
+          "lowerPipelineStages"
         ]
       }
     }
