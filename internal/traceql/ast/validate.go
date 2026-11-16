@@ -539,6 +539,12 @@ func referencesSpan(fe FieldExpression) bool {
 // parenthesised — then the operand types. Arithmetic on either side, a
 // literal on the left, or an aggregate on the right is rejected with the
 // reference's message for that side.
+//
+// The surface is exactly the reference's on purpose. Cerberus once lowered
+// arithmetic between aggregates and an aggregate on the right (#1708,
+// #1981) and withdrew both (#1984): as a drop-in Tempo replacement it gains
+// nothing from answering a query no Tempo client can send, and each extra
+// shape is a divergence to monitor.
 func validateScalarFilterStage(f ScalarFilter) error {
 	if err := validateScalarExpr(f.LHS); err != nil {
 		return err
@@ -557,20 +563,14 @@ func validateScalarFilterStage(f ScalarFilter) error {
 
 // isAggregateOperand reports whether a scalar operand is a single aggregate.
 func isAggregateOperand(e ScalarExpression) bool {
-	switch e.(type) {
-	case Aggregate, *Aggregate:
-		return true
-	}
-	return false
+	_, ok := e.(Aggregate)
+	return ok
 }
 
 // isStaticOperand reports whether a scalar operand is a single literal.
 func isStaticOperand(e ScalarExpression) bool {
-	switch e.(type) {
-	case Static, *Static:
-		return true
-	}
-	return false
+	_, ok := e.(Static)
+	return ok
 }
 
 // validateScalarOperation validates arithmetic between scalar operands

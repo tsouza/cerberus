@@ -355,9 +355,8 @@ func lowerScalarFilter(prev chplan.Node, sf traceql.ScalarFilter, s schema.Trace
 // lowerScalarFilter: LHS lowers to the lone chplan.Aggregate node and
 // RHS lowers to a chplan.Expr literal; the Filter compares the
 // Aggregate's aggValueAlias ("Value") column against that literal
-// directly, no intermediate Project. Kept as its own function so
-// lowerScalarFilter reads as validate-then-lower and so this shape's
-// plan — pinned by test/spec TXTAR goldens and
+// directly, no intermediate Project. Kept as its own function so this
+// shape's plan — pinned by test/spec TXTAR goldens and
 // TestLowerSpansetAggregate_PerTraceShape's `Filter.Input =
 // *chplan.Aggregate` type assertion — never moves.
 func lowerSimpleScalarFilter(prev chplan.Node, sf traceql.ScalarFilter, op chplan.BinaryOp, s schema.Traces) (chplan.Node, error) {
@@ -375,8 +374,8 @@ func lowerSimpleScalarFilter(prev chplan.Node, sf traceql.ScalarFilter, op chpla
 	// `count() > 0` shape, wrap aggNode with a Filter. Validation in
 	// ast.Parse admits only that shape, but a defensive type-assert stays
 	// here so a future AST shape it did not anticipate surfaces a
-	// structured error instead of a panic (see #324 / the pathological
-	// `{} | 0 > 0` regression pin).
+	// structured error instead of a panic (#324: `{} | 0 > 0` once reached
+	// an unchecked assertion here).
 	aggPlan, ok := aggNode.(chplan.Node)
 	if !ok {
 		return nil, fmt.Errorf("traceql: scalar-filter LHS must aggregate to a series (count() / sum(...) / avg(...) / min(...) / max(...)), got %T", aggNode)

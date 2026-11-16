@@ -12,7 +12,8 @@ import (
 	"github.com/tsouza/cerberus/internal/traceql"
 )
 
-// TestLowerScalarFilter_RejectsUnsupportedOperandShapes pins #1984: the
+// TestLowerScalarFilter_RejectsUnsupportedOperandShapes pins #1984, which
+// withdrew the wider operand surface #1708 / #1981 had lowered: the
 // scalar-filter operand surface cerberus accepts is exactly the surface
 // reference Tempo accepts — a single aggregate on the left, a literal on
 // the right. Every other shape is rejected by ast.Parse's validation, with

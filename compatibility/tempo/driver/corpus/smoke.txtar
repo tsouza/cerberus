@@ -1801,6 +1801,21 @@ search
 InvalidArgument
 
 -- name --
+scalar_filter_aggregate_rhs_rejected
+# The right-hand twin of scalar_filter_arithmetic_lhs_rejected: an
+# aggregate on the right is rejected at validation on both backends
+# ("invalid TraceQL query: scalar filter rhs of type (%v) not yet
+# supported"), a 400 on both. Carries the gRPC sibling for the same reason.
+-- query --
+{ } | count() > count()
+-- endpoint --
+search
+-- expect_status --
+400
+-- expect_grpc_code --
+InvalidArgument
+
+-- name --
 metrics_topk_zero_rejected
 # Both backends parse `topk(0)` and reject it at validation ("invalid
 # TraceQL query: limit must be greater than 0"), a 400 on both.
