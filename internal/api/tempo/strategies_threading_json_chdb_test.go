@@ -295,3 +295,59 @@ func TestJSONAttrs_StoreAfterServingReachesNextRequest_ChDB(t *testing.T) {
 		})
 	}
 }
+
+// TestJSONAttrs_UnionOfSpansets_ChDB pins a spanset union over JSON-typed
+// attributes. Each arm passes the attribute maps through a narrowing
+// projection as bare columns, and the UNION ALL above them needs both arms
+// to carry the stored column type.
+func TestJSONAttrs_UnionOfSpansets_ChDB(t *testing.T) {
+	srv := serve(t, newThreadingHandler(t, threadingJSONStrategies))
+	const union = `{ span.custom_tag = "checkout" } || { resource.service.name = "frontend" }`
+
+	body := getOK(t, srv.URL+"/api/search?"+url.Values{
+		"q":     {union},
+		"start": {fmt.Sprint(threadingStart.Unix())},
+		"end":   {fmt.Sprint(threadingEnd.Unix())},
+		"limit": {"20"},
+	}.Encode())
+	var sr tempo.SearchResponse
+	if err := json.Unmarshal([]byte(body), &sr); err != nil {
+		t.Fatalf("decode: %v\nbody: %s", err, body)
+	}
+	matched := map[string][]string{}
+	for _, tr := range sr.Traces {
+		for _, ss := range tr.SpanSets {
+			for _, sp := range ss.Spans {
+				matched[tr.TraceID] = append(matched[tr.TraceID], sp.SpanID)
+			}
+		}
+	}
+	for id := range matched {
+		slices.Sort(matched[id])
+	}
+	// r is the frontend root, c and s carry custom_tag=checkout.
+	want := map[string][]string{
+		"a0000000000000000000000000000001": {"1000000000000001", "1000000000000002"},
+		"b0000000000000000000000000000002": {"2000000000000001"},
+	}
+	if fmt.Sprint(matched) != fmt.Sprint(want) {
+		t.Errorf("matched spans per trace = %v, want %v", matched, want)
+	}
+
+	out := threadingMetrics(t, srv, union+` | count_over_time() by (resource.service.name)`)
+	totals := map[string]float64{}
+	for _, s := range out.Series {
+		var service string
+		for _, l := range s.Labels {
+			if l.Key == "resource.service.name" {
+				service = l.Value
+			}
+		}
+		for _, sample := range s.Samples {
+			totals[service] += sample.Value
+		}
+	}
+	if want := map[string]float64{"backend": 2, "frontend": 1}; fmt.Sprint(totals) != fmt.Sprint(want) {
+		t.Errorf("count_over_time by resource.service.name = %v, want %v", totals, want)
+	}
+}

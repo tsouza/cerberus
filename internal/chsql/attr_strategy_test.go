@@ -1,6 +1,8 @@
 package chsql_test
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -246,4 +248,34 @@ func TestAttrStrategy_JSONMapContainsKey(t *testing.T) {
 			t.Errorf("SQL = %q, want %q", sql, want)
 		}
 	})
+}
+
+// TestAttrStrategy_JSONPassThroughStaysRaw pins where a JSON-strategy
+// column is reconstructed as a Map when one Project passes it through to
+// another: the unaliased pass-through renders the stored column under its
+// own name, and only the aliased projection above it reconstructs the map.
+func TestAttrStrategy_JSONPassThroughStaysRaw(t *testing.T) {
+	t.Parallel()
+	inner := &chplan.Project{
+		Input:       &chplan.Scan{Table: "otel_logs"},
+		Projections: []chplan.Projection{{Expr: &chplan.ColumnRef{Name: "ResourceAttributes"}}},
+	}
+	outer := &chplan.Project{
+		Input:       inner,
+		Projections: []chplan.Projection{{Expr: &chplan.ColumnRef{Name: "ResourceAttributes"}, Alias: "Attributes"}},
+	}
+	ctx := chsql.WithSchemaStrategies(context.Background(), chsql.SchemaStrategies{
+		Attrs: chsql.AttrStrategies{"ResourceAttributes": chsql.AttrStrategyJSON},
+	})
+	sql, _, err := chsql.Emit(ctx, outer)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	const innerSQL = "FROM (SELECT `ResourceAttributes` FROM (SELECT * FROM `otel_logs`))"
+	if !strings.HasSuffix(sql, innerSQL) {
+		t.Fatalf("the pass-through must select the stored column by name, ending %q: %s", innerSQL, sql)
+	}
+	if !strings.HasPrefix(sql, "SELECT CAST(") || !strings.Contains(sql, " AS `Attributes` "+innerSQL) {
+		t.Fatalf("the aliased projection must reconstruct the map once, above the pass-through: %s", sql)
+	}
 }

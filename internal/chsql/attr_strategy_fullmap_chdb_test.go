@@ -292,6 +292,57 @@ func TestJSONFullMapReconstruction_BareProjection(t *testing.T) {
 	}
 }
 
+// TestJSONFullMapReconstruction_PassThroughLayer pins the bare projection
+// with no alias: a Project layer that passes ResourceAttributes through
+// under its own name, as a LogQL row stage does, so the projection above
+// it reads the stored column and reconstructs the map once. Rendering the
+// pass-through as the reconstruction would leave the column unnamed and
+// the reference above it unresolved.
+func TestJSONFullMapReconstruction_PassThroughLayer(t *testing.T) {
+	db := chsqltest.OpenIsolatedChDB(t)
+	if _, err := db.Exec(fullMapSeedDDL); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	layered := func(table string) (string, []any) {
+		layer := &chplan.Project{
+			Input: &chplan.Scan{Table: table},
+			Projections: []chplan.Projection{
+				{Expr: &chplan.ColumnRef{Name: "id"}},
+				{Expr: resourceAttrsCol()},
+			},
+		}
+		proj := &chplan.Project{
+			Input: layer,
+			Projections: []chplan.Projection{
+				{Expr: &chplan.ColumnRef{Name: "id"}, Alias: "id"},
+				{Expr: resourceAttrsCol(), Alias: "out"},
+			},
+		}
+		ctx := context.Background()
+		if table == "fullmap_json" {
+			ctx = chsql.WithSchemaStrategies(ctx, chsql.SchemaStrategies{Attrs: fullMapStrategies})
+		}
+		inner, args, err := chsql.Emit(ctx, proj)
+		if err != nil {
+			t.Fatalf("emit: %v", err)
+		}
+		return "SELECT toString(mapSort(out)) FROM (" + inner + ") ORDER BY id", args
+	}
+
+	mapSQL, mapArgs := layered("fullmap_map")
+	jsonSQL, jsonArgs := layered("fullmap_json")
+
+	mapGot := queryToStringRows(t, db, mapSQL, mapArgs)
+	jsonGot := queryToStringRows(t, db, jsonSQL, jsonArgs)
+
+	for i := range 4 {
+		if mapGot[i] != jsonGot[i] {
+			t.Errorf("row %d: Map through a pass-through layer = %s, JSON = %s, want equal", i+1, mapGot[i], jsonGot[i])
+		}
+	}
+}
+
 // TestJSONFullMapReconstruction_MapValues pins mapValues, TraceQL's
 // compare() fan-out's own building block (internal/traceql/metrics_compare.go)
 // alongside mapKeys — both resolve through the same jsonFullMapFns
