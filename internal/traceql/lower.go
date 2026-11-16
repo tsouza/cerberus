@@ -212,14 +212,12 @@ func lowerTopKBottomK(inner chplan.Node, t *traceql.TopKBottomK) (chplan.Node, e
 	if err != nil {
 		return nil, err
 	}
-	limit := t.Limit()
-	if limit <= 0 {
-		return nil, fmt.Errorf("traceql: %s(%d): limit must be > 0", t.Op(), limit)
-	}
+	// ast.Parse rejects a limit that is not positive (validateSecondStage
+	// in internal/traceql/ast/validate.go), as reference Tempo does.
 	return &chplan.MetricsSecondStage{
 		Input: inner,
 		Op:    op,
-		K:     int64(limit),
+		K:     int64(t.Limit()),
 	}, nil
 }
 
@@ -342,46 +340,11 @@ func lowerFollowingElement(prev chplan.Node, elem traceql.PipelineElement, s sch
 // lowerScalarFilter handles `| count() > 0`, `| sum(.duration) >= 1s`,
 // etc: a single aggregate on the left compared against a literal on
 // the right, lowered by lowerSimpleScalarFilter into a Filter wrapping
-// the lone Aggregate node.
-//
-// That one shape is deliberately the WHOLE accepted surface, because
-// it is the whole surface reference Tempo accepts. Tempo's
-// ScalarFilter.validate (pkg/traceql/ast_validate.go at the pinned
-// version) admits exactly one LHS type and exactly one RHS type:
-//
-//	switch f.LHS.(type) {
-//	case Aggregate:
-//	default:
-//		return newUnsupportedError("scalar filter lhs of type (%v)")
-//	}
-//	switch f.RHS.(type) {
-//	case Static:
-//	default:
-//		return newUnsupportedError("scalar filter rhs of type (%v)")
-//	}
-//
-// Cerberus briefly answered more than that (#1708 / #1981 lowered
-// arithmetic between aggregates, `| max(duration) - min(duration) >= 0`,
-// and an aggregate directly on the RHS, `| max(duration) > avg(duration)`),
-// which made it a strict super-set of the reference on a shape no
-// Tempo-targeting client can ever successfully send. #1984 reverted
-// that: cerberus is a DROP-IN Tempo replacement, so over-accepting
-// buys no migration value while costing a permanently-monitored
-// divergence. The two rejections below mirror Tempo's two switches
-// one-for-one, and the rejection-parity catalogue
-// (test/rejection-parity/) gates both against the live reference on
-// every compat run.
-//
-// The operand-shape checks come before mapBinaryOp so an unsupported
-// LHS/RHS is reported as such even when the operator is also
-// unmappable — matching Tempo, which type-checks the operands first.
+// the lone Aggregate node. That one shape is the whole surface: ast.Parse
+// rejects every other operand shape at validation (validateScalarFilterStage
+// in internal/traceql/ast/validate.go), as reference Tempo's Validate does,
+// so no other shape reaches lowering.
 func lowerScalarFilter(prev chplan.Node, sf traceql.ScalarFilter, s schema.Traces) (chplan.Node, error) {
-	if !isBareAggregate(sf.LHS) {
-		return nil, fmt.Errorf("traceql: scalar filter lhs of type (%T) is not supported: the left-hand side of a scalar filter must be a single aggregate (count() / sum(...) / avg(...) / min(...) / max(...))", sf.LHS)
-	}
-	if !isBareStatic(sf.RHS) {
-		return nil, fmt.Errorf("traceql: scalar filter rhs of type (%T) is not supported: the right-hand side of a scalar filter must be a literal", sf.RHS)
-	}
 	op, err := mapBinaryOp(sf.Op)
 	if err != nil {
 		return nil, err
@@ -394,9 +357,8 @@ func lowerScalarFilter(prev chplan.Node, sf traceql.ScalarFilter, s schema.Trace
 // lowerScalarFilter: LHS lowers to the lone chplan.Aggregate node and
 // RHS lowers to a chplan.Expr literal; the Filter compares the
 // Aggregate's aggValueAlias ("Value") column against that literal
-// directly, no intermediate Project. Kept as its own function so
-// lowerScalarFilter reads as validate-then-lower and so this shape's
-// plan — pinned by test/spec TXTAR goldens and
+// directly, no intermediate Project. Kept as its own function so this
+// shape's plan — pinned by test/spec TXTAR goldens and
 // TestLowerSpansetAggregate_PerTraceShape's `Filter.Input =
 // *chplan.Aggregate` type assertion — never moves.
 func lowerSimpleScalarFilter(prev chplan.Node, sf traceql.ScalarFilter, op chplan.BinaryOp, s schema.Traces) (chplan.Node, error) {
@@ -411,11 +373,11 @@ func lowerSimpleScalarFilter(prev chplan.Node, sf traceql.ScalarFilter, op chpla
 
 	// rhs is expected to be a chplan.Expr from a Static literal; the
 	// LHS recursed back as a chplan.Node (Aggregate). For the typical
-	// `count() > 0` shape, wrap aggNode with a Filter. isBareAggregate /
-	// isBareStatic guard the dispatch above, but a defensive type-assert
-	// stays here so a future AST shape this dispatch didn't anticipate
-	// surfaces a structured error instead of a panic (see #324 / the
-	// pathological `{} | 0 > 0` regression pin).
+	// `count() > 0` shape, wrap aggNode with a Filter. Validation in
+	// ast.Parse admits only that shape, but a defensive type-assert stays
+	// here so a future AST shape it did not anticipate surfaces a
+	// structured error instead of a panic (#324: `{} | 0 > 0` once reached
+	// an unchecked assertion here).
 	aggPlan, ok := aggNode.(chplan.Node)
 	if !ok {
 		return nil, fmt.Errorf("traceql: scalar-filter LHS must aggregate to a series (count() / sum(...) / avg(...) / min(...) / max(...)), got %T", aggNode)
@@ -431,33 +393,11 @@ func lowerSimpleScalarFilter(prev chplan.Node, sf traceql.ScalarFilter, op chpla
 	}, nil
 }
 
-// isBareAggregate reports whether a ScalarExpression is a plain
-// ast.Aggregate (value or pointer form) — the shape
-// lowerSimpleScalarFilter's fast path requires on the LHS.
-func isBareAggregate(e traceql.ScalarExpression) bool {
-	switch e.(type) {
-	case traceql.Aggregate, *traceql.Aggregate:
-		return true
-	}
-	return false
-}
-
-// isBareStatic reports whether a ScalarExpression is a plain
-// ast.Static literal (value or pointer form) — the shape
-// lowerSimpleScalarFilter's fast path requires on the RHS.
-func isBareStatic(e traceql.ScalarExpression) bool {
-	switch e.(type) {
-	case traceql.Static, *traceql.Static:
-		return true
-	}
-	return false
-}
-
 // lowerScalarExpr converts a TraceQL ScalarExpression into either a
 // chplan.Node (when the expression aggregates / produces a series) or
 // a chplan.Expr (when it's a literal). Returns `any`; callers
 // type-assert based on context. Used only by lowerSimpleScalarFilter's
-// fast path (isBareAggregate / isBareStatic already exclude
+// fast path (validation in ast.Parse already excludes
 // ast.ScalarOperation, so it need not handle that case) and by
 // lowerFollowingElement's defensive `*traceql.Aggregate` pipeline-tail
 // dispatch.

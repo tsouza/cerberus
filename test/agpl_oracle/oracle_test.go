@@ -191,19 +191,20 @@ var spansetShapeCorpus = []string{
 	`{ } | count() > 1 | coalesce()`,
 }
 
-// TestParserSpansetShapeErrors_AB pins that both parsers give every query
-// of spansetShapeCorpus the same verdict and, for a rejection, the same
-// message.
+// TestParserSpansetShapeErrors_AB pins that cerberus gives every query of
+// spansetShapeCorpus the reference frontend's verdict and, for a rejection,
+// its message: the parse error, or the validation error a parsed query
+// fails.
 func TestParserSpansetShapeErrors_AB(t *testing.T) {
 	for _, q := range spansetShapeCorpus {
 		t.Run(q, func(t *testing.T) {
-			_, refErr := tempo.Parse(q)
-			_, gotErr := ast.Parse(q)
-			if (refErr == nil) != (gotErr == nil) {
-				t.Fatalf("accept/reject divergence: tempo err=%v, in-house err=%v", refErr, gotErr)
+			want := referenceFrontendError(q)
+			got := ""
+			if _, err := ast.Parse(q); err != nil {
+				got = err.Error()
 			}
-			if refErr != nil && refErr.Error() != gotErr.Error() {
-				t.Fatalf("message divergence:\n tempo: %v\n  ours: %v", refErr, gotErr)
+			if got != want {
+				t.Fatalf("divergence:\n tempo: %q\n  ours: %q", want, got)
 			}
 		})
 	}

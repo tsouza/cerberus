@@ -33,7 +33,9 @@
           "lowerUnaryOperation"
         ],
         "cited": [
-          "lowerNilComparison"
+          "Parse",
+          "lowerNilComparison",
+          "validateNilComparison"
         ]
       }
     }
