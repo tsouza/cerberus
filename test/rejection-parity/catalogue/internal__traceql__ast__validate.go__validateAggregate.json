@@ -1,0 +1,18 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/ast/validate.go:validateAggregate#36d74e4f",
+      "message": "aggregate field expressions must resolve to a number type: %s",
+      "class": "rejection",
+      "trigger_query": "{ } | max(name) > \"a\""
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/ast/validate.go:validateAggregate#a05a763c",
+      "message": "aggregate field expressions must reference the span: %s",
+      "class": "rejection",
+      "trigger_query": "{ } | avg(1) > 2"
+    }
+  ]
+}

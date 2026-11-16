@@ -2,6 +2,7 @@ package rejectionparity
 
 import (
 	"context"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -738,7 +739,8 @@ func TestParityCorpusMatchesCatalogue(t *testing.T) {
 // proves the site is reachable. For every class it handles except one,
 // that proof is a lowering failure — parse failures and lowering
 // successes are both fatal, because a trigger must be a valid-language
-// query that lowering itself rejects.
+// query that lowering itself rejects. A TraceQL validation site is the
+// exception: its proof is the *ValidationError Parse itself returns.
 //
 // An entry carrying GuardValues proves reachability differently: its
 // rejection exists only once ClickHouse has produced a value
@@ -787,6 +789,16 @@ func lowerTrigger(t *testing.T, e Entry) string {
 		return lerr.Error()
 	case "traceql":
 		expr, err := traceqlast.Parse(e.TriggerQuery)
+		if siteDir(e.Site) == validationPackage {
+			// A validation site rejects inside Parse, after the grammar
+			// accepted the query: the proof is a *ValidationError, never
+			// a grammar error and never a successful parse.
+			var verr *traceqlast.ValidationError
+			if !errors.As(err, &verr) {
+				t.Fatalf("trigger %q returned %v from Parse, want a *ValidationError — a validation site rejects a grammatical query", e.TriggerQuery, err)
+			}
+			return verr.Error()
+		}
 		if err != nil {
 			t.Fatalf("trigger %q does not parse as TraceQL: %v", e.TriggerQuery, err)
 		}

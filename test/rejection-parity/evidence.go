@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/printer"
 	"go/token"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -134,7 +135,7 @@ type pkgScan struct {
 	sites []Site
 	// evidence is keyed by site key.
 	evidence map[string]*Evidence
-	// scopes is keyed by head, and keeps the parsed package around after
+	// scopes is keyed by package directory, and keeps the parsed package around after
 	// the scan so a rationale's citations can be resolved against the
 	// same revision the evidence was derived from.
 	scopes map[string]*astScope
@@ -158,6 +159,12 @@ type astScope struct {
 	calls map[string][]string
 	// callers is the reverse of calls.
 	callers map[string][]string
+	// consts maps the package's string constants to their values, so an
+	// error constructor may name its message by constant.
+	consts map[string]string
+	// validation marks validationPackage, whose validation constructors
+	// are error sites (see isErrorConstructor).
+	validation bool
 }
 
 // guardChain renders the conditions that must hold for the node at the
@@ -495,7 +502,7 @@ func citedFunctions(rationale string) []string {
 // names it is rewritten — which is the human re-statement the whole gate
 // exists to force.
 func (p *pkgScan) citationsOf(s Site, rationale string, prevCited []string) []string {
-	sc := p.scopes[s.Head]
+	sc := p.scopes[siteDir(s)]
 	if sc == nil {
 		return nil
 	}
@@ -537,7 +544,7 @@ func (p *pkgScan) citationsOf(s Site, rationale string, prevCited []string) []st
 // so regenerating cannot clear it — only editing the code back, or
 // re-stating the rationale to describe what the code now does.
 func (p *pkgScan) unsupportedCitations(s Site, cited []string) []string {
-	sc := p.scopes[s.Head]
+	sc := p.scopes[siteDir(s)]
 	if sc == nil {
 		return nil
 	}
@@ -549,6 +556,13 @@ func (p *pkgScan) unsupportedCitations(s Site, cited []string) []string {
 		out = append(out, name)
 	}
 	return out
+}
+
+// siteDir is the package directory of a site: the directory of the
+// source file its key names.
+func siteDir(s Site) string {
+	src, _, _ := strings.Cut(s.Site, siteSourceSeparator)
+	return path.Dir(src)
 }
 
 func isExported(name string) bool {

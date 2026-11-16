@@ -1,0 +1,11 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/ast/validate.go:validatePipelineElement#1ab49de4",
+      "message": "grouping field expressions must reference the span: %s",
+      "class": "rejection",
+      "trigger_query": "{ } | by(1) | count() > 0"
+    }
+  ]
+}

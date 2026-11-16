@@ -1,0 +1,12 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/ast/validate.go:validateGroupByCount#4d8223ba",
+      "message": "metrics group by %v values not yet supported",
+      "class": "rejection",
+      "trigger_query": "{ } | rate() by (span.a, span.b, span.c, span.d, span.e, span.f)",
+      "endpoint": "traceql_metrics"
+    }
+  ]
+}
