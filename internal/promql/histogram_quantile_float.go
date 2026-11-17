@@ -23,7 +23,8 @@ const (
 	hqFloatSortedBoundAlias = "_hq_le_sorted"
 	hqFloatSortedCountAlias = "_hq_cum_sorted"
 	// hqFloatGroupKeyAlias / hqFloatTimeAlias name the two group keys:
-	// the sample's label set minus `le`, and its timestamp.
+	// the sample's label set minus `le`, and the instant it stands at —
+	// its step anchor in range mode, the evaluation instant otherwise.
 	hqFloatGroupKeyAlias = "gkey_0"
 	hqFloatTimeAlias     = "_hq_ts"
 )
@@ -62,7 +63,7 @@ const hqFloatMinRungs = 2
 //	  HistogramQuantile phi=phi, cumulative, groupBy=[Attributes, TimeUnix]
 //	    Project [Attributes, TimeUnix, finite bounds, guarded monotone ladder]
 //	      Project [gkey_0, _hq_ts, bounds sorted ascending, counts in that order]
-//	        Aggregate groupBy=[Attributes minus `le`, TimeUnix]
+//	        Aggregate groupBy=[Attributes minus `le`, evaluation instant]
 //	                  funcs=[groupArray(le), groupArray(Value)]
 //	          Filter <sample carries a parseable `le`>
 //	            <the argument, lowered as an ordinary float expression>
@@ -77,7 +78,13 @@ const hqFloatMinRungs = 2
 // already fans across the step grid, stamping each row with its anchor, so
 // grouping on TimeUnix alongside the label set yields one quantile per
 // (series, anchor) — the same shape the array-domain range paths build
-// explicitly.
+// explicitly. An instant argument has no such column to group on: an
+// instant window exposes the label set and the value only, and an
+// instant selector stamps each row with its own newest sample's time,
+// which differs between series one output group can draw from. Every row
+// of an instant vector stands at the evaluation instant, so the instant
+// group key is that instant. [evalInstantExpr] owns that distinction —
+// the timestamp column in range mode, the evaluation instant otherwise.
 func lowerHistogramQuantileClassicFloat(
 	arg parser.Expr,
 	phi phiArg,
@@ -117,7 +124,7 @@ func lowerHistogramQuantileClassicFloatOverPlan(inner chplan.Node, phi phiArg, s
 		Input: bucketed,
 		GroupBy: []chplan.Expr{
 			&chplan.MapWithoutKeys{Map: attrs, Keys: []string{bucketBoundLabel}},
-			&chplan.ColumnRef{Name: s.TimestampColumn},
+			evalInstantExpr(s, ctx),
 		},
 		GroupByAliases: []string{hqFloatGroupKeyAlias, hqFloatTimeAlias},
 		AggFuncs: []chplan.AggFunc{
@@ -197,10 +204,10 @@ func lowerHistogramQuantileClassicFloatOverPlan(inner chplan.Node, phi phiArg, s
 	}
 	hq = ctx.lowerers.QuantileRankWalk.LowerQuantileRankWalk(hq)
 
-	// Sample-row wrapping. The timestamp is the one the argument's own
-	// rows carried rather than a fresh evaluation anchor: the grouping
-	// above already partitioned by it, so re-stamping would collapse a
-	// range query's anchors onto a single instant.
+	// Sample-row wrapping. The timestamp is the group's own time key
+	// rather than a fresh evaluation anchor: the grouping above already
+	// partitioned by it, so re-stamping would collapse a range query's
+	// anchors onto a single instant.
 	return &chplan.Project{
 		Roles: metricRoles(s),
 		Input: hq,
