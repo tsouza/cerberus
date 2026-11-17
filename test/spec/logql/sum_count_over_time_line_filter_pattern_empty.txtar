@@ -1,0 +1,26 @@
+-- query.logql --
+sum(count_over_time({job="api"} |> "" [5m]))
+-- parity --
+oracle: loki
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    SeverityText LowCardinality(String) DEFAULT '',
+    SeverityNumber UInt8 DEFAULT 0,
+    ResourceAttributes Map(String, String),
+    ServiceName String DEFAULT '',
+    LogAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, ResourceAttributes) VALUES
+    (toDateTime64('2025-12-31 23:57:00', 9), 'level=info ready', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:57:30', 9), '', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:58:00', 9), ' ', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:59:00', 9), '', map('job', 'api')),
+    (toDateTime64('2026-01-01 00:00:00', 9), 'level=error oops', map('job', 'api'));
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:01Z", 2.0]
+]
