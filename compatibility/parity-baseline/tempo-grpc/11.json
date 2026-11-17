@@ -2,5 +2,7 @@
   "schema_version": 1,
   "head": "tempo-grpc",
   "bucket": "11",
-  "cases": []
+  "cases": [
+    "search | group_by_root_name"
+  ]
 }

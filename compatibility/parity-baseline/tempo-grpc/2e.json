@@ -2,5 +2,7 @@
   "schema_version": 1,
   "head": "tempo-grpc",
   "bucket": "2e",
-  "cases": []
+  "cases": [
+    "search | coalesce_root_name_exists"
+  ]
 }

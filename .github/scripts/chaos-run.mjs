@@ -58,8 +58,13 @@
 // discovers scenario names by scanning for that same call, so no second list
 // to keep in sync.
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { parseEnvFile } from './e2e-chaos-overlay.mjs';
+import { ADMIT_BURST_SIZE, ADMIT_CAP_ENV, admitCapFromEnvArgs, judgeAdmitSaturation } from './lib/admit-saturation.mjs';
 import { error, notice, log, capture } from './lib/gh.mjs';
 import { pollUntil } from './lib/poll.mjs';
 
@@ -195,67 +200,18 @@ function breakerStateName(v) {
   }
 }
 
-// ---- deliberately-expensive query (admit-saturation) -----------------
+// ---- deterministic chaos sleep (ch-slow-query-timeout, load-admit-saturation)
 //
-// The load-admit-saturation scenario needs a query that is GENUINELY
-// expensive to evaluate — heavy enough to hold an admit slot long enough to
-// overlap a concurrent burst. (ch-slow-query-timeout no longer uses this:
-// it drives a DETERMINISTIC server-side ClickHouse sleep via the chaos
-// header instead — see CHAOS_SLEEP_* above. Saturation keeps the real-
-// compute query because it must hold the slot under real work, not block on
-// a sleep that a timeout would abort mid-burst.)
-//
-// The cost MUST come from COMPUTE PER ANCHOR, not from anchor count. An
-// earlier version drove cost with a 30-day range at step=1s (~2.6M anchors),
-// but cerberus's resolution guard (internal/api/prom/handler.go:
-// maxResolutionPoints = 11000) rejects any range query whose
-// (end-start)/step exceeds 11000 points with a 400 BEFORE the wall-clock
-// timeout is even armed — so the "slow" query 400'd instead of timing out,
-// and the scenario asserted a 503 it could never see. The 11000-point cap is
-// an intentional Prometheus-compat invariant, so the query has to stay UNDER
-// it while still costing real compute to evaluate.
-//
-// The cost MUST ALSO be UNCOLLAPSIBLE. An earlier version used
-//   max_over_time( sum(rate(<counter>[INNER])) [SUBQ_RANGE:SUBQ_STEP] )
-// but the seed is deliberately thin — http_server_request_duration_count is
-// a SINGLE low-cardinality series of 600 samples whose Count grows linearly
-// (test/e2e/seed/cmd/seed/main.go). Over uniform, linearly-growing data the
-// optimizer + the subquery folding collapse max_over_time(sum(rate(...))) to
-// a CHEAP FLAT CONSTANT (~hundred ms, returning the same value at every
-// timestamp). It never exceeded the cap -> 200 instead of the asserted 503
-// (dispatch run 27505378745). Reordering / fuller data didn't help: the
-// problem was the query is cheap on cerberus, not the data being thin.
-//
-// The fix: stddev_over_time over a sub-stepped rate() subquery. A per-anchor
-// dispersion CANNOT fold to a constant (each outer anchor must materialise
-// its SUBQ_RANGE/SUBQ_STEP inner rate() samples and compute their stddev),
-// so the cost is real CH compute regardless of optimizer or uniform data.
-// Measured on the live compose stack (2026-06-14): ~650 ms wall-clock on the
-// seed-only {job=api} series vs ~8 ms for a trivial query=up. The chaos
-// overlay then calibrates CERBERUS_QUERY_TIMEOUT to 250ms (test-only) — it
-// sits cleanly between the two (heavy ~650 ms > cap 250 ms > trivial ~8 ms),
-// so the heavy query reliably 503s errorType=timeout while up stays 200.
-const SLOW_QUERY_RANGE_SECONDS = 2 * 3600; // 2h outer window
-const SLOW_QUERY_STEP_SECONDS = 1; // 1s outer step => 7200 outer anchors (< 11000 cap)
-const SLOW_QUERY_SUBQ_RANGE = '1h'; // each anchor fans out a 1h subquery
-const SLOW_QUERY_SUBQ_STEP = '1s'; // at 1s => 3600 inner sub-anchors per outer anchor
-const SLOW_QUERY_INNER_RANGE = '5m'; // each sub-anchor rate()s 5m of raw counter rows
-// The seeded counter the rate() scans (test/e2e/seed: 600 samples in
-// otel_metrics_sum -> histogram-routed under this name). Scoped to the seed
-// series {job="api"} so the cost is independent of any self-telemetry the
-// dogfood loop happens to add — the seed shape is guaranteed in the k3d lane.
-const SLOW_QUERY_COUNTER = 'http_server_request_duration_count';
-const SLOW_QUERY_SERIES_MATCHER = '{job="api"}';
-
-// ---- deterministic chaos sleep (ch-slow-query-timeout) ----------------
-//
-// The ch-slow-query-timeout scenario no longer relies on a "naturally slow"
-// query: timing one is substrate-dependent (the stddev_over_time subquery
-// above measured ~650ms on compose but <250ms on k3d, so no static cap
-// separated it from a trivial query everywhere). Instead the chaos lane's
-// cerberus image is built with `-tags chaos_sleep`, and this scenario sends
-// an undocumented request header that splices a genuinely-blocking
-// server-side ClickHouse sleep into the emitted SQL — substrate-independent.
+// Neither scenario relies on a "naturally slow" query: timing one is
+// substrate-dependent. A stddev_over_time-over-rate() subquery measured
+// ~650ms on compose but <250ms on k3d, so no static cap separated it from a
+// trivial query everywhere, and on k3d a burst of 16 of them finished inside
+// ~200ms, so whether any two overlapped on one replica's admit slots was
+// decided by connection timing (issue #4323: 0 of 16 shed on one run, 2-12
+// on others). Instead the chaos lane's cerberus image is built with
+// `-tags chaos_sleep`, and both scenarios send an undocumented request
+// header that splices a genuinely-blocking server-side ClickHouse sleep into
+// the emitted SQL — substrate-independent.
 //
 // CHAOS_SLEEP_HEADER names the seconds to sleep; CHAOS_SLEEP_SECONDS is set
 // well above the chaos overlay's CERBERUS_QUERY_TIMEOUT (5s) so the query
@@ -270,26 +226,6 @@ const CHAOS_SLEEP_SECONDS = 10;
 // The trigger query is intentionally trivial — the sleep, not the query
 // shape, is what blocks. A bare instant `up` keeps the PromQL clean.
 const CHAOS_SLEEP_TRIGGER_QUERY = '/api/v1/query?query=up';
-
-// slowQueryPath builds the /api/v1/query_range path for the expensive
-// nested-subquery query. anchored to `now` so the outer window overlaps the
-// rolling-seeded data. The point count is SLOW_QUERY_RANGE_SECONDS /
-// SLOW_QUERY_STEP_SECONDS = 7200, comfortably under the 11000-point
-// resolution cap, so the request passes the guard and reaches the
-// wall-clock-timeout path the slow-query contract pins.
-function slowQueryPath() {
-  const now = Math.floor(Date.now() / 1000);
-  const start = now - SLOW_QUERY_RANGE_SECONDS;
-  const expr =
-    `stddev_over_time(` +
-    `rate(${SLOW_QUERY_COUNTER}${SLOW_QUERY_SERIES_MATCHER}[${SLOW_QUERY_INNER_RANGE}])` +
-    `[${SLOW_QUERY_SUBQ_RANGE}:${SLOW_QUERY_SUBQ_STEP}])`;
-  return (
-    '/api/v1/query_range?query=' +
-    encodeURIComponent(expr) +
-    `&start=${start}&end=${now}&step=${SLOW_QUERY_STEP_SECONDS}`
-  );
-}
 
 // The three data-plane head probes. Each is a cheap query the seeded +
 // rolling OTel data answers with a 200 in steady state.
@@ -308,20 +244,23 @@ const HEAD_PROBES = [
 // ---- HTTP helpers ----------------------------------------------------
 
 // httpGet — fetch with a per-request timeout, never throwing. Returns
-// { ok, status, headers, body, err }. A transport failure (dial reset,
-// timeout) surfaces as ok:false + err set + status:0, which the callers
-// treat as a fault-window signal, not a crash.
+// { ok, status, headers, body, err, elapsedMs }. A transport failure (dial
+// reset, timeout) surfaces as ok:false + err set + status:0, which the
+// callers treat as a fault-window signal, not a crash. elapsedMs is the
+// wall-clock time from issuing the request to reading the whole body.
 async function httpGet(path, { timeoutMs = 10_000, headers = {} } = {}) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  const startedAt = performance.now();
+  const elapsed = () => Math.round(performance.now() - startedAt);
   try {
     const res = await fetch(CERBERUS_URL + path, { signal: ctrl.signal, headers });
     const body = await res.text();
     const h = {};
     for (const [k, v] of res.headers.entries()) h[k.toLowerCase()] = v;
-    return { ok: true, status: res.status, headers: h, body, err: null };
+    return { ok: true, status: res.status, headers: h, body, err: null, elapsedMs: elapsed() };
   } catch (e) {
-    return { ok: false, status: 0, headers: {}, body: '', err: String(e?.message || e) };
+    return { ok: false, status: 0, headers: {}, body: '', err: String(e?.message || e), elapsedMs: elapsed() };
   } finally {
     clearTimeout(t);
   }
@@ -1025,47 +964,76 @@ async function probeNetpolEnforcement() {
 
 // ---- scenario: load / admit-saturation (phase-2) ---------------------
 // Concurrency burst beyond the (small overlay) admit cap -> clean shed:
-// some 503 + Retry-After:1 'saturated', a concurrent below-cap request
-// still 200, breaker stays CLOSED, /readyz green.
+// at least burst − replicas × cap requests 503 + Retry-After:1 'saturated',
+// a concurrent request to ANOTHER head still 200 (each head owns its own
+// budget), breaker stays CLOSED, /readyz green.
+//
+// Every burst request carries the chaos sleep header, so each one the
+// limiter admits holds its slot until ClickHouse aborts the sleep at the
+// chaos build's 3s max_execution_time (503 errorType=timeout,
+// breaker-neutral — the path ch-slow-query-timeout pins), while all of them
+// arrive within milliseconds. The limiter never queues, so the shed count
+// has a floor that holds on every run; lib/admit-saturation.mjs owns that
+// verdict.
+
+// ADMIT_HOLD_MIN_MS is the shortest time an admitted burst request must
+// have held its slot for the shed floor to apply: well under the ~3s the
+// chaos sleep holds it, well over the milliseconds the burst takes to
+// arrive.
+const ADMIT_HOLD_MIN_MS = 2_000;
+// ADMIT_PROBE_DELAY_MS lets the burst occupy every slot before the
+// cross-head probe fires; far inside the hold.
+const ADMIT_PROBE_DELAY_MS = 200;
+// The probe goes to the Loki head, whose budget is separate from the
+// saturated prom one.
+const ADMIT_CROSS_HEAD_PROBE = HEAD_PROBES.find((p) => p.name === 'loki');
+
+// overlayPromAdmitCap reads the prom admit cap the chaos overlay applied.
+function overlayPromAdmitCap() {
+  const text = readFileSync(join(MANIFESTS, 'chaos-overlay.env'), 'utf8');
+  return admitCapFromEnvArgs(parseEnvFile(text), ADMIT_CAP_ENV);
+}
+
 async function scenarioLoadAdmitSaturation() {
   const failures = [];
 
   const baselineState = await queryBreakerMetric('cerberus_ch_breaker_state');
+  const replicas = readyPodCount('app=cerberus');
+  const capPerReplica = overlayPromAdmitCap();
 
-  // Fire N concurrent requests > the (overlay) admit cap. Use the same
-  // heavy nested-subquery query (slowQueryPath) so each request holds its
-  // admit slot long enough to overlap — and so it passes the 11000-point
-  // resolution cap instead of 400'ing before it can occupy a slot.
-  const slowPath = slowQueryPath();
+  log(
+    `  fault: firing ${ADMIT_BURST_SIZE} concurrent chaos-sleep requests at ${replicas} replica(s) × ${ADMIT_CAP_ENV}=${capPerReplica} + one cross-head probe...`,
+  );
+  const burst = Promise.all(
+    Array.from({ length: ADMIT_BURST_SIZE }, () =>
+      httpGet(CHAOS_SLEEP_TRIGGER_QUERY, {
+        timeoutMs: SLOW_QUERY_BURST_TIMEOUT_MS,
+        headers: chaosSleepHeaders(),
+      }),
+    ),
+  );
 
-  const N = 16; // >> CERBERUS_ADMIT_PROM (2) in the chaos overlay
-  log(`  fault: firing ${N} concurrent over-cap requests + one below-cap probe...`);
-  const burst = Promise.all(Array.from({ length: N }, () => httpGet(slowPath, { timeoutMs: 30_000 })));
-
-  // Concurrently, a below-cap fast request should still get through.
-  await sleep(200); // let the burst occupy the slots first
-  const probe = await httpGet('/api/v1/query?query=up', { timeoutMs: 10_000 });
+  // While every prom slot is held, a request to another head must still be
+  // admitted and served: the budgets are per head.
+  await sleep(ADMIT_PROBE_DELAY_MS);
+  const probe = await httpGet(ADMIT_CROSS_HEAD_PROBE.path, { timeoutMs: 10_000 });
 
   const results = await burst;
-  const shed = results.filter(
-    (r) => r.status === 503 && r.headers['retry-after'] === '1' && r.body.toLowerCase().includes('saturated'),
-  );
-  if (shed.length === 0) {
-    failures.push(`expected SOME of ${N} over-cap requests to shed with 503 + Retry-After:1 'saturated'; none did`);
-  } else {
-    log(`    ${shed.length}/${N} requests shed cleanly (503 + Retry-After:1 'saturated')`);
+  const verdict = judgeAdmitSaturation({ results, replicas, capPerReplica, minHoldMs: ADMIT_HOLD_MIN_MS });
+  failures.push(...verdict.failures);
+  log(`    burst outcomes: ${verdict.tally}`);
+  if (verdict.failures.length === 0) {
+    log(
+      `    ${verdict.shed}/${ADMIT_BURST_SIZE} requests shed cleanly (503 + Retry-After:1 'saturated'; floor ${verdict.minShed} over ${verdict.capacity} slots)`,
+    );
   }
 
-  // The below-cap probe is allowed to be admitted-and-served (200) OR, if
-  // it raced into the saturated window, shed cleanly — what it must NOT do
-  // is hang or 5xx-internal. Accept 200 or a clean 503-saturated.
-  const probeClean =
-    probe.status === 200 ||
-    (probe.status === 503 && probe.body.toLowerCase().includes('saturated'));
-  if (!probeClean) {
-    failures.push(`below-cap probe neither 200 nor cleanly shed; got ${probe.status} (body=${probe.body.slice(0, 160)})`);
+  if (probe.status !== 200) {
+    failures.push(
+      `${ADMIT_CROSS_HEAD_PROBE.name} probe must be served while the prom budget is saturated (per-head budgets); got ${probe.status} (body=${probe.body.slice(0, 160)})`,
+    );
   } else {
-    log(`    below-cap probe handled cleanly (status ${probe.status})`);
+    log(`    ${ADMIT_CROSS_HEAD_PROBE.name} probe 200 while the prom budget was saturated`);
   }
 
   // /readyz stays green throughout.
@@ -1380,25 +1348,20 @@ async function endOfRunHealthGate() {
 //
 // `destructive: true` marks a scenario that injects a POD-KILL fault (CH pod or
 // a cerberus replica). The run loop sorts every selected pool so NON-destructive
-// scenarios run FIRST and destructive ones LAST (see orderScenarios). This is
-// load-bearing for ch-slow-query-timeout: that scenario's "deliberately slow"
-// nested-subquery query is DATA-DRIVEN (its inner rate() evals scan the seeded
-// counter), so it only reliably exceeds the calibrated CERBERUS_QUERY_TIMEOUT
-// — and thus returns the contracted 503 — when it runs against the FULL
-// rolling-seeded window. Running it BEFORE the destructive ch-pod-kill (whose recreate leaves a
-// thin post-reseed window right after the one-shot re-anchor) keeps the query
-// cost-dominated. As a bonus, load-admit-saturation's "breaker stays CLOSED"
-// assertion then runs on a naturally-closed breaker (no prior outage), and each
-// destructive scenario re-establishes its own preconditions via the heal gate.
+// scenarios run FIRST and destructive ones LAST (see orderScenarios). The
+// breaker-neutral scenarios (ch-slow-query-timeout, load-admit-saturation)
+// then assert "breaker stays CLOSED" on a naturally-closed breaker with no
+// prior outage, and each destructive scenario re-establishes its own
+// preconditions via the heal gate. Neither of those two depends on data
+// volume: both hold ClickHouse with the deterministic chaos sleep.
 const PHASE1 = [
   // Non-destructive, data-dependent: failure-driven route-memo activation
   // (see the scenario's own header comment for the full rationale). Runs
   // first among the non-destructive set — it never touches the CH or
   // cerberus pods, so it isn't affected by anything a later scenario does.
   { name: 'route-memo-activation', run: scenarioRouteMemoActivation },
-  // Non-destructive, data-dependent: the slow-query timeout contract. Runs on
-  // the full rolling-seeded window so the heavy nested subquery reliably blows
-  // the calibrated wall-clock cap.
+  // Non-destructive: the slow-query timeout contract, driven by the
+  // deterministic chaos sleep.
   { name: 'ch-slow-query-timeout', run: scenarioChSlowTimeout },
   // Destructive pod-kills, sorted to run after the non-destructive set.
   { name: 'ch-pod-kill', run: scenarioChPodKill, recreatesCh: true, destructive: true },
@@ -1472,7 +1435,7 @@ async function preflight() {
 // the data plane is queryable + freshly anchored — otherwise a still-recovering
 // stack from the prior fault masquerades as the next scenario's failure (e.g.
 // cerberus-pod-kill's aggregate-success loop running before CH is back, or
-// ch-slow-query's nested subquery hitting a still-rolling-out CH). This
+// a chaos-sleep query hitting a still-rolling-out CH). This
 // implements the heal-between-each-scenario invariant the lane's header
 // documents.
 //

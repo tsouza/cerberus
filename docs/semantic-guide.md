@@ -165,18 +165,21 @@ internal/optimizer's rewrites never change a query's observable outcome: every r
 
 ## Adversarial evidence
 
-6 real (non-synthetic) mutant record(s) in the semantic mutation pilot (`test/semantic/mutants/`; the full report's "Semantic mutation pilot" section carries the kill/escape rates and every detector). Per targeted contract, each mutant's disposition and bucket; a contract absent from this table has no adversarial evidence.
+7 real (non-synthetic) mutant record(s) in the semantic mutation pilot (`test/semantic/mutants/`; the full report's "Semantic mutation pilot" section carries the kill/escape rates and every detector). Per targeted contract, each mutant's disposition and bucket; a contract absent from this table has no adversarial evidence.
 
-| Contract                                                                                                 | Mutant                                            | Disposition | Bucket      |
-| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | ----------- | ----------- |
-| [`LOGQL-LABEL-MATCHER-REGEX-ANCHORING`](semantic-conformance.md#logql-label-matcher-regex-anchoring)     | `MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741`      | killed      | denominator |
-| [`LOGQL-PIPELINE-STAGE-ORDER`](semantic-conformance.md#logql-pipeline-stage-order)                       | `MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED`      | killed      | denominator |
-| [`PROMQL-COUNTER-RESET-EXTRAPOLATION`](semantic-conformance.md#promql-counter-reset-extrapolation)       | `MUTANT-PROMQL-COUNTER-RESET-COMPENSATION`        | killed      | denominator |
-| [`PROMQL-LABEL-MATCHER-REGEX-ANCHORING`](semantic-conformance.md#promql-label-matcher-regex-anchoring)   | `MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741`      | killed      | denominator |
-| [`PROMQL-RANGE-VECTOR-ALIGNMENT`](semantic-conformance.md#promql-range-vector-alignment)                 | `MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT` | killed      | denominator |
-| [`SIGNAL-LABEL-MATCHER-CONSISTENCY`](semantic-conformance.md#signal-label-matcher-consistency)           | `MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741`      | killed      | denominator |
-| [`TRACEQL-ATTRIBUTE-SCOPE-RESOLUTION`](semantic-conformance.md#traceql-attribute-scope-resolution)       | `MUTANT-TRACEQL-SCOPE-SWAP`                       | killed      | denominator |
-| [`TRACEQL-STRUCTURAL-RELATION-SEMANTICS`](semantic-conformance.md#traceql-structural-relation-semantics) | `MUTANT-TRACEQL-DESCENDANT-AS-CHILD`              | killed      | denominator |
+| Contract                                                                                                 | Mutant                                               | Disposition | Bucket      |
+| -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ----------- | ----------- |
+| [`LOGQL-LABEL-MATCHER-REGEX-ANCHORING`](semantic-conformance.md#logql-label-matcher-regex-anchoring)     | `MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741`         | killed      | denominator |
+| [`LOGQL-LABEL-MATCHER-REGEX-ANCHORING`](semantic-conformance.md#logql-label-matcher-regex-anchoring)     | `MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION` | killed      | denominator |
+| [`LOGQL-PIPELINE-STAGE-ORDER`](semantic-conformance.md#logql-pipeline-stage-order)                       | `MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED`         | killed      | denominator |
+| [`PROMQL-COUNTER-RESET-EXTRAPOLATION`](semantic-conformance.md#promql-counter-reset-extrapolation)       | `MUTANT-PROMQL-COUNTER-RESET-COMPENSATION`           | killed      | denominator |
+| [`PROMQL-LABEL-MATCHER-REGEX-ANCHORING`](semantic-conformance.md#promql-label-matcher-regex-anchoring)   | `MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741`         | killed      | denominator |
+| [`PROMQL-LABEL-MATCHER-REGEX-ANCHORING`](semantic-conformance.md#promql-label-matcher-regex-anchoring)   | `MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION` | killed      | denominator |
+| [`PROMQL-RANGE-VECTOR-ALIGNMENT`](semantic-conformance.md#promql-range-vector-alignment)                 | `MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT`    | killed      | denominator |
+| [`SIGNAL-LABEL-MATCHER-CONSISTENCY`](semantic-conformance.md#signal-label-matcher-consistency)           | `MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741`         | killed      | denominator |
+| [`SIGNAL-LABEL-MATCHER-CONSISTENCY`](semantic-conformance.md#signal-label-matcher-consistency)           | `MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION` | killed      | denominator |
+| [`TRACEQL-ATTRIBUTE-SCOPE-RESOLUTION`](semantic-conformance.md#traceql-attribute-scope-resolution)       | `MUTANT-TRACEQL-SCOPE-SWAP`                          | killed      | denominator |
+| [`TRACEQL-STRUCTURAL-RELATION-SEMANTICS`](semantic-conformance.md#traceql-structural-relation-semantics) | `MUTANT-TRACEQL-DESCENDANT-AS-CHILD`                 | killed      | denominator |
 
 ## See also
 

@@ -62,6 +62,9 @@ func CloneNode(n Node) Node {
 	case *SearchTraceLimit:
 		c := *v
 		c.Input = CloneNode(v.Input)
+		if v.Rank != nil {
+			c.Rank = CloneNode(v.Rank)
+		}
 		return &c
 	case *Project:
 		c := *v

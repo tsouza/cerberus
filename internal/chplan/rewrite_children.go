@@ -175,11 +175,18 @@ func rewriteUnaryNode(n Node, fn func(Node) (Node, bool)) (out Node, changed, ha
 			return &cp
 		})
 	case *SearchTraceLimit:
-		out, changed = rewriteSingleInput(v, v.Input, fn, func(in Node) Node {
+		// Input, then Rank when set, rewritten in Children() order.
+		newChildren, ch := rewriteEach(fn, v.Children())
+		if ch {
 			cp := *v
-			cp.Input = in
-			return &cp
-		})
+			cp.Input = newChildren[0]
+			if v.Rank != nil {
+				cp.Rank = newChildren[1]
+			}
+			out, changed = &cp, true
+		} else {
+			out, changed = v, false
+		}
 	case *Aggregate:
 		out, changed = rewriteSingleInput(v, v.Input, fn, func(in Node) Node {
 			cp := *v

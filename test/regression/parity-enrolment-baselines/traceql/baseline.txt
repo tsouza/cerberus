@@ -90,6 +90,7 @@ search_trace_limit_bare_table_map_column.txtar
 search_trace_limit_exceeds_match_count.txtar
 search_traceid.txtar
 search_window_root_before_start.txtar
+search_window_root_outside_window.txtar
 search_window_trace_ends_after_end.txtar
 select_attrs.txtar
 select_duration.txtar

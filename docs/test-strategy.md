@@ -118,9 +118,13 @@ group; scheduled runs key their group by the exact cron expression. A routine
 push therefore cannot erase nightly-only coverage, and two differently scoped
 schedules cannot erase each other. Every pull request, merge group, manual
 dispatch, reusable-workflow call, maintenance branch, tag, release event, and
-unknown event/ref pair receives a unique run-id group. The exhaustive E2E workflow,
-the required `quickstart`, post-merge generated-artifact drift, core gates,
-publication, stateful mirroring, and monitors are explicit negative controls.
+unknown event/ref pair receives a unique run-id group. The exhaustive E2E
+workflow (`e2e.yml`) is enrolled in the queue-coalesced tier below: its main
+pushes share `latest-main-push`, its nightly keys on its cron, and every pull
+request, `release/*.x` push and dispatch keeps a unique run-id group, as do its
+job-level groups. The required `quickstart`, post-merge generated-artifact
+drift, core gates, publication, stateful mirroring, and monitors are explicit
+negative controls.
 `.github/scripts/main-coalescing.mjs` binds the enrolled workflow expressions
 to the lane registry, and its tests exercise the cancellation decision table.
 Its `QUEUE_COALESCED_WORKFLOWS` tier separates the two halves of "coalesced":
@@ -877,11 +881,16 @@ What it proves (the contracts, mapped to their landing PRs):
   not-applicable (`::notice::`) and the breaker contract is covered by
   `ch-pod-kill` instead — never a vacuous pass.
 - **Admission control + pool (phase-2).** `load-admit-saturation`
-  bursts concurrency beyond the small overlay admit cap → some requests
-  shed cleanly with 503 + `Retry-After: 1` `server saturated` while a
-  below-cap request still 200s; `cerberus_admit_rejected_total` climbs;
-  the breaker stays CLOSED (admit + pool-acquire rejections are
-  breaker-neutral).
+  fires 16 concurrent requests carrying the same deterministic
+  server-side sleep as `ch-slow-query-timeout`, so every admitted request
+  holds its prom admit slot until ClickHouse aborts the sleep. With
+  `replicas × CERBERUS_ADMIT_PROM` slots, at least
+  `16 − replicas × CERBERUS_ADMIT_PROM` requests shed cleanly with 503 +
+  `Retry-After: 1` `server saturated`, and every admitted request must
+  have held its slot for at least 2 s; a Loki-head request during the
+  saturation still 200s (each head owns its own budget);
+  `cerberus_admit_rejected_total` climbs; the breaker stays CLOSED
+  (admit rejections are breaker-neutral).
 - **Handler panic (#885).** Already pinned deterministically by Layer 10
   — the live lane only corroborates that the process recovered cleanly
   from the cumulative fault storm (all 3 heads 200, no lingering 5xx) as

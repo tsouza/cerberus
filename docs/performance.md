@@ -266,7 +266,14 @@ every PR) to *broad* (corpus-wide, nightly).
    whose mechanism changes the plan without moving peak memory beyond noise
    names a processor (`Sentinel.WantPipelineStep`) that `EXPLAIN PIPELINE` of
    the statement it dispatched, rebuilt from `system.query_log`, must contain
-   on every repeat. A nightly sentinel whose mechanism is planning cost names
+   on every repeat. A nightly sentinel whose peak depends on a per-query
+   setting names it (`Sentinel.WantSettings`): the statement it dispatched
+   must carry it on every repeat, on every server at or past the setting's
+   line. A nightly sentinel whose mechanism is leaving the `PREWHERE` split to
+   the server names the release lines where `move_to_prewhere` resolves in
+   (`Sentinel.ServerPrewhereOn`): on those, the statement it dispatched must
+   carry no explicit `PREWHERE`, on every repeat. A nightly sentinel whose
+   mechanism is planning cost names
    a planning peer (`Sentinel.PlanningPeer`): a query over the same data whose
    statement plans in a comparable time. `EXPLAIN PIPELINE` of the sentinel's
    dispatched statement, minimum of three samples interleaved with the

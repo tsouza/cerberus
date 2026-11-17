@@ -35,24 +35,28 @@ func TestLowerGroupCoalesce(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected *chplan.Aggregate, got %T", plan)
 		}
-		if len(agg.GroupBy) != 1 {
-			t.Errorf("len(GroupBy) = %d, want 1", len(agg.GroupBy))
+		// by() groups per trace: TraceId leads the GROUP BY, then the key.
+		if len(agg.GroupByAliases) != 2 || agg.GroupByAliases[0] != s.TraceIDColumn || agg.GroupByAliases[1] != "GroupKey" {
+			t.Errorf("GroupByAliases = %v, want [%q, \"GroupKey\"]", agg.GroupByAliases, s.TraceIDColumn)
 		}
-		// Representative identity columns (any(TraceId), any(SpanId))
-		// plus the seven spanset-envelope funcs (count Value, MetricName,
-		// ResourceAttrs, ParentSpanId, TimeUnix, TraceStartNs, TraceEndNs)
-		// the search wrap projection keys on. ParentSpanId lets the
-		// /api/search root-resolution machinery detect and correct an
+		if len(agg.GroupBy) != 2 || !agg.GroupBy[0].Equal(&chplan.ColumnRef{Name: s.TraceIDColumn}) {
+			t.Errorf("GroupBy = %v, want [TraceId, <key>]", agg.GroupBy)
+		}
+		// The representative span identity (any(SpanId)) plus the seven
+		// spanset-envelope funcs (count Value, MetricName, ResourceAttrs,
+		// ParentSpanId, TimeUnix, TraceStartNs, TraceEndNs) the search
+		// wrap projection keys on. ParentSpanId lets the /api/search
+		// root-resolution machinery detect and correct an
 		// arbitrarily-`any()`-picked non-root representative row (issue
 		// #1481).
-		if len(agg.AggFuncs) != 9 {
-			t.Errorf("len(AggFuncs) = %d, want 9", len(agg.AggFuncs))
+		if len(agg.AggFuncs) != 8 {
+			t.Errorf("len(AggFuncs) = %d, want 8", len(agg.AggFuncs))
 		}
 		aliases := map[string]bool{}
 		for _, af := range agg.AggFuncs {
 			aliases[af.Alias] = true
 		}
-		for _, want := range []string{"TraceId", "Value", "MetricName", "ResourceAttrs", "ParentSpanId", "TimeUnix", "TraceStartNs", "TraceEndNs"} {
+		for _, want := range []string{"SpanId", "Value", "MetricName", "ResourceAttrs", "ParentSpanId", "TimeUnix", "TraceStartNs", "TraceEndNs"} {
 			if !aliases[want] {
 				t.Errorf("AggFuncs missing %q alias (got %v)", want, aliases)
 			}

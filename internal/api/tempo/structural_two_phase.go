@@ -9,6 +9,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/schema"
+	traceql_lower "github.com/tsouza/cerberus/internal/traceql"
 )
 
 // phaseARankTsAlias names the per-trace ranking key phase A computes —
@@ -18,7 +19,7 @@ import (
 const phaseARankTsAlias = "rankTs"
 
 // externalTraceIDTableName is the fixed name restrictStructural stamps onto
-// chplan.StructuralJoin.TraceIDExternalTable and runStructuralTwoPhase passes
+// chplan.StructuralJoin.TraceIDExternalTable and runTwoPhase passes
 // to chclient.WithExternalTraceIDs (issue #2783). A single fixed name is safe
 // even across concurrent phase-B dispatches (route-B sharding, or two
 // unrelated requests in flight at once): ClickHouse scopes a native-protocol
@@ -140,8 +141,8 @@ func isPureSelectProjection(p *chplan.Project) bool {
 
 // SearchResult parses, routes, and executes a /api/search query and returns the
 // eager engine.Result both Search transports shape into trace summaries. It is
-// the SINGLE place the structural two-phase split decision lives, so the HTTP and
-// gRPC heads physically cannot diverge — the HTTP-only two-phase gap this closes.
+// the SINGLE place the two-phase split decision lives, so the HTTP and gRPC
+// heads physically cannot diverge — the HTTP-only two-phase gap this closes.
 // Callers apply toTraceSummaries / TruncateSummaries / spss over res.Samples.
 //
 // A positive recursive structural search (`A >> B` / `A << B`, plus negated
@@ -149,10 +150,25 @@ func isPureSelectProjection(p *chplan.Project) bool {
 // WIDE R projection; on a dense descendant side that projection materialises
 // every matched span only to return the top-N traces — the prod OOM. Split it:
 // phase A ranks narrowly to the top-N TraceIds, phase B re-runs the closure
-// projecting wide but restricted to just those traces. Every other shape stays
-// on the single-query path — byte-identical to today.
+// projecting wide but restricted to just those traces.
 //
-// Default-on, switchable off (CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE=false).
+// A windowed search whose chosen traces are read over the window widened by
+// the maximum trace duration (traceql.SearchDrains) also runs in two phases
+// when its plan drains in phase B (drainsChosenTraces): phase A chooses the
+// top-N traces over the request window, as the single query would, and phase B
+// re-lowers the query as its drain (traceql.WithSearchDrain) restricted to
+// those traces, returning each one's matching spans inside and outside the
+// window. The plain shape drains inside its own plan (chplan.SearchTraceLimit's
+// Rank) and stays on the single-query path.
+//
+// Every other shape stays on the single-query path — byte-identical to today.
+//
+// The structural split is default-on, switchable off
+// (CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE=false); switched off, the split's
+// target (structuralTwoPhaseTarget: a recursive relation at the plan's root,
+// alone or under a pure select) runs as the single query over the request
+// window, so it returns only its matching spans inside that window. Every
+// other shape keeps its drain.
 // Deliberately UNCONDITIONAL for every eligible shape — no density cost-gate:
 // the OOM variable is BYTES (matched-span-count × per-span map width), and every
 // cheap pre-fetch signal measures ROWS, blind to fat maps, so a selective-but-
@@ -165,56 +181,248 @@ func (h *Handler) SearchResult(ctx context.Context, query string, limit int) (en
 	if err != nil {
 		return engine.Result{}, err
 	}
-	if sj, ok := structuralTwoPhaseTarget(plan); ok && h.StructuralTwoPhase {
-		return h.runStructuralTwoPhase(ctx, sj, plan, meta, limit)
+	drain := traceql_lower.SearchDrains(ctx, h.Schema) && drainsChosenTraces(plan)
+	if sj, ok := structuralTwoPhaseTarget(plan); ok {
+		if !h.StructuralTwoPhase {
+			return h.Engine.QueryPlan(ctx, h.lang, plan, meta)
+		}
+		return h.runTwoPhase(ctx, query, buildStructuralPhaseAPlan(sj, h.Schema, limit), plan, meta, drain)
+	}
+	if drain {
+		return h.runTwoPhase(ctx, query, drainPhaseAPlan(plan, h.Schema, limit), plan, meta, true)
 	}
 	return h.Engine.QueryPlan(ctx, h.lang, plan, meta)
 }
 
-// runStructuralTwoPhase executes a positive recursive structural search in two
-// phases and returns the same engine.Result the single wide query would have
-// produced — the identical ordered top-N traces with identical per-trace
-// spansets, only bounded in memory.
+// drainsChosenTraces reports whether a lowered search plan reads its chosen
+// traces' matching spans in a phase B of its own: a spanset operation (`&&`,
+// `||`), a positive or union structural relation of any kind, a pipeline
+// filter or a `| select(...)`, over span filters with any trace-scoped
+// intrinsic or spanset-aggregate operand they carry. Every such shape is
+// monotone in the window — reading more of a chosen trace's spans only adds
+// matching spans, never removes one — so each chosen trace keeps the spans it
+// matched inside the request window and gains its matching spans outside it.
 //
-// Phase A runs the closure NARROW (join keys + Timestamp only, no wide
-// attribute maps), groups by TraceId, and ranks by min(Timestamp) DESC,
-// TraceId ASC LIMIT N — the exact ranking sortSummariesStartDesc +
-// TruncateSummaries apply downstream — yielding the top-N on-disk TraceIds.
-// Phase B re-runs the closure projecting WIDE but with those N TraceIds
-// restricted onto every physical spans scan, so idx_trace_id granule-prunes
-// the wide fetch to just the response traces — spliced as literals below
-// useExternalTraceIDTable's threshold, or pushed as a native-protocol
-// external table above it when h.ExternalTraceIDPush is set (issue #2783;
-// see restrictStructural). toTraceSummaries over phase B's rows recomputes
-// the identical summaries; TruncateSummaries is then a no-op safety net (≤ N
-// traces already).
-func (h *Handler) runStructuralTwoPhase(ctx context.Context, sj *chplan.StructuralJoin, fullPlan chplan.Node, meta engine.Meta, limit int) (engine.Result, error) {
-	topN, err := h.runStructuralPhaseA(ctx, sj, limit)
+// Excluded: the plain shape (a chplan.SearchTraceLimit root), which drains
+// inside its own plan; a negated structural relation, whose matches a wider
+// read can remove (a span outside the window can be the ancestor that makes a
+// span inside it no longer match); the nested-set annotation; and a
+// top-level spanset aggregate, which returns one row per trace.
+func drainsChosenTraces(n chplan.Node) bool {
+	switch v := n.(type) {
+	case *chplan.Scan:
+		return true
+	case *chplan.Filter:
+		return drainsChosenTraces(v.Input)
+	case *chplan.Project:
+		return drainsChosenTraces(v.Input)
+	case *chplan.TraceLookupFilter:
+		return drainsChosenTraces(v.Input)
+	case *chplan.SetOperation:
+		switch v.Op {
+		case chplan.SetIntersect, chplan.SetUnion:
+			return drainsChosenTraces(v.Left) && drainsChosenTraces(v.Right)
+		}
+	case *chplan.StructuralJoin:
+		return !v.Op.IsNegated() && drainsChosenTraces(v.Left) && drainsChosenTraces(v.Right)
+	}
+	return false
+}
+
+// drainPhaseAPlan is the phase-A ranking plan of a search that runs in two
+// phases for its drain alone: the narrow structural ranking when the plan is a
+// structural relation (direct `>` / `<` / `~` and their union forms, alone or
+// under a `| select(...)`), the newest-traces ranking over the plan itself
+// otherwise.
+func drainPhaseAPlan(plan chplan.Node, s schema.Traces, limit int) chplan.Node {
+	root := plan
+	if p, ok := root.(*chplan.Project); ok && isPureSelectProjection(p) {
+		root = p.Input
+	}
+	if sj, ok := root.(*chplan.StructuralJoin); ok {
+		return buildStructuralPhaseAPlan(sj, s, limit)
+	}
+	return newestTracesPlan(plan, s, limit)
+}
+
+// runTwoPhase executes a search in two phases and returns the engine.Result
+// the response is shaped from: the top-N traces phase A ranks, with their
+// spansets read by phase B.
+//
+// Phase A runs the ranking plan phaseA (buildStructuralPhaseAPlan,
+// newestTracesPlan): traces by min(Timestamp) DESC, TraceId ASC LIMIT N over
+// the request window — the ranking the single query applies — yielding the
+// top-N on-disk TraceIds.
+//
+// Phase B runs the lowered plan restricted to those traces (restrictStructural,
+// plus a trace-id list on every span scan outside a structural join with
+// drain). Without drain it is plan itself — the structural split's wide fetch,
+// reading the same rows the single query would. With drain it is
+// the query re-lowered under traceql.WithSearchDrain, which reads the window
+// widened by the maximum trace duration, so each chosen trace returns its
+// matching spans outside the request window too. Every physical spans scan of
+// phase B is confined to the top-N traces, so idx_trace_id granule-prunes the
+// fetch to just the response traces — spliced as literals, or, on the
+// structural closure scans, pushed as a native-protocol external table above
+// useExternalTraceIDTable's threshold when h.ExternalTraceIDPush is set (issue
+// #2783). toTraceSummaries over phase B's rows computes the summaries;
+// TruncateSummaries is then a no-op safety net (≤ N traces already). A drained
+// summary starts at its trace's earliest matching span in the widened window,
+// so the response orders the same N traces by that start.
+func (h *Handler) runTwoPhase(
+	ctx context.Context, query string, phaseA, plan chplan.Node, meta engine.Meta, drain bool,
+) (engine.Result, error) {
+	topN, err := h.runPhaseA(ctx, phaseA)
 	if err != nil {
 		return engine.Result{}, err
 	}
 	if len(topN) == 0 {
-		// No trace matched the closure: skip phase B (a literal `IN ()` is a CH
-		// syntax error) and return an empty result — byte-identical to what the
+		// No trace matched: skip phase B (a literal `IN ()` is a CH syntax
+		// error) and return an empty result — byte-identical to what the
 		// single query would produce (zero matched rows -> zero summaries).
 		return engine.Result{Meta: meta}, nil
 	}
-	// Phase B: clone the lowered join and restrict every closure scan to the
-	// top-N traces, then run the normal wide pipeline (wrap-projection +
-	// optimizer + emit + execute) so res.Samples arrive in the exact shape
-	// toTraceSummaries already consumes.
-	restricted, ids, external := restrictStructural(fullPlan, topN, h.ExternalTraceIDPush)
+	if drain {
+		plan, _, err = h.lang.Parse(traceql_lower.WithSearchDrain(ctx), query)
+		if err != nil {
+			return engine.Result{}, err
+		}
+	}
+	// Phase B: restrict a clone of the lowered plan to the top-N traces, then
+	// run the normal wide pipeline (wrap-projection + optimizer + emit +
+	// execute) so res.Samples arrive in the exact shape toTraceSummaries
+	// already consumes.
+	if !drain {
+		return h.runPhaseB(ctx, plan, topN, meta, false)
+	}
+	// A drain's span rows are not all read through a structural closure: a
+	// spanset operation's arms and a pipeline's span filter are plain span
+	// scans, so every leaf scan — per-trace subqueries and lookups included —
+	// takes a literal id list of its own. Each list costs SQL text at every
+	// site it is spliced into, so the chosen traces are read in batches whose
+	// lists fit traceIDLiteralByteBudget. Every
+	// trace's spans depend on that trace's rows alone, so the batches'
+	// results together are the single phase B's. The merged result's
+	// statement fields describe the first batch's statement; its ClickHouse
+	// time sums every batch's.
+	var res engine.Result
+	for i, batch := range drainBatches(topN, drainLiteralSites(plan, h.ExternalTraceIDPush)) {
+		part, err := h.runPhaseB(ctx, plan, batch, meta, true)
+		if err != nil {
+			return engine.Result{}, err
+		}
+		if i == 0 {
+			res = part
+			continue
+		}
+		res.Samples = append(res.Samples, part.Samples...)
+		res.CHMillis += part.CHMillis
+	}
+	return res, nil
+}
+
+// runPhaseB runs plan restricted to the traces topN: every structural join
+// through restrictStructural and, for a drain, every leaf span scan through a
+// literal id list (chplan.PushLeafPredicate). The leaf list carries topN as
+// phase A read it from the trace-id column, so it matches that column's
+// stored values whatever form they take; restrictStructural's padded ids are
+// the structural closure's form, not the column's.
+func (h *Handler) runPhaseB(ctx context.Context, plan chplan.Node, topN []string, meta engine.Meta, drain bool) (engine.Result, error) {
+	restricted, ids, external := restrictStructural(plan, topN, h.ExternalTraceIDPush)
+	if drain {
+		restricted = chplan.PushLeafPredicate(restricted, traceIDsIn(h.Schema.TraceIDColumn, topN))
+	}
 	if external {
+		var err error
 		ctx, err = chclient.WithExternalTraceIDs(ctx, externalTraceIDTableName, h.Schema.TraceIDColumn, ids)
 		if err != nil {
-			return engine.Result{}, fmt.Errorf("engine: execute: structural phase B external trace-id table: %w", err)
+			return engine.Result{}, fmt.Errorf("engine: execute: search phase B external trace-id table: %w", err)
 		}
 	}
 	return h.Engine.QueryPlan(ctx, h.lang, restricted, meta)
 }
 
-// runStructuralPhaseA emits and runs the narrow ranking query, returning the
-// top-N on-disk TraceIds newest-first (min(Timestamp) DESC, TraceId ASC). It
+// drainLiteralSites is the number of places a drain phase B splices its
+// literal trace-id list into: one per leaf scan chplan.PushLeafPredicate
+// restricts, plus traceIDRestrictionSiteCount per structural join when the
+// joins take the literal form (no external-table push).
+func drainLiteralSites(plan chplan.Node, externalPush bool) int {
+	marker := &chplan.LitBool{V: true}
+	sites := countSplices(chplan.PushLeafPredicate(chplan.CloneNode(plan), marker), marker)
+	if !externalPush {
+		eachStructuralJoin(plan, func(*chplan.StructuralJoin) { sites += traceIDRestrictionSiteCount })
+	}
+	return sites
+}
+
+// countSplices counts the Filter conjuncts of n that are pred itself, the
+// predicate chplan.PushLeafPredicate shares between every leaf it restricts:
+// in n's nodes and in every per-trace subquery their predicates carry.
+func countSplices(n chplan.Node, pred chplan.Expr) int {
+	count := 0
+	var predicate chplan.Expr
+	switch v := n.(type) {
+	case *chplan.Filter:
+		predicate = v.Predicate
+		for _, c := range flattenAnd(v.Predicate) {
+			if c == pred {
+				count++
+			}
+		}
+	case *chplan.TraceLookupFilter:
+		predicate = v.Predicate
+	}
+	for _, in := range chplan.CohortSubqueries(predicate) {
+		count += countSplices(in.Subquery, pred)
+	}
+	for _, c := range n.Children() {
+		count += countSplices(c, pred)
+	}
+	return count
+}
+
+// flattenAnd splits an AND tree into its conjuncts.
+func flattenAnd(e chplan.Expr) []chplan.Expr {
+	if b, ok := e.(*chplan.Binary); ok && b.Op == chplan.OpAnd {
+		return append(flattenAnd(b.Left), flattenAnd(b.Right)...)
+	}
+	return []chplan.Expr{e}
+}
+
+// drainBatches splits the chosen trace ids, in rank order, into batches whose
+// literal list, spliced at sites places, stays within
+// traceIDLiteralByteBudget. Every batch holds at least one id; a plan with no
+// literal site (a structural relation under an external-table push) reads
+// every id in one batch.
+func drainBatches(ids []string, sites int) [][]string {
+	if sites == 0 {
+		return [][]string{ids}
+	}
+	var batches [][]string
+	start, bytes := 0, 0
+	for i, id := range ids {
+		idBytes := estimatedLiteralBytes([]string{normaliseTraceID(id)}) * sites
+		if i > start && bytes+idBytes > traceIDLiteralByteBudget {
+			batches = append(batches, ids[start:i])
+			start, bytes = i, 0
+		}
+		bytes += idBytes
+	}
+	return append(batches, ids[start:])
+}
+
+// traceIDsIn is the `<traceIDColumn> IN (<ids>)` restriction phase B pushes
+// onto a drain's leaf span scans.
+func traceIDsIn(traceIDColumn string, ids []string) chplan.Expr {
+	list := make([]chplan.Expr, len(ids))
+	for i, id := range ids {
+		list[i] = &chplan.LitString{V: id}
+	}
+	return &chplan.InList{Left: &chplan.ColumnRef{Name: traceIDColumn}, List: list}
+}
+
+// runPhaseA emits and runs a narrow ranking plan, returning the top-N on-disk
+// TraceIds newest-first (min(Timestamp) DESC, TraceId ASC). It
 // emits directly through chsql.Emit + Client.QueryStrings (bypassing
 // wrap-projection + the optimizer) because the result is a bare list of trace
 // ids, not a Sample stream — the same direct-emit pattern resolveTraceRoots
@@ -237,15 +445,14 @@ func (h *Handler) runStructuralTwoPhase(ctx context.Context, sj *chplan.Structur
 // the SAME closure, just projecting fewer columns), so a JSON-typed
 // attribute referenced anywhere in it needs the strategy exactly like
 // phase B and the single-query path do.
-func (h *Handler) runStructuralPhaseA(ctx context.Context, sj *chplan.StructuralJoin, limit int) ([]string, error) {
-	phaseA := buildStructuralPhaseAPlan(sj, h.Schema, limit)
+func (h *Handler) runPhaseA(ctx context.Context, phaseA chplan.Node) ([]string, error) {
 	ctx = chsql.WithSpansTable(ctx, h.Schema.SpansTable)
 	ctx = chsql.WithSchemaStrategies(ctx, h.tracesStrategies(ctx))
 	sql, args, physicalScans, err := chsql.EmitCounted(ctx, phaseA)
 	if err != nil {
 		// Mirror the engine's `emit:` wrapping so ClassifyErr maps this
 		// to HTTP 500 like any other emit failure.
-		return nil, fmt.Errorf("engine: emit: structural phase A: %w", err)
+		return nil, fmt.Errorf("engine: emit: search phase A: %w", err)
 	}
 	// This dispatch bypasses the engine, so it stamps the data-shard fan-out
 	// weight itself: a structural join renders the spans table once per
@@ -255,28 +462,19 @@ func (h *Handler) runStructuralPhaseA(ctx context.Context, sj *chplan.Structural
 	ctx = chclient.WithDataShardFanoutMultiplier(ctx, physicalScans)
 	ids, err := h.Client.QueryStrings(ctx, sql, args...)
 	if err != nil {
-		return nil, fmt.Errorf("engine: execute: structural phase A: %w", err)
+		return nil, fmt.Errorf("engine: execute: search phase A: %w", err)
 	}
 	return ids, nil
 }
 
 // buildStructuralPhaseAPlan builds the narrow ranking plan over a lowered
-// structural join:
-//
-//	Project[TraceId]
-//	  Limit(N)
-//	    OrderBy(rankTs DESC, TraceId ASC)
-//	      Aggregate(GroupBy=[TraceId], min(Timestamp) AS rankTs)
-//	        StructuralJoin(narrow: ExtraProjectionColumns=[Timestamp])
+// structural join: newestTracesPlan over
+// StructuralJoin(narrow: ExtraProjectionColumns=[Timestamp]).
 //
 // The narrow join is a clone of the lowered join with the wide attribute
 // columns dropped from the projection — the closure, R match, window, depth
 // cap, and candidate prefilter are all preserved, so the set of matched R rows
-// is IDENTICAL to the wide query's; only the projected columns differ. Grouping
-// by TraceId and taking min(Timestamp) reproduces exactly the per-trace startNS
-// toTraceSummaries computes, and the ORDER BY + LIMIT reproduce exactly the
-// top-N sortSummariesStartDesc + TruncateSummaries would keep — so phase A's
-// ids are byte-for-byte the traces the single query would have returned.
+// is IDENTICAL to the wide query's; only the projected columns differ.
 func buildStructuralPhaseAPlan(sj *chplan.StructuralJoin, s schema.Traces, limit int) chplan.Node {
 	narrow := chplan.CloneNode(sj).(*chplan.StructuralJoin)
 	// Project only the ranking column. The three join keys are always emitted
@@ -289,8 +487,26 @@ func buildStructuralPhaseAPlan(sj *chplan.StructuralJoin, s schema.Traces, limit
 		j.ExtraProjectionColumns = []string{s.TimestampColumn}
 	})
 
+	return newestTracesPlan(narrow, s, limit)
+}
+
+// newestTracesPlan builds the ranking plan selecting the limit newest traces
+// of a span row source:
+//
+//	Project[TraceId]
+//	  Limit(N)
+//	    OrderBy(rankTs DESC, TraceId ASC)
+//	      Aggregate(GroupBy=[TraceId], min(Timestamp) AS rankTs)
+//	        input
+//
+// Grouping by TraceId and taking min(Timestamp) reproduces exactly the
+// per-trace startNS toTraceSummaries computes over input's rows, and the
+// ORDER BY + LIMIT reproduce exactly the top-N sortSummariesStartDesc +
+// TruncateSummaries would keep of them — so the ids are byte-for-byte the
+// traces the single query over input would have returned.
+func newestTracesPlan(input chplan.Node, s schema.Traces, limit int) chplan.Node {
 	agg := &chplan.Aggregate{
-		Input:          narrow,
+		Input:          input,
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}},
 		GroupByAliases: []string{s.TraceIDColumn},
 		AggFuncs: []chplan.AggFunc{{
@@ -313,9 +529,9 @@ func buildStructuralPhaseAPlan(sj *chplan.StructuralJoin, s schema.Traces, limit
 	}
 }
 
-// restrictStructural clones the lowered structural-join plan and stamps the
-// phase-A top-N TraceIds onto it as the closure's restriction, so phase B's
-// wide fetch reads only those traces. The ids are routed through
+// restrictStructural clones the lowered plan and stamps the phase-A top-N
+// TraceIds onto every structural join in it as the closure's restriction, so
+// phase B's wide fetch reads only those traces. The ids are routed through
 // padTraceIDs (the root-lookup literal-splice helper) — idempotent for the
 // on-disk 32-char form phase A returns, and a defensive left-pad for any short
 // id — so the restriction matches otel_traces.TraceId exactly whichever form
@@ -326,7 +542,7 @@ func buildStructuralPhaseAPlan(sj *chplan.StructuralJoin, s schema.Traces, limit
 // before. When true, restrictStructural ALSO checks useExternalTraceIDTable —
 // only once BOTH hold does it stamp TraceIDExternalTable instead of
 // TraceIDRestriction, and reports external=true so the caller
-// (runStructuralTwoPhase) knows to attach the actual id rows via
+// (runTwoPhase) knows to attach the actual id rows via
 // chclient.WithExternalTraceIDs. Returns the padded ids alongside the clone
 // either way, since the caller needs them again for that attach.
 func restrictStructural(plan chplan.Node, topN []string, externalEligible bool) (restricted chplan.Node, ids []string, external bool) {
@@ -344,14 +560,18 @@ func restrictStructural(plan chplan.Node, topN []string, externalEligible bool) 
 	// leaves the inner closure scanning + projecting the full window in both
 	// phases (the exact OOM this fix removes). Every result trace is in the
 	// top-N set, so confining an inner closure to those trace-ids is loss-free.
+	joins := 0
 	eachStructuralJoin(clone, func(sj *chplan.StructuralJoin) {
+		joins++
 		if external {
 			sj.TraceIDExternalTable = externalTraceIDTableName
 		} else {
 			sj.TraceIDRestriction = ids
 		}
 	})
-	return clone, ids, external
+	// A plan with no structural join (a spanset operation's phase B) reads no
+	// external table, so none is attached.
+	return clone, ids, external && joins > 0
 }
 
 // eachStructuralJoin visits every StructuralJoin in n (root-first), so a

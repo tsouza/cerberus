@@ -1,0 +1,93 @@
+# Arithmetic between a trace-scoped intrinsic and a literal as an aggregate
+# argument is a per-span value, twice the trace's duration — not the boolean
+# a per-trace membership test would hand the aggregate.
+#
+#   trace ...01  rootName 'm', rootServiceName 'frontend', traceDuration 3s
+#     0001 root  'm' frontend  server    0s +3s
+#     0002       'm' backend   client    1s +1s
+#     0003       'a' frontend  internal  1s +2s
+#     0004       'z' db        client    2s +0.5s
+#   trace ...02  NO root span (0010's parent is a span no row carries):
+#                rootName '', rootServiceName '', traceDuration 2s
+#     0010       'b' svc-b     internal  0s +2s
+#     0011       ''  ''        server    1s +1s
+#   trace ...03  rootName 'n', rootServiceName 'api', traceDuration 1s
+#     0020 root  'n' api       server    0s +1s
+#     0021       'c' api       client    0s +1s
+#   trace ...04  rootName 'q', rootServiceName 'edge', traceDuration 3s,
+#                which no single span covers (the longest span is 1s)
+#     0030 root  'q' edge      server    0s +1s
+#     0031       'w' edge      client    2s +1s
+#
+# Keeps traces 01 (6s), 02 (4s) and 04 (6s); trace 03's 2s is not > 3s.
+-- query.traceql --
+{ } | max(traceDuration * 2) > 3s
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = Memory;
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, SpanName, ServiceName, SpanKind, ResourceAttributes, SpanAttributes) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '',                 toDateTime64('2024-01-01 00:00:00', 9), 3000000000, 'm', 'frontend', 'Server',   map('service.name', 'frontend'), map()),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', toDateTime64('2024-01-01 00:00:01', 9), 1000000000, 'm', 'backend',  'Client',   map('service.name', 'backend'),  map('peer', 'm')),
+    ('a0000000000000000000000000000001', '0000000000000003', '0000000000000001', toDateTime64('2024-01-01 00:00:01', 9), 2000000000, 'a', 'frontend', 'Internal', map('service.name', 'frontend'), map()),
+    ('a0000000000000000000000000000001', '0000000000000004', '0000000000000001', toDateTime64('2024-01-01 00:00:02', 9), 500000000,  'z', 'db',       'Client',   map('service.name', 'db'),       map('peer', 'x')),
+    ('a0000000000000000000000000000002', '0000000000000010', '0000000000000000', toDateTime64('2024-01-01 00:00:00', 9), 2000000000, 'b', 'svc-b',    'Internal', map('service.name', 'svc-b'),    map()),
+    ('a0000000000000000000000000000002', '0000000000000011', '0000000000000010', toDateTime64('2024-01-01 00:00:01', 9), 1000000000, '',  '',         'Server',   map('service.name', ''),         map()),
+    ('a0000000000000000000000000000003', '0000000000000020', '',                 toDateTime64('2024-01-01 00:00:00', 9), 1000000000, 'n', 'api',      'Server',   map('service.name', 'api'),      map()),
+    ('a0000000000000000000000000000003', '0000000000000021', '0000000000000020', toDateTime64('2024-01-01 00:00:00', 9), 1000000000, 'c', 'api',      'Client',   map('service.name', 'api'),      map('peer', 'n')),
+    ('a0000000000000000000000000000004', '0000000000000030', '',                 toDateTime64('2024-01-01 00:00:00', 9), 1000000000, 'q', 'edge',     'Server',   map('service.name', 'edge'),     map()),
+    ('a0000000000000000000000000000004', '0000000000000031', '0000000000000030', toDateTime64('2024-01-01 00:00:02', 9), 1000000000, 'w', 'edge',     'Client',   map('service.name', 'edge'),     map('peer', 'q'));
+-- expected_rows --
+[
+  ["b", {"__cerberus_parentSpanID": "0000000000000000", "__cerberus_traceDurationNs": "2000000000", "__cerberus_traceID": "a0000000000000000000000000000002", "service.name": "svc-b"}, "2024-01-01T00:00:00Z", 4000000000],
+  ["m", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "3000000000", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "frontend"}, "2024-01-01T00:00:00Z", 6000000000],
+  ["q", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "3000000000", "__cerberus_traceID": "a0000000000000000000000000000004", "service.name": "edge"}, "2024-01-01T00:00:00Z", 6000000000]
+]
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `{ } | max(traceDuration * 2) > 3s` reduces the spanset to one per-trace row carrying __cerberus_traceID and no __cerberus_spanID, so the answer is an aggregate rather than the span set runTempoParity compares
+-- args --
+[0] int64 = 2
+[1] bool = true
+[2] int64 = 3000000000
+-- args_optimized --
+[0] string = "__cerberus_traceID"
+[1] string = "__cerberus_parentSpanID"
+[2] string = "__cerberus_traceDurationNs"
+[3] int64 = 2
+[4] bool = true
+[5] int64 = 3000000000
+-- chplan --
+Filter predicate=(Value > 3000000000)
+  Aggregate groupBy=[TraceId AS TraceId] funcs=[FnMax((_cerb_trace_duration * 2)) AS Value, FnAny(SpanName) AS MetricName, FnAny(ResourceAttributes) AS ResourceAttrs, FnAny(ParentSpanId) AS ParentSpanId, FnMin(Timestamp) AS TimeUnix, FnMin(FnToUnixNanos(Timestamp)) AS TraceStartNs, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS TraceEndNs]
+    TraceLookupFilter lookups=1 predicate=<nil> exposeLookups
+      Filter predicate=true
+        Scan(otel_traces)
+      Project [_cerb_lookup_trace_id AS _cerb_lookup_trace_id, (_cerb_trace_end_ns - _cerb_trace_start_ns) AS _cerb_trace_duration]
+        Aggregate groupBy=[TraceId AS _cerb_lookup_trace_id] funcs=[FnMin(FnToUnixNanos(Timestamp)) AS _cerb_trace_start_ns, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS _cerb_trace_end_ns]
+          Scan(otel_traces)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project;agg=1;join
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_join=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT * FROM (SELECT `TraceId` AS `TraceId`, max((`_cerb_trace_duration` * ?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT `m`.*, `l0`.`_cerb_trace_duration` AS `_cerb_trace_duration` FROM (SELECT * FROM `otel_traces` WHERE ?) AS m LEFT JOIN (SELECT `_cerb_lookup_trace_id` AS `_cerb_lookup_trace_id`, (`_cerb_trace_end_ns` - `_cerb_trace_start_ns`) AS `_cerb_trace_duration` FROM (SELECT `TraceId` AS `_cerb_lookup_trace_id`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `_cerb_trace_start_ns`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `_cerb_trace_end_ns` FROM (SELECT * FROM `otel_traces`) GROUP BY `_cerb_lookup_trace_id`)) AS l0 ON m.`TraceId` = l0.`_cerb_lookup_trace_id`) GROUP BY `TraceId`) WHERE (`Value` > ?)
+-- sql_optimized --
+SELECT `MetricName` AS `MetricName`, mapConcat(`ResourceAttrs`, map(?, `TraceId`, ?, `ParentSpanId`, ?, toString((`TraceEndNs` - `TraceStartNs`)))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Value`) AS `Value` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, max((`_cerb_trace_duration` * ?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT `m`.*, `l0`.`_cerb_trace_duration` AS `_cerb_trace_duration` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE ?) AS m LEFT JOIN (SELECT `_cerb_lookup_trace_id` AS `_cerb_lookup_trace_id`, (`_cerb_trace_end_ns` - `_cerb_trace_start_ns`) AS `_cerb_trace_duration` FROM (SELECT `TraceId` AS `_cerb_lookup_trace_id`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `_cerb_trace_start_ns`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `_cerb_trace_end_ns` FROM (SELECT `Duration`, `Timestamp`, `TraceId` FROM `otel_traces`) GROUP BY `_cerb_lookup_trace_id`)) AS l0 ON m.`TraceId` = l0.`_cerb_lookup_trace_id`) GROUP BY `TraceId`) WHERE (`Value` > ?))

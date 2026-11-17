@@ -3,6 +3,7 @@
   "head": "tempo-grpc",
   "bucket": "0a",
   "cases": [
+    "search | aggregate_avg_trace_duration",
     "search | intrinsic_eq_nil_rejected"
   ]
 }

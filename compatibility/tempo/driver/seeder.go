@@ -3,7 +3,8 @@
 // What this file does, end to end:
 //
 //  1. Build a deterministic in-memory fixture of traces (4 services ×
-//     25 traces × 3-5 spans). Trace IDs / span IDs / attributes are
+//     25 traces × 3-5 spans, plus one 2-span trace without a root span).
+//     Trace IDs / span IDs / attributes are
 //     index-derived and byte-stable across runs; timestamps roll with
 //     wall-clock (anchor = now() - anchorOffset, see currentAnchor) so
 //     the live store's ingestion-time-range slack doesn't need to grow
@@ -94,7 +95,8 @@ func currentAnchor() time.Time {
 }
 
 // fixture-shape constants. 4 services × 25 traces × variable spans
-// (3..5 round-robin) ≈ 400 spans — well above the smoke assertion's
+// (3..5 round-robin) ≈ 400 spans, plus one rootless trace
+// (newRootlessTrace) — well above the smoke assertion's
 // "non-zero span count" floor and small enough that the gRPC
 // ExportTraceServiceRequest stays under the default 4MB message limit
 // without a custom dial option.
@@ -280,14 +282,75 @@ func runSeed(args []string) error {
 // produces the same byte content, so reseeding gives both backends a
 // stable diff base.
 func buildFixture(start time.Time) []*fixtureTrace {
-	out := make([]*fixtureTrace, 0, len(services)*traceCount)
+	out := make([]*fixtureTrace, 0, len(services)*traceCount+1)
 	for si, svc := range services {
 		for i := range traceCount {
 			t := newTrace(start, svc, si, i)
 			out = append(out, t)
 		}
 	}
-	return out
+	return append(out, newRootlessTrace(start))
+}
+
+// rootlessService is the service of the fixture's one trace without a root
+// span, and rootlessMissingParent the index of the span its entry span names
+// as parent, which no trace ever carries. Its trace ID derives from
+// (rootlessService, 0), so the corpus can address it as
+// `-- traceid_template -- orphan/0`.
+const (
+	rootlessService       = "orphan"
+	rootlessMissingParent = 99
+)
+
+// rootlessTraceDuration is the rootless trace's extent: longer than every
+// rooted trace (rootSpanDurationNs), so a trace-duration threshold between
+// the two selects it alone. Its child span starts rootlessChildSpan into the
+// trace and lasts as long, so it ends inside the entry span.
+const (
+	rootlessTraceDuration = 2 * time.Second
+	rootlessChildSpan     = rootlessTraceDuration / 4
+)
+
+// newRootlessTrace builds a trace whose root span was never ingested: its
+// entry span names a parent no trace carries, and a second span is that
+// entry span's child. Reference Tempo answers such a trace with an empty
+// rootTraceName and the "<root span not yet received>" rootServiceName, and
+// with a trace duration over every span it does carry. It starts after every
+// rooted trace.
+func newRootlessTrace(start time.Time) *fixtureTrace {
+	traceID := deriveTraceID(rootlessService, 0)
+	entryID := deriveSpanID(rootlessService, 0, 1)
+	childID := deriveSpanID(rootlessService, 0, 2)
+	missingParent := deriveSpanID(rootlessService, 0, rootlessMissingParent)
+	ts := start.Add(time.Duration(len(services)*traceCount) * time.Second)
+	childStart := ts.Add(rootlessChildSpan)
+	return &fixtureTrace{
+		service:  rootlessService,
+		resAttrs: fixtureResourceAttrs(rootlessService),
+		traceID:  traceID,
+		spans: []*otlptrace.Span{
+			{
+				TraceId:           traceID[:],
+				SpanId:            entryID[:],
+				ParentSpanId:      missingParent[:],
+				Name:              "orphan.entry",
+				Kind:              otlptrace.Span_SPAN_KIND_SERVER,
+				StartTimeUnixNano: uint64(ts.UnixNano()),
+				EndTimeUnixNano:   uint64(ts.Add(rootlessTraceDuration).UnixNano()),
+				Status:            &otlptrace.Status{Code: otlptrace.Status_STATUS_CODE_OK},
+			},
+			{
+				TraceId:           traceID[:],
+				SpanId:            childID[:],
+				ParentSpanId:      entryID[:],
+				Name:              "orphan.child",
+				Kind:              otlptrace.Span_SPAN_KIND_CLIENT,
+				StartTimeUnixNano: uint64(childStart.UnixNano()),
+				EndTimeUnixNano:   uint64(childStart.Add(rootlessChildSpan).UnixNano()),
+				Status:            &otlptrace.Status{Code: otlptrace.Status_STATUS_CODE_OK},
+			},
+		},
+	}
 }
 
 // newTrace builds one trace's spans: a root + 2..4 children. Counts
@@ -372,16 +435,22 @@ func newTrace(start time.Time, svc string, svcIdx, traceIdx int) *fixtureTrace {
 	}
 
 	return &fixtureTrace{
-		service: svc,
-		resAttrs: map[string]string{
-			"service.name":    svc,
-			"deployment.env":  "compat-test",
-			"telemetry.sdk":   "cerberus-tempo-compat-seeder",
-			"trace.fixture":   "pr3",
-			"trace.fixture.v": "1",
-		},
-		traceID: traceID,
-		spans:   spans,
+		service:  svc,
+		resAttrs: fixtureResourceAttrs(svc),
+		traceID:  traceID,
+		spans:    spans,
+	}
+}
+
+// fixtureResourceAttrs is the resource every fixture trace carries, keyed by
+// its service.
+func fixtureResourceAttrs(svc string) map[string]string {
+	return map[string]string{
+		"service.name":    svc,
+		"deployment.env":  "compat-test",
+		"telemetry.sdk":   "cerberus-tempo-compat-seeder",
+		"trace.fixture":   "pr3",
+		"trace.fixture.v": "1",
 	}
 }
 
@@ -402,7 +471,7 @@ func deriveTraceID(svc string, idx int) [16]byte {
 // OTLP span ID space. Same rationale as deriveTraceID.
 func deriveSpanID(svc string, traceIdx, spanIdx int) [8]byte {
 	var b [8]byte
-	// traceIdx ∈ [0, traceCount=25); spanIdx ∈ [0, ~5]. Product fits in uint64.
+	// traceIdx ∈ [0, traceCount=25); spanIdx ∈ [0, rootlessMissingParent=99]. Product fits in uint64.
 	binary.BigEndian.PutUint64(b[:], uint64(traceIdx*100+spanIdx)) //nolint:gosec // bounded loop indices, no overflow
 	h := sha256.Sum256(append([]byte("cerberus-tempo-span:"+svc+":"), b[:]...))
 	var id [8]byte

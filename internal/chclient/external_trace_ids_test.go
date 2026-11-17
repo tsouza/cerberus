@@ -31,7 +31,7 @@ func TestWithExternalTraceIDs_ReturnsDerivedContext(t *testing.T) {
 
 // TestWithExternalTraceIDs_EmptyIDsStillSucceeds pins the vacuous case: an
 // empty id slice still builds a valid (zero-row) external table rather than
-// erroring — runStructuralTwoPhase never calls this with zero ids in
+// erroring — runTwoPhase never calls this with zero ids in
 // practice (it returns before reaching restrictStructural when phase A found
 // nothing), but the helper itself should not assume that invariant.
 func TestWithExternalTraceIDs_EmptyIDsStillSucceeds(t *testing.T) {

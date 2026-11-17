@@ -24,11 +24,11 @@ const (
 
 // lowerGroup handles `| group(<field-expr>)` — the TraceQL grouping
 // pipeline element that collapses results into one representative span
-// per group key.
+// per (trace, group key).
 //
-// SQL shape: Aggregate { Input: prev, GroupBy: [<key-expr>],
+// SQL shape: Aggregate { Input: prev, GroupBy: [TraceId, <key-expr>],
 //
-//	AggFuncs: [ any(TraceId) AS TraceId, any(SpanId) AS SpanId,
+//	AggFuncs: [ any(SpanId) AS SpanId,
 //	            count(1) AS Value, + the spanset-envelope columns ] }
 //
 // The aggregate piggybacks the same per-group envelope columns
@@ -66,23 +66,30 @@ func lowerGroup(prev chplan.Node, g traceql.GroupOperation, s schema.Traces) (ch
 	if col, sub, ok := nestedIntrinsicGroupTarget(g.Expression, s); ok {
 		return groupAggregate(prev, &chplan.ColumnRef{Name: col + "." + sub}, s), nil
 	}
-	key, err := lowerFieldExpr(g.Expression, s, noLookupJoin)
+	// A key reading a trace-scoped intrinsic (`by(rootName)`,
+	// `by(rootName = name)`) groups by each span's own trace's value, joined
+	// onto the spans.
+	key, err := lowerFieldExpr(g.Expression, s)
 	if err != nil {
 		return nil, err
 	}
-	return groupAggregate(prev, key, s), nil
+	return groupAggregate(withTraceScopedValues(prev, s, key), key, s), nil
 }
 
 // groupAggregate builds the per-group Aggregate shared by lowerGroup:
 // the group key plus the representative envelope columns the Tempo
 // /api/search wrap projection decodes.
+//
+// The grouping is per trace: by() splits each trace's spanset into one
+// spanset per distinct key value (Tempo's GroupOperation.evaluate groups the
+// spans of one input spanset at a time), so two traces that share a key value
+// stay two groups. TraceId therefore leads the GROUP BY.
 func groupAggregate(prev chplan.Node, key chplan.Expr, s schema.Traces) chplan.Node {
 	return &chplan.Aggregate{
 		Input:          prev,
-		GroupBy:        []chplan.Expr{key},
-		GroupByAliases: []string{groupKeyAlias},
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}, key},
+		GroupByAliases: []string{aggTraceIDAlias, groupKeyAlias},
 		AggFuncs: append([]chplan.AggFunc{
-			{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}}, Alias: aggTraceIDAlias},
 			{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SpanIDColumn}}, Alias: s.SpanIDColumn},
 		}, spansetEnvelopeAggFuncs(s)...),
 	}

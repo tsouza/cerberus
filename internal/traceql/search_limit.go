@@ -368,8 +368,9 @@ func searchWindowFromCtx(ctx context.Context) (time.Time, time.Time) {
 // chplan.SearchTraceLimit, pushing the request's `limit` into SQL so
 // /api/search drains only the N newest traces instead of every matching row
 // (the summaries-drain OOM). The request time window is folded into the
-// scan predicate at the same time, so a windowed inner top-N ranking and
-// the outer drain both scan only the window — never the whole table.
+// scan predicate at the same time, so a windowed inner top-N ranking scans
+// only the window, and the outer drain only that window widened by the
+// maximum trace duration (drainWindow) — never the whole table.
 //
 // Both search entry points — the HTTP /api/search handler and the gRPC
 // streaming /search RPC — now clamp a windowless request (both start/end
@@ -398,40 +399,122 @@ func stampSearchTraceLimit(plan chplan.Node, limit int64, start, end time.Time, 
 	if limit <= 0 || plan == nil {
 		return plan
 	}
-	if lookup, ok := plan.(*chplan.TraceLookupFilter); ok {
-		input, ok := boundPlainSearchSource(lookup.Input, lookup.Predicate, start, end, s)
-		if !ok {
-			return plan
-		}
-		// The per-trace lookups and any membership subquery in the joined
-		// predicate scan the spans table too; stampSearchWindow does not
-		// enter the SearchTraceLimit built here, so they take the per-trace
-		// window now, as the plain shape's cohort does below.
-		bounded := *lookup
-		bounded.Input = input
-		if window := perTraceWindow(start, end, s); window != nil {
-			bounded.Lookups = make([]chplan.Node, len(lookup.Lookups))
-			for i, l := range lookup.Lookups {
-				bounded.Lookups[i] = chplan.PushLeafPredicate(l, window)
-			}
-			chplan.PushLeafPredicateIntoCohort(bounded.Predicate, window)
-		}
-		return &chplan.SearchTraceLimit{Input: &bounded, TraceLimit: limit}
+	if !isPlainSearchShape(plan) {
+		return plan
 	}
-	input, ok := boundPlainSearchSource(plan, nil, start, end, s)
+	// The drain is built from a clone before the rank source is folded into
+	// plan in place: boundSearchRowSource windows the per-trace subqueries it
+	// reaches where they stand.
+	var drain chplan.Node
+	if drainStart, drainEnd, widened := drainWindow(start, end, s); widened {
+		source := dropTraceScopedConjuncts(chplan.CloneNode(plan), s.TraceIDColumn)
+		drain = boundSearchRowSource(source, drainStart, drainEnd, start, end, s)
+	}
+	rank := boundSearchRowSource(plan, start, end, start, end, s)
+	if drain == nil {
+		return &chplan.SearchTraceLimit{Input: rank, TraceLimit: limit}
+	}
+	return &chplan.SearchTraceLimit{Input: drain, Rank: rank, TraceLimit: limit}
+}
+
+// dropTraceScopedConjuncts removes from a plain-search row source
+// (isPlainSearchShape) every top-level conjunct of its span predicate that
+// depends on the trace alone: a `TraceId IN (subquery)` membership, such as a
+// `rootName` or `traceDuration` comparison with a literal lowers to, or an
+// AND / OR of such memberships. The drain reads only the traces its ranking
+// chose, and the ranking keeps such a conjunct, so every span of a chosen
+// trace satisfies it; evaluating it again in the drain would repeat its
+// per-trace subquery for no row it could reject. A TraceLookupFilter's own
+// predicate, which compares trace values with span values, stays.
+func dropTraceScopedConjuncts(plan chplan.Node, traceIDColumn string) chplan.Node {
+	if lookup, ok := plan.(*chplan.TraceLookupFilter); ok {
+		lookup.Input = dropTraceScopedConjuncts(lookup.Input, traceIDColumn)
+		return lookup
+	}
+	filter, ok := plan.(*chplan.Filter)
 	if !ok {
 		return plan
 	}
-	return &chplan.SearchTraceLimit{Input: input, TraceLimit: limit}
+	var kept []chplan.Expr
+	for _, c := range andConjuncts(filter.Predicate) {
+		if !isTraceScoped(c, traceIDColumn) {
+			kept = append(kept, c)
+		}
+	}
+	if len(kept) == 0 {
+		return filter.Input
+	}
+	filter.Predicate = conjoinAll(kept)
+	return filter
+}
+
+// isTraceScoped reports whether e is a `traceIDColumn IN (subquery)`
+// membership, or an AND / OR of such memberships: a predicate whose value is
+// the same for every span of a trace.
+func isTraceScoped(e chplan.Expr, traceIDColumn string) bool {
+	switch v := e.(type) {
+	case *chplan.InSubquery:
+		ref, ok := v.Left.(*chplan.ColumnRef)
+		return ok && ref.Qualifier == "" && ref.Name == traceIDColumn
+	case *chplan.Binary:
+		if v.Op != chplan.OpAnd && v.Op != chplan.OpOr {
+			return false
+		}
+		return isTraceScoped(v.Left, traceIDColumn) && isTraceScoped(v.Right, traceIDColumn)
+	}
+	return false
+}
+
+// isPlainSearchShape reports whether plan is the plain-search row source
+// stampSearchTraceLimit bounds: a Scan or a Filter(Scan), alone or as the
+// Input of a TraceLookupFilter.
+func isPlainSearchShape(plan chplan.Node) bool {
+	if lookup, ok := plan.(*chplan.TraceLookupFilter); ok {
+		plan = lookup.Input
+	}
+	_, _, ok := plainSearchSource(plan)
+	return ok
+}
+
+// boundSearchRowSource folds the search windows into a plain-search row
+// source (isPlainSearchShape): its span rows read [rowsStart, rowsEnd], and
+// every per-trace subquery it carries — a TraceLookupFilter's lookups, a
+// membership subquery in either predicate — reads the per-trace window of the
+// request window [start, end] (perTraceWindow).
+func boundSearchRowSource(plan chplan.Node, rowsStart, rowsEnd, start, end time.Time, s schema.Traces) chplan.Node {
+	perTrace := perTraceWindow(start, end, s)
+	lookup, ok := plan.(*chplan.TraceLookupFilter)
+	if !ok {
+		input, _ := boundPlainSearchSource(plan, nil, rowsStart, rowsEnd, perTrace, s)
+		return input
+	}
+	input, _ := boundPlainSearchSource(lookup.Input, lookup.Predicate, rowsStart, rowsEnd, perTrace, s)
+	// The per-trace lookups and any membership subquery in the joined
+	// predicate scan the spans table too; stampSearchWindow does not enter the
+	// SearchTraceLimit built over this source, so they take the per-trace
+	// window now, as the plain shape's cohort does.
+	bounded := *lookup
+	bounded.Input = input
+	if perTrace != nil {
+		bounded.Lookups = make([]chplan.Node, len(lookup.Lookups))
+		for i, l := range lookup.Lookups {
+			bounded.Lookups[i] = chplan.PushLeafPredicate(l, perTrace)
+		}
+		chplan.PushLeafPredicateIntoCohort(bounded.Predicate, perTrace)
+	}
+	return &bounded
 }
 
 // boundPlainSearchSource returns the plain-search row source plan — a Scan or
-// a Filter(Scan), see plainSearchSource — with the request window folded into
-// its predicate and its Scan closed over the columns the search response, the
-// trace ranking, its own predicate and alsoRead (the predicate of a
-// TraceLookupFilter above it, nil otherwise) read off a span row. ok is false
-// for any other shape.
-func boundPlainSearchSource(plan chplan.Node, alsoRead chplan.Expr, start, end time.Time, s schema.Traces) (chplan.Node, bool) {
+// a Filter(Scan), see plainSearchSource — with the window [start, end] folded
+// into its predicate, the per-trace window perTrace folded into every
+// membership subquery its predicate carries, and its Scan closed over the
+// columns the search response, the trace ranking, its own predicate and
+// alsoRead (the predicate of a TraceLookupFilter above it, nil otherwise) read
+// off a span row. ok is false for any other shape.
+func boundPlainSearchSource(
+	plan chplan.Node, alsoRead chplan.Expr, start, end time.Time, perTrace chplan.Expr, s schema.Traces,
+) (chplan.Node, bool) {
 	scan, pred, ok := plainSearchSource(plan)
 	if !ok {
 		return nil, false
@@ -449,14 +532,15 @@ func boundPlainSearchSource(plan chplan.Node, alsoRead chplan.Expr, start, end t
 	//
 	// Stamp it before the outer fold, using the same leaf push the
 	// spanset-aggregate cohort already goes through. The cohort reads its
-	// traces' spans in the per-trace window; the span rows below stay in the
-	// request window.
-	if window := perTraceWindow(start, end, s); window != nil {
-		chplan.PushLeafPredicateIntoCohort(pred, window)
+	// traces' spans in the per-trace window; the span rows below read
+	// [start, end].
+	if perTrace != nil {
+		chplan.PushLeafPredicateIntoCohort(pred, perTrace)
 	}
 
-	// Fold the request window into the predicate so both the inner ranking
-	// subquery and the outer drain scan only [start, end].
+	// Fold the window into the predicate so the row source scans only
+	// [start, end]: the request window for the ranking, the drain window for
+	// the drain.
 	pred = andWindow(pred, start, end, s.TimestampColumn)
 	closedScan := *scan
 	closedScan.Columns = searchTraceLimitInputColumns(scan.Columns, conjoin(pred, alsoRead), s)
@@ -542,13 +626,37 @@ func andWindow(pred chplan.Expr, start, end time.Time, tsCol string) chplan.Expr
 // resolve even when they lie outside the request window. A zero start/end
 // contributes no bound, as in andWindow.
 func perTraceWindow(start, end time.Time, s schema.Traces) chplan.Expr {
+	start, end = widenWindow(start, end, s.MaxTraceDuration)
+	return andWindow(nil, start, end, s.TimestampColumn)
+}
+
+// widenWindow moves each set (non-zero) side of [start, end] outward by d; an
+// unset side stays unset.
+func widenWindow(start, end time.Time, d time.Duration) (time.Time, time.Time) {
 	if !start.IsZero() {
-		start = start.Add(-s.MaxTraceDuration)
+		start = start.Add(-d)
 	}
 	if !end.IsZero() {
-		end = end.Add(s.MaxTraceDuration)
+		end = end.Add(d)
 	}
-	return andWindow(nil, start, end, s.TimestampColumn)
+	return start, end
+}
+
+// drainWindow is the window a search reads its chosen traces' matching spans
+// over: the request window widened by the maximum trace duration on each set
+// side, the per-trace window's bounds. A trace no longer than that which
+// overlaps the request window lies wholly inside it, so every matching span
+// of a chosen trace is read, inside the request window or outside it — the
+// whole-trace answer reference Tempo gives a trace that overlaps the window.
+// widened is false when the maximum trace duration is zero or the request
+// carries no window: the chosen traces are then read over the request window
+// itself.
+func drainWindow(start, end time.Time, s schema.Traces) (drainStart, drainEnd time.Time, widened bool) {
+	if s.MaxTraceDuration <= 0 || (start.IsZero() && end.IsZero()) {
+		return start, end, false
+	}
+	drainStart, drainEnd = widenWindow(start, end, s.MaxTraceDuration)
+	return drainStart, drainEnd, true
 }
 
 // BoundPerTraceCohorts ANDs the per-trace window — the request window
@@ -570,4 +678,47 @@ func conjoin(left, right chplan.Expr) chplan.Expr {
 		return right
 	}
 	return &chplan.Binary{Op: chplan.OpAnd, Left: left, Right: right}
+}
+
+// searchDrainKey types the context value WithSearchDrain sets.
+type searchDrainKey struct{}
+
+// WithSearchDrain returns a context under which Lower lowers a windowed search
+// as its drain: the read that returns the chosen traces' matching spans. The
+// drain reads the request window widened by the maximum trace duration on
+// each set side (drainWindow), and its per-trace subqueries read that same
+// widened window, no further. A caller restricts the drain to the traces it
+// chose over the request window itself, as the structural two-phase search
+// does with its phase-A trace ids. Without a request window, or with a zero
+// maximum trace duration, the drain lowering is the ordinary lowering.
+func WithSearchDrain(ctx context.Context) context.Context {
+	return context.WithValue(ctx, searchDrainKey{}, true)
+}
+
+// SearchDrains reports whether a windowed search lowered under ctx with
+// schema s reads its chosen traces over a window wider than the request
+// window: the request carries a window and s a positive maximum trace
+// duration. A WithSearchDrain lowering under it then differs from the
+// ordinary one.
+func SearchDrains(ctx context.Context, s schema.Traces) bool {
+	start, end := searchWindowFromCtx(ctx)
+	_, _, widened := drainWindow(start, end, s)
+	return widened
+}
+
+// drainLowering returns the window and schema Lower stamps a plan with. Under
+// WithSearchDrain, with a window to widen, that is the drain window and s with
+// a zero maximum trace duration, so the per-trace subqueries read the drain
+// window itself rather than widening it again. Otherwise the inputs come back
+// unchanged.
+func drainLowering(ctx context.Context, start, end time.Time, s schema.Traces) (time.Time, time.Time, schema.Traces) {
+	if drain, _ := ctx.Value(searchDrainKey{}).(bool); !drain {
+		return start, end, s
+	}
+	drainStart, drainEnd, widened := drainWindow(start, end, s)
+	if !widened {
+		return start, end, s
+	}
+	s.MaxTraceDuration = 0
+	return drainStart, drainEnd, s
 }

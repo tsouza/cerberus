@@ -3,7 +3,6 @@ package tempo
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -93,7 +92,7 @@ func (h *Handler) resolveTraceRoots(ctx context.Context, traceIDs []string) (map
 	// buildRootLookupPlan's aggSvc, a bare chplan.MapAccess against
 	// ResourceAttributesColumn) — without this line a JSON-typed
 	// ResourceAttributes column would fail this query with
-	// ILLEGAL_TYPE_OF_ARGUMENT exactly like runStructuralPhaseA's own
+	// ILLEGAL_TYPE_OF_ARGUMENT exactly like runPhaseA's own
 	// bypass did before it was fixed. Unlike that one, a failure here
 	// WARN-degrades (handleSearch drops root enrichment on error) rather
 	// than 502ing the whole search — but degrading a working feature by
@@ -191,15 +190,16 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 	// zero form). Reused inside both argMinIf aggregates so they pick
 	// the root span among each TraceId group.
 	//
-	// This decoration is deliberately WIDER than the rootness test that
-	// answers a query. `{ rootName = … }` (internal/traceql/lower.go's
+	// This decoration is WIDER than the rootness test that answers a
+	// query. `{ rootName = … }` (internal/traceql/lower.go's
 	// traceScopedRootSpanCond) accepts only the empty spelling, because
 	// upstream's Span.IsRoot() is `len(ParentSpanID) == 0` and a query
-	// must return the spans reference returns (issue #1990). This
-	// helper is not deciding what matches: it is labelling a summary
-	// that already falls back to the earliest span when a trace has no
-	// root row at all, so a wider marker only changes WHICH heuristic
-	// supplies the same best-effort name.
+	// must return the spans reference returns (issue #1990). Here the
+	// wider marker decides whether a summary names a root at all: a trace
+	// whose only parentless span spells its parent as the zero hex reports
+	// that span as root, where reference Tempo reports the trace rootless.
+	// The OTel-CH exporter writes an absent parent as the empty string, so
+	// only another writer produces that spelling (issue #4326).
 	rootCond := inStringList(s.ParentSpanIDColumn, []string{"", "0000000000000000"})
 
 	// argMinIf(SpanName, Timestamp, rootCond) AS RootSpanName.
@@ -348,9 +348,14 @@ func padTraceIDs(ids []string) []string {
 // applyRootMetadata patches each summary whose TraceID appears in
 // roots with the looked-up RootServiceName / RootTraceName /
 // DurationMs. Skips summaries with no matching root entry (the
-// trace's root is not in otel_traces — true truncation; the
-// earliest-span fallback that toTraceSummaries already populated
-// stays in place).
+// lookup failed or returned no row for the trace; the earliest-span
+// fallback that toTraceSummaries already populated stays in place).
+//
+// A lookup row answers for the whole trace, so its root identity
+// replaces the fallback even when empty: a trace none of whose spans is
+// a root carries no root span name and no root service, the fields
+// reference Tempo reads off the root span. FinishTraceSummaries then
+// reports the empty rootServiceName as rootSpanNotYetReceivedText.
 //
 // The duration patch is the source of truth for traces whose result
 // set lacked a root row: toTraceSummaries' fallback path picks the
@@ -373,17 +378,8 @@ func applyRootMetadata(summaries []TraceSummary, roots map[string]rootMetadata) 
 		if !ok {
 			continue
 		}
-		// Empty root SpanName means the lookup returned a row but the
-		// column was empty — treat as "no useful root data" and keep
-		// the earliest-span fallback. SpanName=="" rows can happen if
-		// a future producer emits a span with no name; the wire spec
-		// permits but discourages it.
-		if strings.TrimSpace(root.SpanName) != "" {
-			summaries[i].RootTraceName = root.SpanName
-		}
-		if root.ServiceName != "" {
-			summaries[i].RootServiceName = root.ServiceName
-		}
+		summaries[i].RootTraceName = root.SpanName
+		summaries[i].RootServiceName = root.ServiceName
 		// Patch DurationMs only when the lookup recovered a positive
 		// trace-wide span (negative would indicate a corrupt fixture;
 		// zero means a single-instant trace and is indistinguishable

@@ -71,3 +71,42 @@ func TestEmitTraceLookupFilter_RejectsIncompleteNode(t *testing.T) {
 		}
 	}
 }
+
+// TestEmitTraceLookupFilter_ExposeLookupsSelectsValueColumns pins the
+// annotating shape: with ExposeLookups and no Predicate the node selects the
+// input rows plus every lookup's value column under its bare name, never the
+// lookup key, and carries no WHERE.
+func TestEmitTraceLookupFilter_ExposeLookupsSelectsValueColumns(t *testing.T) {
+	t.Parallel()
+	n := &chplan.TraceLookupFilter{
+		Input:         spansWithTraceRole(),
+		Lookups:       []chplan.Node{lookupRelation("a"), lookupRelation("b")},
+		ExposeLookups: true,
+	}
+	sql, _, err := chsql.Emit(context.Background(), n)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	want := "SELECT `m`.*, `l0`.`a` AS `a`, `l1`.`b` AS `b` FROM (SELECT * FROM `otel_traces`) AS m LEFT JOIN ("
+	if !strings.HasPrefix(sql, want) {
+		t.Errorf("emitted SQL does not start with %q:\n%s", want, sql)
+	}
+	if strings.Contains(sql, " WHERE ") || strings.Contains(sql, "`l0`.`"+chplan.TraceLookupKeyColumn+"` AS") {
+		t.Errorf("annotating node emitted a WHERE or selected a lookup key:\n%s", sql)
+	}
+}
+
+// TestEmitTraceLookupFilter_ExposeLookupsRejectsOpenLookup pins that an
+// exposing node whose lookup cannot name its columns fails at emit rather
+// than selecting a guessed column.
+func TestEmitTraceLookupFilter_ExposeLookupsRejectsOpenLookup(t *testing.T) {
+	t.Parallel()
+	n := &chplan.TraceLookupFilter{
+		Input:         spansWithTraceRole(),
+		Lookups:       []chplan.Node{&chplan.Scan{Table: "otel_traces"}},
+		ExposeLookups: true,
+	}
+	if _, _, err := chsql.Emit(context.Background(), n); !errors.Is(err, chsql.ErrUnsupported) {
+		t.Fatalf("Emit error = %v, want ErrUnsupported", err)
+	}
+}

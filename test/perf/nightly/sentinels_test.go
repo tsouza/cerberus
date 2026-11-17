@@ -1,6 +1,7 @@
 package nightly
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -85,6 +86,66 @@ func TestSentinels_HistogramShapesWantAdaptiveAggregatorOff(t *testing.T) {
 			if len(wanted) != 1 || wanted[0].Name != "enable_adaptive_aggregator" || wanted[0].Value != "0" {
 				t.Errorf("%s on %s wants %v; want enable_adaptive_aggregator=0", s.Name, line.version, wanted)
 			}
+		}
+	}
+}
+
+// TestCarriesExplicitPrewhere pins the statement prong's reading of a
+// dispatched statement: a PREWHERE clause counts in any case, and the word
+// inside a string literal or a quoted identifier does not.
+func TestCarriesExplicitPrewhere(t *testing.T) {
+	for _, tc := range []struct {
+		statement string
+		want      bool
+	}{
+		{"SELECT `v` FROM `t` PREWHERE `MetricName` = 'm' WHERE `x` = 1", true},
+		{"SELECT v FROM t prewhere MetricName = 'm'", true},
+		{"SELECT `v` FROM `t`\nPREWHERE\n`MetricName` = 'm'", true},
+		{"SELECT `v` FROM `t` WHERE `MetricName` = 'm' AND `x` = 1", false},
+		{"SELECT `v` FROM `t` WHERE `Attributes`['route'] = 'PREWHERE'", false},
+		{"SELECT `v` FROM `t` WHERE `a` = 'it''s \\' PREWHERE'", false},
+		{"SELECT `PREWHERE` FROM `t` WHERE \"PREWHERE\" = 1", false},
+		{"SELECT v FROM t WHERE prewhere_hits > 0", false},
+		{"SELECT v FROM t WHERE PREWHEREX > 0", false},
+		{"SELECT v FROM t WHERE no_prewhere > 0", false},
+		{"SELECT v FROM t WHERE x > 0 SETTINGS optimize_move_to_prewhere = 1", false},
+	} {
+		if got := carriesExplicitPrewhere(tc.statement); got != tc.want {
+			t.Errorf("carriesExplicitPrewhere(%q) = %v; want %v", tc.statement, got, tc.want)
+		}
+	}
+}
+
+// TestSentinels_ServerPrewhereOnLines pins the statement prong to the lines
+// it belongs on: both label_values sentinels carry it, and every sentinel
+// that carries it does so on exactly the release lines nightly-baseline.json
+// calibrates whose version move_to_prewhere's AutoRange covers, so "auto"
+// leaves the split to the server there. A drifted AutoRange fails here.
+func TestSentinels_ServerPrewhereOnLines(t *testing.T) {
+	var autoRange chopt.VersionRange
+	for _, f := range chopt.Registry() {
+		if f.ID == chopt.FeatureMoveToPrewhere {
+			autoRange = f.AutoRange
+		}
+	}
+	var want []string
+	for _, v := range mustReadBaseline(t).Versions {
+		line, ok := chopt.ParseVersion(v.ClickHouse)
+		if !ok {
+			t.Fatalf("nightly-baseline.json line %q does not parse", v.ClickHouse)
+		}
+		if autoRange.Contains(line) {
+			want = append(want, v.ClickHouse)
+		}
+	}
+	if len(want) == 0 {
+		t.Fatalf("no line nightly-baseline.json calibrates lies in move_to_prewhere's AutoRange %v; the statement prong checks nothing", autoRange)
+	}
+	carriers := map[string]bool{"label_values_matcher_stock_key": true, "label_values_matcher_stock_key_renamed": true}
+	for _, s := range Sentinels {
+		if (carriers[s.Name] || len(s.ServerPrewhereOn) != 0) && !slices.Equal(s.ServerPrewhereOn, want) {
+			t.Errorf("%s: ServerPrewhereOn = %v; want %v, the calibrated lines in move_to_prewhere's AutoRange %v",
+				s.Name, s.ServerPrewhereOn, want, autoRange)
 		}
 	}
 }
