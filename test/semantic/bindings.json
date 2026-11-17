@@ -263,6 +263,186 @@
       "status": "active"
     },
     {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-STRUCTURAL-CHILD-SPEC",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "metrics-window-spec-fixture",
+      "test_ref": "test/spec/traceql/metrics_window_structural_child_before_start.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-STRUCTURAL-DESCENDANT-SPEC",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "metrics-window-spec-fixture",
+      "test_ref": "test/spec/traceql/metrics_window_structural_descendant_before_start.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-NESTED-SET-SPEC",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "metrics-window-spec-fixture",
+      "test_ref": "test/spec/traceql/metrics_window_nested_set_before_start.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-ROOT-NAME-LOOKUP-SPEC",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "metrics-window-spec-fixture",
+      "test_ref": "test/spec/traceql/metrics_window_root_name_span_operand.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-TRACE-DURATION-MEMBERSHIP-SPEC",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "metrics-window-spec-fixture",
+      "test_ref": "test/spec/traceql/metrics_window_trace_duration_literal.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-TRACE-DURATION-LOOKUP-SPEC",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "metrics-window-spec-fixture",
+      "test_ref": "test/spec/traceql/metrics_window_trace_duration_span_operand.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-ROOT-BEFORE-START-SPEC",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "search-window-spec-fixture",
+      "test_ref": "test/spec/traceql/search_window_root_before_start.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-TRACE-ENDS-AFTER-END-SPEC",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "search-window-spec-fixture",
+      "test_ref": "test/spec/traceql/search_window_trace_ends_after_end.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-ROOT-OUTSIDE-WINDOW-SPEC",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "search-window-spec-fixture",
+      "test_ref": "test/spec/traceql/search_window_root_outside_window.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-TRACE-LONGER-THAN-LOOKBACK-SPEC",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-SPEC-FIXTURE-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "search-window-spec-fixture",
+      "test_ref": "test/spec/traceql/search_window_trace_longer_than_max_duration.txtar",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-HANDLER",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-CHDB-HANDLER-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "metrics-window-handler-chdb",
+      "test_ref": "internal/api/tempo/metrics_statement_window_chdb_test.go:TestMetricsStatementWindow_ChDB",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-DRAIN-HANDLER",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-CHDB-HANDLER-ROUNDTRIP",
+      "evidence_class": "execution",
+      "independence_group": "search-window-drain-handler-chdb",
+      "test_ref": "internal/api/tempo/search_window_drain_chdb_test.go:TestSearch_WindowDrain_ChDB",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-PER-TRACE-EMIT",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "statement-window-emit-shape",
+      "test_ref": "internal/api/tempo/metrics_per_trace_window_test.go:TestMetricsPerTraceSubqueriesWindowed",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-HISTOGRAM-EMIT",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "statement-window-emit-shape",
+      "test_ref": "internal/api/tempo/metrics_per_trace_window_test.go:TestMetricsPerTraceSubqueriesWindowedHistogram",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-COMPARE-EMIT",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "statement-window-emit-shape",
+      "test_ref": "internal/api/tempo/metrics_per_trace_window_test.go:TestMetricsPerTraceSubqueriesWindowedCompare",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-EXEMPLARS-EMIT",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "statement-window-emit-shape",
+      "test_ref": "internal/api/tempo/metrics_per_trace_window_test.go:TestMetricsPerTraceSubqueriesWindowedExemplars",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-RECURSIVE-ARM-EMIT",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "statement-window-emit-shape",
+      "test_ref": "internal/api/tempo/metrics_recursive_window_test.go:TestMetricsRecursiveArmWindowed",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-COHORT-RECURSIVE-EMIT",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "statement-window-emit-shape",
+      "test_ref": "internal/api/tempo/metrics_recursive_window_test.go:TestMetricsRecursiveScanWindowCohortAndOriginal",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-PER-TRACE-EMIT",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "statement-window-emit-shape",
+      "test_ref": "internal/traceql/per_trace_window_search_test.go:TestSearchPerTraceSubqueriesReadWidenedWindow",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-COHORT-RECURSIVE-EMIT",
+      "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "verifier": "VERIFIER-GO-UNIT-TEST",
+      "evidence_class": "execution",
+      "independence_group": "statement-window-emit-shape",
+      "test_ref": "internal/traceql/per_trace_window_search_test.go:TestSearchCohortStructuralClosureReadsWidenedWindow",
+      "status": "active"
+    },
+    {
       "id": "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY",
       "contract": "TRACEQL-SELECT-PROJECTION-PRESERVES-MATCH-SET",
       "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",

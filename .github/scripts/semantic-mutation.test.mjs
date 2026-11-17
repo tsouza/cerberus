@@ -321,7 +321,7 @@ test("a synthetic record may still declare a bare survived (its whole purpose)",
 
 test("loadMutants: the real committed test/semantic/mutants/ corpus is valid", () => {
   const records = loadMutants(DEFAULT_MUTANTS_DIR, { root: REPO_ROOT });
-  assert.equal(records.size, 14);
+  assert.equal(records.size, 15);
   for (const c of CLASSIFICATIONS) {
     assert.ok(
       [...records.values()].some((r) => r.expected_detection === c),
@@ -345,7 +345,7 @@ test("loadMutants: a duplicate id across two files is rejected", () => {
 test("renderMutantsSummary counts by expected_detection", () => {
   const records = loadMutants(DEFAULT_MUTANTS_DIR, { root: REPO_ROOT });
   const summary = renderMutantsSummary(records);
-  assert.match(summary, /mutants: \*\*14\*\*/);
+  assert.match(summary, /mutants: \*\*15\*\*/);
 });
 
 // --- classifyGoTestOutput (pure) -----------------------------------------

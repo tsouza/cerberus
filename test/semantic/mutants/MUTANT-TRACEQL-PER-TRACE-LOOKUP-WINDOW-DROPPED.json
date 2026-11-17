@@ -1,0 +1,36 @@
+{
+  "schema_version": 2,
+  "id": "MUTANT-TRACEQL-PER-TRACE-LOOKUP-WINDOW-DROPPED",
+  "title": "windowPerTrace leaves a metrics statement's TraceLookupFilter lookups unwindowed, so a per-trace lookup reads past the maximum trace duration",
+  "synthetic": false,
+  "synthetic_rationale": null,
+  "violated_contracts": [
+    "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK"
+  ],
+  "transformation": {
+    "target_path": "internal/chplan/per_trace_window.go",
+    "patch_path": "test/semantic/mutants/patches/per-trace-lookup-window-dropped.patch",
+    "pre_image_fingerprint": "b50e4554285712d4d43ebc2ba232f40f6412a283e21e912fafbcedcc9892bf62",
+    "post_image_fingerprint": "8eab4e73ff2630a5f7daf3b0c650cb7aa10d083e7d19794a00e890235955ff58"
+  },
+  "detectors": [
+    {
+      "id": "metrics-statement-window-handler",
+      "package": "./internal/api/tempo",
+      "test_run": "^TestMetricsStatementWindow_ChDB$",
+      "build_tags": [
+        "chdb"
+      ],
+      "timeout_seconds": 120,
+      "evidence_kind": "execution"
+    }
+  ],
+  "expected_detection": "killed",
+  "equivalence_review": null,
+  "isolation": {
+    "requires_chdb": true,
+    "memory_max": "2GiB",
+    "memory_hold": "2s"
+  },
+  "notes": "Deletes the loop in windowPerTrace's TraceLookupFilter arm (internal/chplan/per_trace_window.go) that pushes the per-trace window, the RangeWindow's input span widened by the maximum trace duration on both sides (PerTraceWindowBound), into each lookup relation. The membership subqueries of the lookup's predicate and the span rows the lookup is joined onto keep their bounds, so only one subquery arm loses its window: the lookup that resolves rootName, rootServiceName or traceDuration for a comparison with a span value reads the spans table across full retention. The search path windows its lookups in internal/traceql/search_limit.go's boundSearchRowSource and in chplan.PushLeafWindow, and is untouched, so this is a metrics-statement mutation. The detector, TestMetricsStatementWindow_ChDB (internal/api/tempo/metrics_statement_window_chdb_test.go), drives the real /api/metrics/query_range handler on chDB over a seed with a trace whose root span starts 2h before the window, 1h beyond the default maximum trace duration. Two of its cases fail. `{ rootName = name }`: unmutated, that trace has no root inside the lookback and its child does not match, so the first anchor reads 4; mutated, the lookup reads the root, rootName resolves to the child's own name, and the first anchor reads 5, an answer divergence on the decoded samples. `{ traceDuration > duration }`: the unwindowed lookup carries no other predicate, so the emit-time spans-scan guard (chplan.RequireSpansScansBounded) rejects the statement and the handler answers 500. The rootName lookup escapes that guard only because the guard reads its `ParentSpanId = ''` conjunct as a TraceId set (issue #4366), which is why the kill on it is an answer and not a refusal. The detector also kills a per-trace window narrowed to the statement's own span or widened past the lookback on either side, and a structural step arm or numbering that reads outside the statement's span, but those are not this record's mutation. It needs the chdb build tag and libchdb.so."
+}
