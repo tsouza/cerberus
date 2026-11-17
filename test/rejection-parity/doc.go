@@ -2,7 +2,9 @@
 // the machine-readable inventory of every error-construction site in
 // the three lowerings (internal/promql, internal/logql,
 // internal/traceql) that can surface as an HTTP 422 "query is valid
-// <QL> but cerberus rejects it" response.
+// <QL> but cerberus rejects it" response, and of every static-validation
+// rejection in internal/traceql/ast, which rejects a grammatical query
+// at parse with an HTTP 400, as reference Tempo's own validation does.
 //
 // Motivation: a deliberate rejection is a CLAIM about reference
 // behaviour ("the reference backend cannot answer this either") that
@@ -20,7 +22,11 @@
 //     package-local `verbatimErrorf` wrapper (promql.verbatimErrorf is
 //     the one definition today), the deliberate, opt-in exception for a
 //     message that reproduces a reference backend's own wording and so
-//     carries no head prefix to scan for. See isErrorConstructor.
+//     carries no head prefix to scan for. See isErrorConstructor. In
+//     internal/traceql/ast it enumerates every ValidationError the
+//     static rules build — newValidationError calls and ValidationError
+//     literals, whose messages are Tempo's own wording — and fails if a
+//     message is not static. See errorSite.
 //  2. The catalogue/ shard directory classifies every site into one of
 //     three classes — `rejection`, `internal`, or `divergence` (see
 //     below). It is stored as one shard per lowering SOURCE FILE
@@ -34,6 +40,7 @@
 //     CERBERUS_UPDATE_INVENTORY=1), every `rejection`/`divergence`
 //     entry's trigger query parses AND reaches an error matching the
 //     site's message — lowering itself for the overwhelming majority,
+//     Parse's own *ValidationError for an internal/traceql/ast site,
 //     or (an entry carrying GuardValues) lowering cleanly and applying
 //     the registered execution-time guard's Check, for the handful of
 //     sites reference Prometheus itself only rejects once a value

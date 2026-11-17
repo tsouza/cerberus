@@ -22,6 +22,7 @@ name: agpl-oracle
 #   internal/logql/lsyntax/oracle_agpl_test.go
 #   test/agpl_oracle/oracle_test.go
 #   test/agpl_oracle/copyscan_test.go
+#   test/agpl_oracle/validate_test.go
 #   internal/thirdparty/tempopb/wire_tempo_agpl_test.go
 #   test/surface-parity/logql_reference_agpl_test.go
 #   test/surface-parity/traceql_reference_agpl_test.go

@@ -5,7 +5,7 @@
       "site": "internal/traceql/lower.go:lowerScalarExpr#187e881e",
       "message": "traceql: scalar expression %T is unsupported",
       "class": "internal",
-      "rationale": "internal invariant: lowerScalarFilter only dispatches to lowerSimpleScalarFilter when isBareAggregate(sf.LHS) and isBareStatic(sf.RHS) both hold, so lowerScalarExpr is only ever called with an ast.Aggregate or an ast.Static — the default arm is unreachable at this call site.",
+      "rationale": "internal invariant: ast.Parse rejects at validation every scalar filter whose left operand is not a single aggregate or whose right operand is not a single literal (validateScalarFilterStage in internal/traceql/ast/validate.go), so lowerSimpleScalarFilter only ever calls lowerScalarExpr with an ast.Aggregate or an ast.Static — the default arm is unreachable at this call site.",
       "evidence": {
         "guard": [
           "past exhaustive switch v := e.(type) over [case traceql.Aggregate; case *traceql.Aggregate; case traceql.Static; case *traceql.Static]"
@@ -14,11 +14,10 @@
           "lowerSimpleScalarFilter"
         ],
         "cited": [
-          "isBareAggregate",
-          "isBareStatic",
+          "Parse",
           "lowerScalarExpr",
-          "lowerScalarFilter",
-          "lowerSimpleScalarFilter"
+          "lowerSimpleScalarFilter",
+          "validateScalarFilterStage"
         ]
       }
     }
