@@ -2,5 +2,7 @@
   "schema_version": 1,
   "head": "tempo",
   "bucket": "15",
-  "cases": []
+  "cases": [
+    "metrics_range | metrics_rate_after_aggregate_filter_coalesce"
+  ]
 }
