@@ -189,6 +189,37 @@ per group. The same flip suppresses the schedule branch, so a nightly queues
 behind a slow predecessor rather than replacing it — immaterial for every
 enrolled lane, which are daily crons against runs well under a day.
 
+### Why `e2e.yml` joined the queue-coalesced tier
+
+`e2e.yml` was a negative control: every push to `main` ran its full matrix —
+the k3d dashboard and compose-smoke shards, crawl, chaos, bwc and datashard
+legs — with no workflow-level group, so a burst of merges queued one complete
+run per merged commit, including commits a newer merge had already
+superseded. On 2026-11-16 three such runs sat queued at once and held the
+runners pull-request checks and golden regenerations needed; an
+`update-golden` run waited over an hour for one. Once every pull request got
+its own e2e dispatch on its head before queueing, the main-push run mostly
+added bisect granularity between merges, and the maintainer moved the
+workflow into the queue-coalesced tier (tsouza/cerberus#4304).
+
+Its answers to the two questions: the trunk does lose a record, because a
+main-push run posts the `compose-smoke` / `dashboard` check-runs that
+`release.yml`'s preflight requires on the release commit and that a bisect
+reads; and the loss is material, because the median successful main-push run
+took ~53 minutes of compose and k3d substrate against an 82-minute median push
+gap (2026-10-21 to 2026-11-16), with a third of the gaps shorter than one run.
+Mid-flight cancellation would discard most of a run each time a merge lands
+during one, so the workflow takes the queue-coalesced literal `false`, not the
+cancel expression. The release gate is unchanged in strength: a release
+commit whose pending run was superseded posts no `compose-smoke` /
+`dashboard` check-run, and the preflight refuses a required lane that never
+posted, so coalescing can delay a release but never lets one through
+unmeasured. A `release/*.x` push is never coalesced, so a maintenance-line
+commit always gets its own run.
+
+`quickstart.yml` and `post-merge-drift.yml` stay per-commit: every landed tree
+is distinct for them by design.
+
 ## Why workflows keep the `merge_group` posture
 
 A GitHub merge queue builds a projected commit (the pull request replayed on
