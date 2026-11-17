@@ -57,7 +57,7 @@ func postProcessExtract(expr syntax.Expr) (lineTransform, error) {
 
 	var steps []lineTransform
 	// dynamicLabels calls internal/logql.IsDynamicLabelStage — the SAME
-	// predicate lowerPipelineWithLabels' own dynamicLabels gate uses —
+	// predicate lowerPipelineStages' own dynamicLabels gate uses —
 	// rather than re-deciding "is this stage dynamic" from this file's own
 	// switch shape. Once a `| pattern` stage runs, the lowering skips SQL
 	// predicate generation for any downstream LabelFilterExpr that tests
@@ -69,7 +69,7 @@ func postProcessExtract(expr syntax.Expr) (lineTransform, error) {
 	// them. Calling the shared predicate (rather than setting this flag
 	// inline in the LineParserExpr/OpParserTypePattern arm below, as a
 	// literal `true`) is what keeps this gate from silently diverging
-	// from lowerPipelineWithLabels' if IsDynamicLabelStage's own
+	// from lowerPipelineStages' if IsDynamicLabelStage's own
 	// definition of "dynamic" ever changes or widens.
 	dynamicLabels := false
 	for _, st := range pipe.MultiStages {
@@ -119,7 +119,7 @@ func postProcessExtract(expr syntax.Expr) (lineTransform, error) {
 			// stage, or one following it but testing an ordinary label
 			// name — already has its SQL predicate applied by the
 			// lowering (see internal/logql/lower.go's
-			// lowerPipelineWithLabels); re-running it here would be
+			// lowerPipelineStages); re-running it here would be
 			// redundant (and, for the mark-stamping numeric/duration/
 			// bytes kinds, would double-stamp `__error__` against the
 			// labels map post-parse-stage).
@@ -135,7 +135,7 @@ func postProcessExtract(expr syntax.Expr) (lineTransform, error) {
 // newLabelFilterStep builds the Go-side transform for a `| label op
 // value` filter that follows a `| pattern` stage (see
 // postProcessExtract's dynamicLabels gate). internal/logql/lower.go's
-// lowerPipelineWithLabels skips SQL lowering for these filters
+// lowerPipelineStages skips SQL lowering for these filters
 // entirely — the labels they test may only exist once the preceding
 // dynamic stage's own step (newPatternStep's closure, which runs
 // earlier in the same composed pipeline) has produced them — so this

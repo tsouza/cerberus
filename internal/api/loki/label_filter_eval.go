@@ -28,7 +28,7 @@ const errLabelFilterKind = "LabelFilterErr"
 // newPatternStep in post_process.go), so any label filter downstream of
 // it can't be resolved by SQL — the labels it tests may not exist until
 // the dynamic stage's transform runs.
-// lowerPipelineWithLabels detects this (its dynamicLabels gate) and
+// lowerPipelineStages detects this (its dynamicLabels gate) and
 // skips SQL lowering entirely for such filters; [newLabelFilterStep]
 // is where they're actually applied instead.
 //

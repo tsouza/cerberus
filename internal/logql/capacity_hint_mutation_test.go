@@ -216,7 +216,7 @@ func TestRangeAggregationGroupBy_CapHintMutantKilled(t *testing.T) {
 		},
 		Observe: func(t *testing.T) (int, int) {
 			got, err := rangeAggregationGroupBy(ra, s, &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
-				func() chplan.Expr { return detectedLevelIdentityExpr(s, ra.Left.Left) })
+				func() chplan.Expr { return detectedLevelIdentityExpr(ra.Left.Left, detectedLevelExpr(s)) })
 			if err != nil {
 				t.Fatalf("rangeAggregationGroupBy: %v", err)
 			}

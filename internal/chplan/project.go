@@ -42,6 +42,14 @@ type Project struct {
 	// re-anchors a subquery's RangeWindow spine to an enclosing window
 	// leaves such a relation, and everything below it, as it is.
 	SubqueryGrid bool
+
+	// OneScopeRows marks a Project whose Input is a LogQL log query's
+	// per-row stage: Filters and per-row Projects over a filtered table
+	// scan. The emitter may render that stage as one SELECT whose WHERE
+	// reads the stage's aliases next to the table's columns, instead of
+	// one subquery per layer (chsql's rowChainFrag says when it does). A
+	// Project without the mark reads its Input nested.
+	OneScopeRows bool
 }
 
 func (*Project) planNode() {}
@@ -51,7 +59,7 @@ func (p *Project) Children() []Node { return []Node{p.Input} }
 func (p *Project) Equal(other Node) bool {
 	o, ok := other.(*Project)
 	if !ok || len(p.Projections) != len(o.Projections) || len(p.Replacements) != len(o.Replacements) ||
-		p.SubqueryGrid != o.SubqueryGrid {
+		p.SubqueryGrid != o.SubqueryGrid || p.OneScopeRows != o.OneScopeRows {
 		return false
 	}
 	for i := range p.Projections {

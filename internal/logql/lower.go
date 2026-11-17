@@ -80,12 +80,11 @@ type lowerCtx struct {
 	TextIndexLineFilter bool
 
 	// LogLineLimit and LogLineBackward carry Loki's request `limit` /
-	// `direction` down to [lowerWithCtx]'s top-level SQL-LIMIT-pushdown
-	// decision (cerberus issue #2829). LogLineLimit <= 0 means "do not
+	// `direction` down to [logLineLimit]'s SQL-LIMIT-pushdown decision for
+	// the top-level log query (cerberus issue #2829). LogLineLimit <= 0 means "do not
 	// push a SQL Limit" — the zero value every non-Opts entry point
-	// leaves unset, and every caller of [Lower] / [LowerAt] /
-	// [LowerAtRange] besides [LowerAtRangeOpts] renders byte-identical
-	// to today. See [maybePushLogLineLimit]'s doc comment for the full
+	// leaves unset, so [Lower] / [LowerAt] / [LowerAtRange] never limit a
+	// log query; only [LowerAtRangeOpts] does. See [logLineLimit]'s doc comment for the full
 	// eligibility rule and why it can only ever fire once per query,
 	// at the top level.
 	LogLineLimit    int64
@@ -280,71 +279,49 @@ func lowerWithCtx(ctx context.Context, expr syntax.Expr, s schema.Logs, lc lower
 		span.RecordError(err)
 		return nil, err
 	}
-	plan = maybePushLogLineLimit(expr, plan, s, lc)
 	span.SetAttributes(cerbtrace.AttrPlanNodeCount.Int(cerbtrace.CountNodes(plan)))
 	return plan, nil
 }
 
-// maybePushLogLineLimit wraps plan in `Limit(OrderBy(plan))` — a real SQL
-// `ORDER BY Timestamp {DESC|ASC} LIMIT N` — when expr is a Loki log-LINE
-// query (a bare stream selector or a pipeline) whose pipeline stages are
-// proven incapable of dropping a row in Go after the SQL executes (see
-// [pipelineCanDropRowsInGo]), letting ClickHouse itself truncate the
-// result set instead of cerberus decoding and discarding every row in the
-// window. This is what makes the shape eligible for
-// query_plan_optimize_lazy_materialization (internal/engine's
-// EligibleForLazyMaterialization walks for exactly this Limit(OrderBy(...))
-// shape) — cerberus issue #2829.
+// logLineLimit returns the `ORDER BY Timestamp {DESC|ASC} LIMIT N` — a
+// Limit over an OrderBy, inputs unset — that [lowerLogQuery] places over
+// the filtered rows of sel, a Loki log-LINE query (a bare stream selector
+// or a pipeline) whose pipeline stages are proven incapable of dropping a
+// row in Go after the SQL executes (see [pipelineCanDropRowsInGo]),
+// letting ClickHouse itself truncate the result set instead of cerberus
+// decoding and discarding every row in the window. This is what makes the
+// shape eligible for query_plan_optimize_lazy_materialization
+// (internal/engine's EligibleForLazyMaterialization walks for exactly this
+// Limit(OrderBy(...)) shape) — cerberus issue #2829. It returns nil for
+// every other shape, and the rows go unlimited.
 //
-// It is called exactly once per top-level [lowerWithCtx] call — never from
-// inside [lower]'s recursive dispatch — so a metric query's inner selector
-// (RangeAggregationExpr.Left, reached via lowerRangeAggregation calling
-// lowerMatchers/lowerPipelineWithLabels directly, never through this
-// function) can never be wrapped. lc.LogLineLimit is threaded
-// unconditionally by internal/api/loki's Lang.Parse — including for a
-// metric query, since the handler doesn't know which shape it's building
-// until the lowering classifies the parsed expression — so this function,
-// not the caller, is responsible for rejecting every non-log-line shape.
-//
-// The explicit [IsMetricQuery] guard below is required and NOT redundant
-// with the `syntax.LogSelectorExpr` type-assertion that follows:
-// `*syntax.LiteralExpr` and `*syntax.VectorExpr` both implement
-// `isLogSelectorExpr()` (needed so they satisfy `Selector()` when used as
-// a `SampleExpr` leg of a binary expression) while ALSO being genuine
-// top-level metric queries per [IsMetricQuery]. Without this guard, a
-// top-level `vector(1)` or bare-literal query — [logql.lowerVector] /
-// [logql.lowerLiteral]'s one-row synthetic-scalar plan, which carries no
-// Timestamp column — passed the `LogSelectorExpr` assertion and got
-// wrapped in `ORDER BY Timestamp …`, and ClickHouse rejected the SQL with
-// `Unknown expression identifier 'Timestamp'` (cerberus issue #3047).
+// Only the top-level log query of a lowering is limited: lc.logLineWindow
+// is set by [lowerWithCtx] alone, and only for a query that returns log
+// lines, so a metric query's inner selector (RangeAggregationExpr.Left,
+// lowered by [lowerLogRange]) never reaches here. lc.LogLineLimit is
+// threaded unconditionally by internal/api/loki's Lang.Parse — including
+// for a metric query, since the handler doesn't know which shape it's
+// building until the lowering classifies the parsed expression.
 //
 // This is a strictly ADDITIVE fast path: internal/api/loki/handler.go's
 // clampLogRows keeps sorting + truncating every decoded row exactly as it
 // always has, on whatever rows come back (the whole window for an unsafe
 // or LogLineLimit<=0 shape, or the SQL-truncated top-N for an eligible
-// one) — so an unproven or unsafe pipeline shape simply renders
-// byte-identical to before this change, never wrong.
-func maybePushLogLineLimit(expr syntax.Expr, plan chplan.Node, s schema.Logs, lc lowerCtx) chplan.Node {
-	if lc.LogLineLimit <= 0 {
-		return plan
-	}
-	if IsMetricQuery(expr) {
-		return plan
-	}
-	sel, ok := expr.(syntax.LogSelectorExpr)
-	if !ok {
-		return plan
+// one) — so an unproven or unsafe pipeline shape simply returns every
+// row of the window unsorted, never a wrong row set.
+func logLineLimit(sel syntax.LogSelectorExpr, s schema.Logs, lc lowerCtx) (*chplan.OrderBy, *chplan.Limit) {
+	if lc.LogLineLimit <= 0 || !lc.logLineWindow {
+		return nil, nil
 	}
 	if pe, ok := sel.(*syntax.PipelineExpr); ok && pipelineCanDropRowsInGo(pe.MultiStages) {
-		return plan
+		return nil, nil
 	}
-	ordered := &chplan.OrderBy{
-		Input: plan,
+	order := &chplan.OrderBy{
 		Keys: []chplan.OrderKey{
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Desc: lc.LogLineBackward},
 		},
 	}
-	return &chplan.Limit{Input: ordered, Count: lc.LogLineLimit}
+	return order, &chplan.Limit{Count: lc.LogLineLimit}
 }
 
 // pipelineCanDropRowsInGo reports whether stages contains the ONE shape
@@ -356,7 +333,7 @@ func maybePushLogLineLimit(expr syntax.Expr, plan chplan.Node, s schema.Logs, lc
 // — the ONLY lineTransform step in that file that ever returns keep ==
 // false).
 //
-// This mirrors [lowerPipelineWithLabels]'s own dynamicLabels gate
+// This mirrors [lowerPipelineStages]'s own dynamicLabels gate
 // stage-for-stage, built off the SAME two exported primitives both that
 // gate and postProcessExtract's own dynamicLabels gate use —
 // [IsDynamicLabelStage] and [FiltersErrorLabel] — so all three call sites
@@ -393,9 +370,9 @@ func pipelineCanDropRowsInGo(stages syntax.MultiStageExpr) bool {
 func lower(expr syntax.Expr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
 	switch e := expr.(type) {
 	case *syntax.MatchersExpr:
-		return lowerMatchers(e, s, lc), nil
+		return lowerLogQuery(e, s, lc)
 	case *syntax.PipelineExpr:
-		return lowerPipeline(e, s, lc)
+		return lowerLogQuery(e, s, lc)
 	case *syntax.RangeAggregationExpr:
 		return lowerRangeAggregation(e, s, lc)
 	case *syntax.VectorAggregationExpr:
@@ -437,13 +414,22 @@ func lowerMatchers(e *syntax.MatchersExpr, s schema.Logs, lc lowerCtx) chplan.No
 	return &chplan.Filter{Input: scan, Predicate: pred}
 }
 
-// lowerPipeline handles a stream selector followed by line / label
-// filters and parser stages.
+// pipelineLabelsAlias names the column a [rowLayers] stack defines for
+// the labels map stage i of a pipeline produces.
+func pipelineLabelsAlias(i int) string {
+	return "_logql_labels_" + strconv.Itoa(i)
+}
+
+// lowerPipelineStages lowers e's stages onto rows, which already holds
+// the stream selector, and returns the labels map the last stage leaves.
+// Each stage's predicate is filtered onto rows; each labels map a stage
+// produces is defined on rows under [pipelineLabelsAlias]
+// ([rowLayers.defineWide]), so the stack computes it once per row and
+// every later stage reads the column.
 //
-// labelsExpr threads the "current labels map" through stage iteration:
-// initially it's the schema's ResourceAttributes column; after a parser
-// stage (`| logfmt`, `| json`, `| regexp`) it becomes a mapConcat that
-// folds the parsed key/value pairs onto the prior labels map. The exact
+// The labels map starts as the schema's ResourceAttributes column; after
+// a parser stage (`| logfmt`, `| json`, `| regexp`) it becomes a
+// mapConcat that folds the parsed key/value pairs onto the prior map. The
 // inner expression varies by parser:
 //
 //   - `| logfmt`  → extractKeyValuePairs(Body, '=', ' ', '"')
@@ -460,42 +446,6 @@ func lowerMatchers(e *syntax.MatchersExpr, s schema.Logs, lc lowerCtx) chplan.No
 // skipped on another: [LogfmtParsedLabels] wraps a query-time-unknown key
 // set in a `mapApply` rename, and [mergeParsedFields] wraps each
 // statically-known destination identifier in a per-key `if(...)`.
-func lowerPipeline(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
-	node, _, err := lowerPipelineWithLabels(e, s, lc)
-	return node, err
-}
-
-// lowerPipelineWithLabels is the underlying pipeline lowering. It returns
-// the final "labels map" expression alongside the Node so range-aggregation
-// callers (range_aggregation.go) can plumb `| unwrap` post-filters against
-// the same labels map the pipeline produced for ordinary label filters.
-//
-// The returned labelsExpr is the schema's ResourceAttributes column when
-// no parser stage ran; otherwise it carries a `mapConcat(...)` wrapper
-// that adds parsed keys (see [logfmtMergeLabels]). Every stage predicate
-// AND-folds onto the stream scan's filter, with the labels expression
-// inlined at each read.
-func lowerPipelineWithLabels(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx) (chplan.Node, chplan.Expr, error) {
-	rows := newRowLayers(lowerMatchers(e.Left, s, lc), false)
-	labelsExpr, err := lowerPipelineStages(e, s, lc, rows)
-	if err != nil {
-		return nil, nil, err
-	}
-	return rows.node, labelsExpr, nil
-}
-
-// pipelineLabelsAlias names the column a materialising [rowLayers] stack
-// defines for the labels map stage i of a pipeline produces.
-func pipelineLabelsAlias(i int) string {
-	return "_logql_labels_" + strconv.Itoa(i)
-}
-
-// lowerPipelineStages lowers e's stages onto rows, which already holds
-// the stream selector, and returns the labels map the last stage leaves.
-// Each stage's predicate is filtered onto rows; each labels map a stage
-// produces is defined on rows under [pipelineLabelsAlias], so a
-// materialising stack computes it once per row and every later stage
-// reads the column.
 func lowerPipelineStages(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx, rows *rowLayers) (chplan.Expr, error) {
 	lc.row.rows = rows
 	labelsExpr := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
@@ -538,7 +488,7 @@ func lowerPipelineStages(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx, row
 		// that defines the stage's own map.
 		rows.filter(next)
 		if newLabels != nil {
-			labelsExpr = rows.define(pipelineLabelsAlias(i), newLabels)
+			labelsExpr = rows.defineWide(pipelineLabelsAlias(i), newLabels)
 		}
 		if IsDynamicLabelStage(stage) {
 			dynamicLabels = true
@@ -548,7 +498,7 @@ func lowerPipelineStages(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx, row
 }
 
 // IsDynamicLabelStage reports whether stage is a `| pattern` parser
-// stage — see [lowerPipelineWithLabels]'s dynamicLabels gate. `| unpack`
+// stage — see [lowerPipelineStages]'s dynamicLabels gate. `| unpack`
 // is deliberately NOT one: its `__error__` markers come from SQL, so a
 // following `__error__` filter lowers normally and needs no Go-side
 // re-evaluation. Exported so internal/api/loki's postProcessExtract can
@@ -566,7 +516,7 @@ func IsDynamicLabelStage(stage syntax.StageExpr) bool {
 // FiltersErrorLabel reports whether lf tests the `__error__` /
 // `__error_details__` label anywhere in its tree (walking
 // BinaryLabelFilter's and/or composition) — see
-// [lowerPipelineWithLabels]'s dynamicLabels gate, which only skips SQL
+// [lowerPipelineStages]'s dynamicLabels gate, which only skips SQL
 // lowering for this family, not for arbitrary label names. Exported so
 // internal/api/loki's postProcessExtract can apply the exact same gate
 // when deciding which post-`| pattern` label filters need a Go-side
@@ -592,7 +542,7 @@ func FiltersErrorLabel(lf syntax.LabelFilterer) bool {
 // PipelineLabelsExpr re-walks the parsed LogQL expression and returns the
 // final labels-map expression a log-stream query would project as its
 // per-row Attributes column. The returned shape mirrors the live
-// labelsExpr that [lowerPipelineWithLabels] threads through pipeline
+// labelsExpr that [lowerPipelineStages] threads through pipeline
 // stages — the schema's ResourceAttributes column when no parser stage
 // fired, or a `mapConcat(...)` wrapper folding parser-extracted keys
 // onto the prior labels map (see [logfmtMergeLabels] / [jsonBareMergeLabels]

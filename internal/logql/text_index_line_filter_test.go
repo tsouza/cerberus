@@ -27,6 +27,24 @@ func findLineContents(expr chplan.Expr) []*chplan.LineContent {
 	}
 }
 
+// selectionFilter returns the Filter under the Project layers on top of
+// a log query's plan: the predicate that selects its rows.
+func selectionFilter(t *testing.T, plan chplan.Node) *chplan.Filter {
+	t.Helper()
+	for {
+		p, ok := plan.(*chplan.Project)
+		if !ok {
+			break
+		}
+		plan = p.Input
+	}
+	f, ok := plan.(*chplan.Filter)
+	if !ok {
+		t.Fatalf("selection = %T, want *chplan.Filter", plan)
+	}
+	return f
+}
+
 // onlyLineContent lowers query and returns the single *chplan.LineContent
 // its Filter predicate carries, failing the test if the plan doesn't have
 // exactly one Filter with exactly one LineContent.
@@ -41,10 +59,7 @@ func onlyLineContent(t *testing.T, opts logql.LowerOpts) *chplan.LineContent {
 	if err != nil {
 		t.Fatalf("LowerAtRangeOpts: %v", err)
 	}
-	f, ok := plan.(*chplan.Filter)
-	if !ok {
-		t.Fatalf("plan root = %T, want *chplan.Filter", plan)
-	}
+	f := selectionFilter(t, plan)
 	lcs := findLineContents(f.Predicate)
 	if len(lcs) != 1 {
 		t.Fatalf("found %d LineContent node(s) in predicate, want 1: %#v", len(lcs), f.Predicate)
@@ -93,10 +108,7 @@ func TestLower_TextIndexLineFilter_DefaultEntrypointsInert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lower: %v", err)
 	}
-	f, ok := plan.(*chplan.Filter)
-	if !ok {
-		t.Fatalf("plan root = %T, want *chplan.Filter", plan)
-	}
+	f := selectionFilter(t, plan)
 	lcs := findLineContents(f.Predicate)
 	if len(lcs) != 1 {
 		t.Fatalf("found %d LineContent node(s), want 1", len(lcs))
@@ -122,10 +134,7 @@ func TestLowerAtRangeOpts_TextIndexLineFilter_NegatedInert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LowerAtRangeOpts: %v", err)
 	}
-	f, ok := plan.(*chplan.Filter)
-	if !ok {
-		t.Fatalf("plan root = %T, want *chplan.Filter", plan)
-	}
+	f := selectionFilter(t, plan)
 	lcs := findLineContents(f.Predicate)
 	if len(lcs) != 1 {
 		t.Fatalf("found %d LineContent node(s), want 1", len(lcs))

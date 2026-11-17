@@ -83,13 +83,18 @@ const (
 
 // matK8sDDL replicates the exporter's logs_table.sql column shape closely
 // enough to exercise the lever: the wide ResourceAttributes Map plus the
-// MATERIALIZED namespace column, on the production ORDER BY key.
+// MATERIALIZED namespace column, on the production ORDER BY key, and the
+// severity and LogAttributes columns a log query's rows read, left at
+// their defaults.
 func matK8sDDL() string {
 	return fmt.Sprintf(`CREATE OR REPLACE TABLE %s (
     Timestamp DateTime64(9) CODEC(Delta(8), ZSTD(1)),
     ServiceName LowCardinality(String) CODEC(ZSTD(1)),
+    SeverityText LowCardinality(String) DEFAULT '' CODEC(ZSTD(1)),
+    SeverityNumber UInt8 DEFAULT 0 CODEC(ZSTD(1)),
     Body String CODEC(ZSTD(1)),
     ResourceAttributes Map(LowCardinality(String), String) CODEC(ZSTD(1)),
+    LogAttributes Map(LowCardinality(String), String) DEFAULT map() CODEC(ZSTD(1)),
     `+"`__otel_materialized_k8s.namespace.name`"+` LowCardinality(String) MATERIALIZED ResourceAttributes['k8s.namespace.name'] CODEC(ZSTD(1))
 ) ENGINE = MergeTree()
 PARTITION BY toDate(Timestamp)
@@ -148,19 +153,14 @@ func matK8sSchema() schema.Logs {
 	return s
 }
 
-// selectStarPrefix is the projection the LogQL matcher emit produces; we
-// swap it for a count() so the result-parity probe exercises the SAME
-// WHERE clause (the thing under test) without projecting the Map column —
-// chDB-go's parquet driver panics draining a raw Map projection.
-const selectStarPrefix = "SELECT * FROM"
-
+// runMatK8sQuery counts the rows the LogQL matcher emit returns, so the
+// result-parity probe exercises the SAME WHERE clause (the thing under
+// test) without draining the log rows' Map columns — chDB-go's parquet
+// driver panics draining a raw Map projection.
 func runMatK8sQuery(t *testing.T, db *sql.DB, sqlStr string, args []any) [][]any {
 	t.Helper()
-	if !hasPrefix(sqlStr, selectStarPrefix) {
-		t.Fatalf("expected matcher SQL to start with %q, got %q", selectStarPrefix, sqlStr)
-	}
-	counted := "SELECT count() FROM" + sqlStr[len(selectStarPrefix):]
-	rows, err := db.Query(stripTrailingSemi(counted), args...)
+	counted := "SELECT count() FROM (" + stripTrailingSemi(sqlStr) + ")"
+	rows, err := db.Query(counted, args...)
 	if err != nil {
 		t.Fatalf("query %q: %v", counted, err)
 	}

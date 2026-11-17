@@ -3,7 +3,11 @@
 -- seed --
 CREATE TABLE otel_logs (
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+    ResourceAttributes Map(String, String) DEFAULT map('job', 'api'),
+    LogAttributes Map(String, String) DEFAULT map(),
+    SeverityNumber UInt8 DEFAULT 0,
+    SeverityText LowCardinality(String) DEFAULT '',
+    Timestamp DateTime64(9) DEFAULT 0
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Body) VALUES
     ('error: disk full'),
@@ -12,99 +16,216 @@ INSERT INTO otel_logs (Body) VALUES
     ('all good');
 -- expected_rows --
 [
-  ["error: disk full"],
-  ["warn error: retried"]
+  ["error: disk full", {"detected_level": "unknown", "job": "api"}, "1970-01-01T00:00:00Z", {}],
+  ["warn error: retried", {"detected_level": "unknown", "job": "api"}, "1970-01-01T00:00:00Z", {}]
 ]
 -- args --
-[0] string = "job"
-[1] string = "api"
-[2] int64 = 0
-[3] int64 = 0
-[4] int64 = 1
-[5] int64 = 0
-[6] int64 = -1
-[7] int64 = 1
-[8] int64 = 0
-[9] int64 = 1
-[10] int64 = 0
-[11] int64 = 1
-[12] int64 = -1
-[13] int64 = 0
-[14] int64 = 1
-[15] int64 = 1
-[16] string = "error: "
-[17] int64 = 0
-[18] int64 = 0
-[19] int64 = 0
-[20] int64 = 0
-[21] int64 = 0
-[22] int64 = 1
-[23] int64 = 0
-[24] int64 = -1
-[25] int64 = 1
-[26] int64 = 0
-[27] int64 = 1
-[28] int64 = 0
-[29] int64 = 1
-[30] int64 = -1
-[31] int64 = 0
-[32] int64 = 1
-[33] int64 = 1
-[34] string = "error: "
-[35] int64 = 0
-[36] int64 = 0
+[0] string = ""
+[1] string = "detected_level"
+[2] string = ""
+[3] string = ""
+[4] string = "unknown"
+[5] string = "trace"
+[6] string = "trc"
+[7] string = "trace"
+[8] string = "debug"
+[9] string = "dbg"
+[10] string = "debug"
+[11] string = "info"
+[12] string = "inf"
+[13] string = "information"
+[14] string = "info"
+[15] string = "warn"
+[16] string = "wrn"
+[17] string = "warning"
+[18] string = "warn"
+[19] string = "error"
+[20] string = "err"
+[21] string = "error"
+[22] string = "critical"
+[23] string = "critical"
+[24] string = "fatal"
+[25] string = "fatal"
+[26] string = "detected_level"
+[27] string = ""
+[28] string = "detected_level"
+[29] string = "level"
+[30] string = ""
+[31] string = "level"
+[32] string = "log.level"
+[33] string = ""
+[34] string = "log.level"
+[35] string = "severity"
+[36] string = ""
+[37] string = "severity"
+[38] string = "severity_text"
+[39] string = ""
+[40] string = "severity_text"
+[41] string = ""
+[42] int64 = 0
+[43] string = ""
+[44] int64 = 4
+[45] string = "trace"
+[46] int64 = 8
+[47] string = "debug"
+[48] int64 = 12
+[49] string = "info"
+[50] int64 = 16
+[51] string = "warn"
+[52] int64 = 20
+[53] string = "error"
+[54] int64 = 24
+[55] string = "fatal"
+[56] string = ""
+[57] string = "job"
+[58] string = "api"
+[59] int64 = 0
+[60] int64 = 0
+[61] int64 = 1
+[62] int64 = 0
+[63] int64 = -1
+[64] int64 = 1
+[65] int64 = 0
+[66] int64 = 1
+[67] int64 = 0
+[68] int64 = 1
+[69] int64 = -1
+[70] int64 = 0
+[71] int64 = 1
+[72] int64 = 1
+[73] string = "error: "
+[74] int64 = 0
+[75] int64 = 0
+[76] int64 = 0
+[77] int64 = 0
+[78] int64 = 0
+[79] int64 = 1
+[80] int64 = 0
+[81] int64 = -1
+[82] int64 = 1
+[83] int64 = 0
+[84] int64 = 1
+[85] int64 = 0
+[86] int64 = 1
+[87] int64 = -1
+[88] int64 = 0
+[89] int64 = 1
+[90] int64 = 1
+[91] string = "error: "
+[92] int64 = 0
+[93] int64 = 0
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND ((FnArrayFold((_cerb_acc, _cerb_lit, _cerb_mg) -> FnMultiIf((_cerb_acc < 0), _cerb_acc, (FnStringPosition(Body, _cerb_lit, (FnToUInt64(FnGreatest(_cerb_acc, 0)) + 1)) = 0), FnToInt64(-1), ((_cerb_mg = 1) AND (FnStringPosition(Body, _cerb_lit, (FnToUInt64(FnGreatest(_cerb_acc, 0)) + 1)) = (FnToUInt64(FnGreatest(_cerb_acc, 0)) + 1))), FnToInt64(-1), (FnToInt64((FnStringPosition(Body, _cerb_lit, (FnToUInt64(FnGreatest(_cerb_acc, 0)) + 1)) + FnLength(_cerb_lit))) - 1)), FnArray("error: "), FnArray(0), FnToInt64(0)) >= 0) AND (FnArrayFold((_cerb_acc, _cerb_lit, _cerb_mg) -> FnMultiIf((_cerb_acc < 0), _cerb_acc, (FnStringPosition(Body, _cerb_lit, (FnToUInt64(FnGreatest(_cerb_acc, 0)) + 1)) = 0), FnToInt64(-1), ((_cerb_mg = 1) AND (FnStringPosition(Body, _cerb_lit, (FnToUInt64(FnGreatest(_cerb_acc, 0)) + 1)) = (FnToUInt64(FnGreatest(_cerb_acc, 0)) + 1))), FnToInt64(-1), (FnToInt64((FnStringPosition(Body, _cerb_lit, (FnToUInt64(FnGreatest(_cerb_acc, 0)) + 1)) + FnLength(_cerb_lit))) - 1)), FnArray("error: "), FnArray(0), FnToInt64(0)) != FnLength(Body))))
-  Scan(otel_logs)
+Project [Body AS Line, FnMapMerge(ResourceAttributes, FnMapFilter((k, v) -> (v != ""), FnMap("detected_level", _logql_detected_level))) AS Attributes, Timestamp AS TimeUnix, FnToJSONString(FnMapFilter((k, v) -> (v != ""), LogAttributes)) AS Metadata] oneScopeRows
+  Project [Body, LogAttributes, ResourceAttributes, Timestamp, FnMultiIf((FnLower(_logql_level_source) = ""), "unknown", ((FnLower(_logql_level_source) = "trace") OR (FnLower(_logql_level_source) = "trc")), "trace", ((FnLower(_logql_level_source) = "debug") OR (FnLower(_logql_level_source) = "dbg")), "debug", (((FnLower(_logql_level_source) = "info") OR (FnLower(_logql_level_source) = "inf")) OR (FnLower(_logql_level_source) = "information")), "info", (((FnLower(_logql_level_source) = "warn") OR (FnLower(_logql_level_source) = "wrn")) OR (FnLower(_logql_level_source) = "warning")), "warn", ((FnLower(_logql_level_source) = "error") OR (FnLower(_logql_level_source) = "err")), "error", (FnLower(_logql_level_source) = "critical"), "critical", (FnLower(_logql_level_source) = "fatal"), "fatal", _logql_level_source) AS _logql_detected_level]
+    Project [Body, LogAttributes, ResourceAttributes, Timestamp, FnMultiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], FnMultiIf((SeverityText != ""), SeverityText, FnMultiIf((SeverityNumber <= 0), "", (SeverityNumber <= 4), "trace", (SeverityNumber <= 8), "debug", (SeverityNumber <= 12), "info", (SeverityNumber <= 16), "warn", (SeverityNumber <= 20), "error", (SeverityNumber <= 24), "fatal", ""))) AS _logql_level_source]
+      Filter predicate=(((ResourceAttributes["job"] = "api") AND (FnArrayFold((_cerb_acc, _cerb_lit, _cerb_mg) -> FnMultiIf((_cerb_acc < 0), _cerb_acc, (FnStringPosition(Body, _cerb_lit, (FnToUInt64(FnGreatest(_cerb_acc, 0)) + 1)) = 0), FnToInt64(-1), ((_cerb_mg = 1) AND (FnStringPosition(Body, _cerb_lit, (FnToUInt64(FnGreatest(_cerb_acc, 0)) + 1)) = (FnToUInt64(FnGreatest(_cerb_acc, 0)) + 1))), FnToInt64(-1), (FnToInt64((FnStringPosition(Body, _cerb_lit, (FnToUInt64(FnGreatest(_cerb_acc, 0)) + 1)) + FnLength(_cerb_lit))) - 1)), FnArray("error: "), FnArray(0), FnToInt64(0)) >= 0)) AND (FnArrayFold((_cerb_acc, _cerb_lit, _cerb_mg) -> FnMultiIf((_cerb_acc < 0), _cerb_acc, (FnStringPosition(Body, _cerb_lit, (FnToUInt64(FnGreatest(_cerb_acc, 0)) + 1)) = 0), FnToInt64(-1), ((_cerb_mg = 1) AND (FnStringPosition(Body, _cerb_lit, (FnToUInt64(FnGreatest(_cerb_acc, 0)) + 1)) = (FnToUInt64(FnGreatest(_cerb_acc, 0)) + 1))), FnToInt64(-1), (FnToInt64((FnStringPosition(Body, _cerb_lit, (FnToUInt64(FnGreatest(_cerb_acc, 0)) + 1)) + FnLength(_cerb_lit))) - 1)), FnArray("error: "), FnArray(0), FnToInt64(0)) != FnLength(Body)))
+        Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (arrayFold((_cerb_acc, _cerb_lit, _cerb_mg) -> multiIf((_cerb_acc < ?), _cerb_acc, (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = ?), toInt64(?), ((_cerb_mg = ?) AND (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = (toUInt64(greatest(_cerb_acc, ?)) + ?))), toInt64(?), (toInt64((position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) + length(_cerb_lit))) - ?)), array(?), array(?), toInt64(?)) >= ?) AND (arrayFold((_cerb_acc, _cerb_lit, _cerb_mg) -> multiIf((_cerb_acc < ?), _cerb_acc, (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = ?), toInt64(?), ((_cerb_mg = ?) AND (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = (toUInt64(greatest(_cerb_acc, ?)) + ?))), toInt64(?), (toInt64((position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) + length(_cerb_lit))) - ?)), array(?), array(?), toInt64(?)) != length(`Body`))
+SELECT `Body` AS `Line`, mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`))) AS `Attributes`, `Timestamp` AS `TimeUnix`, toJSONString(mapFilter((k, v) -> (v != ?), `LogAttributes`)) AS `Metadata` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `Timestamp`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `Timestamp`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (arrayFold((_cerb_acc, _cerb_lit, _cerb_mg) -> multiIf((_cerb_acc < ?), _cerb_acc, (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = ?), toInt64(?), ((_cerb_mg = ?) AND (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = (toUInt64(greatest(_cerb_acc, ?)) + ?))), toInt64(?), (toInt64((position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) + length(_cerb_lit))) - ?)), array(?), array(?), toInt64(?)) >= ?) AND (arrayFold((_cerb_acc, _cerb_lit, _cerb_mg) -> multiIf((_cerb_acc < ?), _cerb_acc, (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = ?), toInt64(?), ((_cerb_mg = ?) AND (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = (toUInt64(greatest(_cerb_acc, ?)) + ?))), toInt64(?), (toInt64((position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) + length(_cerb_lit))) - ?)), array(?), array(?), toInt64(?)) != length(`Body`)))))
 -- parity_exempt --
 reason: log-query-answer
-detail: log query `{job="api"} |> "error: <_>"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+detail: log query `{job="api"} |> "error: <_>"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
-[0] string = "job"
-[1] string = "api"
-[2] int64 = 0
-[3] int64 = 0
-[4] int64 = 1
-[5] int64 = 0
-[6] int64 = -1
-[7] int64 = 1
-[8] int64 = 0
-[9] int64 = 1
-[10] int64 = 0
-[11] int64 = 1
-[12] int64 = -1
-[13] int64 = 0
-[14] int64 = 1
-[15] int64 = 1
-[16] string = "error: "
-[17] int64 = 0
-[18] int64 = 0
-[19] int64 = 0
-[20] int64 = 0
-[21] int64 = 0
-[22] int64 = 1
-[23] int64 = 0
-[24] int64 = -1
-[25] int64 = 1
-[26] int64 = 0
-[27] int64 = 1
-[28] int64 = 0
-[29] int64 = 1
-[30] int64 = -1
-[31] int64 = 0
-[32] int64 = 1
-[33] int64 = 1
-[34] string = "error: "
-[35] int64 = 0
-[36] int64 = 0
+[0] string = ""
+[1] string = "detected_level"
+[2] string = ""
+[3] string = ""
+[4] string = "unknown"
+[5] string = "trace"
+[6] string = "trc"
+[7] string = "trace"
+[8] string = "debug"
+[9] string = "dbg"
+[10] string = "debug"
+[11] string = "info"
+[12] string = "inf"
+[13] string = "information"
+[14] string = "info"
+[15] string = "warn"
+[16] string = "wrn"
+[17] string = "warning"
+[18] string = "warn"
+[19] string = "error"
+[20] string = "err"
+[21] string = "error"
+[22] string = "critical"
+[23] string = "critical"
+[24] string = "fatal"
+[25] string = "fatal"
+[26] string = "detected_level"
+[27] string = ""
+[28] string = "detected_level"
+[29] string = "level"
+[30] string = ""
+[31] string = "level"
+[32] string = "log.level"
+[33] string = ""
+[34] string = "log.level"
+[35] string = "severity"
+[36] string = ""
+[37] string = "severity"
+[38] string = "severity_text"
+[39] string = ""
+[40] string = "severity_text"
+[41] string = ""
+[42] int64 = 0
+[43] string = ""
+[44] int64 = 4
+[45] string = "trace"
+[46] int64 = 8
+[47] string = "debug"
+[48] int64 = 12
+[49] string = "info"
+[50] int64 = 16
+[51] string = "warn"
+[52] int64 = 20
+[53] string = "error"
+[54] int64 = 24
+[55] string = "fatal"
+[56] string = ""
+[57] string = "job"
+[58] string = "api"
+[59] int64 = 0
+[60] int64 = 0
+[61] int64 = 1
+[62] int64 = 0
+[63] int64 = -1
+[64] int64 = 1
+[65] int64 = 0
+[66] int64 = 1
+[67] int64 = 0
+[68] int64 = 1
+[69] int64 = -1
+[70] int64 = 0
+[71] int64 = 1
+[72] int64 = 1
+[73] string = "error: "
+[74] int64 = 0
+[75] int64 = 0
+[76] int64 = 0
+[77] int64 = 0
+[78] int64 = 0
+[79] int64 = 1
+[80] int64 = 0
+[81] int64 = -1
+[82] int64 = 1
+[83] int64 = 0
+[84] int64 = 1
+[85] int64 = 0
+[86] int64 = 1
+[87] int64 = -1
+[88] int64 = 0
+[89] int64 = 1
+[90] int64 = 1
+[91] string = "error: "
+[92] int64 = 0
+[93] int64 = 0
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
-log_comment=cerb:filter
+log_comment=cerb:project
 max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (arrayFold((_cerb_acc, _cerb_lit, _cerb_mg) -> multiIf((_cerb_acc < ?), _cerb_acc, (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = ?), toInt64(?), ((_cerb_mg = ?) AND (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = (toUInt64(greatest(_cerb_acc, ?)) + ?))), toInt64(?), (toInt64((position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) + length(_cerb_lit))) - ?)), array(?), array(?), toInt64(?)) >= ?) AND (arrayFold((_cerb_acc, _cerb_lit, _cerb_mg) -> multiIf((_cerb_acc < ?), _cerb_acc, (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = ?), toInt64(?), ((_cerb_mg = ?) AND (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = (toUInt64(greatest(_cerb_acc, ?)) + ?))), toInt64(?), (toInt64((position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) + length(_cerb_lit))) - ?)), array(?), array(?), toInt64(?)) != length(`Body`))
+SELECT `Body` AS `Line`, mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`))) AS `Attributes`, `Timestamp` AS `TimeUnix`, toJSONString(mapFilter((k, v) -> (v != ?), `LogAttributes`)) AS `Metadata` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `Timestamp`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `Timestamp`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `SeverityNumber`, `SeverityText`, `Timestamp` FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (arrayFold((_cerb_acc, _cerb_lit, _cerb_mg) -> multiIf((_cerb_acc < ?), _cerb_acc, (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = ?), toInt64(?), ((_cerb_mg = ?) AND (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = (toUInt64(greatest(_cerb_acc, ?)) + ?))), toInt64(?), (toInt64((position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) + length(_cerb_lit))) - ?)), array(?), array(?), toInt64(?)) >= ?) AND (arrayFold((_cerb_acc, _cerb_lit, _cerb_mg) -> multiIf((_cerb_acc < ?), _cerb_acc, (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = ?), toInt64(?), ((_cerb_mg = ?) AND (position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) = (toUInt64(greatest(_cerb_acc, ?)) + ?))), toInt64(?), (toInt64((position(`Body`, _cerb_lit, (toUInt64(greatest(_cerb_acc, ?)) + ?)) + length(_cerb_lit))) - ?)), array(?), array(?), toInt64(?)) != length(`Body`)))))

@@ -415,9 +415,7 @@ func TestProjectSamples_LogQuerySurfacesDetectedLevelWhenReferenced(t *testing.T
 		t.Fatalf("ParseExpr: %v", err)
 	}
 
-	// Log-stream queries lower to a Scan (or Filter(Scan)) — no inner
-	// Project layer. ProjectSamples wraps with the wire-shape projection.
-	plan := &chplan.Scan{Table: s.LogsTable}
+	plan := mustLowerLog(t, expr, s)
 	wrapped := mustProjectSamples(t, l, plan, engine.Meta{
 		IsMetric: false,
 		Extra:    map[string]any{"expr": expr},
@@ -525,7 +523,7 @@ func TestProjectSamples_BareLogQueryAlsoSurfacesDetectedLevel(t *testing.T) {
 		t.Fatalf("ParseExpr: %v", err)
 	}
 
-	plan := &chplan.Scan{Table: s.LogsTable}
+	plan := mustLowerLog(t, expr, s)
 	wrapped := mustProjectSamples(t, l, plan, engine.Meta{
 		IsMetric: false,
 		Extra:    map[string]any{"expr": expr},
@@ -603,7 +601,7 @@ func TestProjectSamples_ParserStageQuerySurfacesDetectedLevel(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			plan := &chplan.Scan{Table: s.LogsTable}
+			plan := mustLowerLog(t, expr, s)
 			wrapped := mustProjectSamples(t, l, plan, engine.Meta{
 				IsMetric: false,
 				Extra:    map[string]any{"expr": expr},
@@ -663,7 +661,7 @@ func TestProjectSamples_LineFilterQuerySurfacesDetectedLevel(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			plan := &chplan.Scan{Table: s.LogsTable}
+			plan := mustLowerLog(t, expr, s)
 			wrapped := mustProjectSamples(t, l, plan, engine.Meta{
 				IsMetric: false,
 				Extra:    map[string]any{"expr": expr},
@@ -730,7 +728,7 @@ func TestProjectSamples_ParserStageSurfacesExtractedLabels(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			plan := &chplan.Scan{Table: s.LogsTable}
+			plan := mustLowerLog(t, expr, s)
 			wrapped := mustProjectSamples(t, l, plan, engine.Meta{
 				IsMetric: false,
 				Extra:    map[string]any{"expr": expr},
@@ -738,10 +736,11 @@ func TestProjectSamples_ParserStageSurfacesExtractedLabels(t *testing.T) {
 			proj := wrapped.(*chplan.Project)
 			attrsSlot := proj.Projections[1]
 
-			// Outer wrap is withDetectedLevel's mapConcat. Drill into
-			// arg[0] to find the parser-merge mapConcat. A leaf
-			// ColumnRef there would be the regression: parser-stage
-			// labels never landed on the row's projected Attributes.
+			// Outer wrap is withDetectedLevel's mapConcat. Its arg[0] reads
+			// the parser stage's labels column; the layer below defines
+			// that column as the parser-merge mapConcat. A ResourceAttributes
+			// reference there would be the regression: parser-stage labels
+			// never landed on the row's projected Attributes.
 			outer, ok := attrsSlot.Expr.(*chplan.FuncCall)
 			if !ok {
 				t.Fatalf("attributes slot expr: got %T, want *chplan.FuncCall", attrsSlot.Expr)
@@ -752,20 +751,40 @@ func TestProjectSamples_ParserStageSurfacesExtractedLabels(t *testing.T) {
 			if len(outer.Args) != 2 {
 				t.Fatalf("outer mapConcat args: got %d, want 2", len(outer.Args))
 			}
-			inner, ok := outer.Args[0].(*chplan.FuncCall)
-			if !ok {
-				t.Fatalf("outer arg[0]: got %T, want *chplan.FuncCall (parser-stage "+
-					"merge mapConcat); a bare ColumnRef here means parser-extracted "+
-					"keys are not landing on the row's Attributes — the precise "+
-					"regression that collapsed reference Loki's hundreds of streams "+
-					"per `| logfmt` / `| json` query into a handful on the "+
-					"loki-compat differential", outer.Args[0])
+			ref, ok := outer.Args[0].(*chplan.ColumnRef)
+			if !ok || ref.Name == s.ResourceAttributesColumn {
+				t.Fatalf("outer arg[0]: got %#v, want a reference to the parser stage's labels "+
+					"column; ResourceAttributes here means parser-extracted keys are not "+
+					"landing on the row's Attributes — the precise regression that collapsed "+
+					"reference Loki's hundreds of streams per `| logfmt` / `| json` query into "+
+					"a handful on the loki-compat differential", outer.Args[0])
 			}
-			if inner.Fn != chplan.FnMapMerge {
-				t.Errorf("inner parser-merge FuncCall.Fn: got %q, want %q", inner.Fn, chplan.FnMapMerge)
+			inner, ok := columnDefinition(proj, ref.Name).(*chplan.FuncCall)
+			if !ok || inner.Fn != chplan.FnMapMerge {
+				t.Errorf("column %s is defined as %#v, want the parser-merge mapConcat", ref.Name, columnDefinition(proj, ref.Name))
 			}
 		})
 	}
+}
+
+// columnDefinition returns the expression a Project below plan defines
+// the column name as, or nil when none does.
+func columnDefinition(plan chplan.Node, name string) chplan.Expr {
+	for n := plan; n != nil; {
+		if p, ok := n.(*chplan.Project); ok {
+			for _, projection := range p.Projections {
+				if projection.Alias == name {
+					return projection.Expr
+				}
+			}
+		}
+		children := n.Children()
+		if len(children) == 0 {
+			return nil
+		}
+		n = children[0]
+	}
+	return nil
 }
 
 // TestProjectSamples_NoParserStage_KeepsBareResourceAttributes pins the
@@ -794,7 +813,7 @@ func TestProjectSamples_NoParserStage_KeepsBareResourceAttributes(t *testing.T) 
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			plan := &chplan.Scan{Table: s.LogsTable}
+			plan := mustLowerLog(t, expr, s)
 			wrapped := mustProjectSamples(t, l, plan, engine.Meta{
 				IsMetric: false,
 				Extra:    map[string]any{"expr": expr},
@@ -855,7 +874,7 @@ func TestProjectSamples_LogQueryWithDetectedLevelFilterTriggersWrap(t *testing.T
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			plan := &chplan.Scan{Table: s.LogsTable}
+			plan := mustLowerLog(t, expr, s)
 			wrapped := mustProjectSamples(t, l, plan, engine.Meta{
 				IsMetric: false,
 				Extra:    map[string]any{"expr": expr},
@@ -912,7 +931,7 @@ func TestProjectSamples_DropDetectedLevelSkipsWrap(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			plan := &chplan.Scan{Table: s.LogsTable}
+			plan := mustLowerLog(t, expr, s)
 			wrapped := mustProjectSamples(t, l, plan, engine.Meta{
 				IsMetric: false,
 				Extra:    map[string]any{"expr": expr},
@@ -969,7 +988,7 @@ func TestProjectSamples_DropDetectedLevelStillSurfacesWhenNotUnconditional(t *te
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			plan := &chplan.Scan{Table: s.LogsTable}
+			plan := mustLowerLog(t, expr, s)
 			wrapped := mustProjectSamples(t, l, plan, engine.Meta{
 				IsMetric: false,
 				Extra:    map[string]any{"expr": expr},
