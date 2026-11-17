@@ -92,10 +92,10 @@ func splitBucketMatchers(matchers []*labels.Matcher, bareName string) (scanMatch
 //
 //   - `le` carries the explicit bound for buckets 1..N (rendered as a
 //     decimal string), and `"+Inf"` for the trailing overflow bucket.
-//   - The cumulative count is `arraySum(arraySlice(BucketCounts, 1, i))`
-//     — i.e. observations with value ≤ ExplicitBounds[i], matching the
-//     Prom `_bucket{le=X}` cumulative-counter convention. OTel-CH stores
-//     per-bucket counts (non-cumulative); the slice-sum is what makes
+//   - The cumulative count is `arrayCumSum(BucketCounts)[i]` — i.e.
+//     observations with value ≤ ExplicitBounds[i], matching the Prom
+//     `_bucket{le=X}` cumulative-counter convention. OTel-CH stores
+//     per-bucket counts (non-cumulative); the running sum is what makes
 //     the wire shape Prom-compatible.
 //   - The synthesised `le` label is mapInsert'd onto the row's Attributes
 //     map so downstream `sum by(le) (...)` aggregations see a real
@@ -108,21 +108,23 @@ func splitBucketMatchers(matchers []*labels.Matcher, bareName string) (scanMatch
 // Plan shape produced (outer-most first):
 //
 //	Project [MetricName='<base>_bucket', Attributes+le, TimeUnix, Value]
-//	  Project [MetricName, Attributes, TimeUnix, ExplicitBounds, BucketCounts,
-//	           arrayJoin(arrayEnumerate(BucketCounts)) AS le_idx]
+//	  Project [MetricName, Attributes, TimeUnix,
+//	           arrayJoin(arrayZip(le strings, cumulative counts)) AS le_pair]
 //	    Scan(otel_metrics_histogram)
 //
-// The inner arrayJoin fans the row; the outer Project rewrites the
-// canonical Sample columns using the fanned `le_idx`. CH's `arrayJoin`
-// in a SELECT position is the lateral fan-out idiom — equivalent to an
-// ARRAY JOIN clause but expressed at the expression level so we can
-// reuse the existing Project node without introducing a new IR node.
+// The inner arrayJoin fans the row into one `(le, cumulative count)` pair
+// per bucket; the outer Project rewrites the canonical Sample columns from
+// the fanned pair. CH's `arrayJoin` in a SELECT position is the lateral
+// fan-out idiom — equivalent to an ARRAY JOIN clause but expressed at the
+// expression level so we can reuse the existing Project node without
+// introducing a new IR node.
 //
-// `le_idx` is a CH-safe bare identifier (lowercase ASCII + underscore +
-// digits only) so the BareIdent trust contract is satisfied. The name
-// is prefixed `le_` to avoid colliding with any plausible user-supplied
-// label (Prom forbids labels starting with `__` for the public range and
-// reserved-internal range; `le_idx` falls outside both).
+// `le_idx` and `le_pair` are CH-safe bare identifiers (lowercase ASCII +
+// underscore + digits only) so the BareIdent trust contract is satisfied.
+// They are prefixed `le_` to avoid colliding with any plausible
+// user-supplied label (Prom forbids labels starting with `__` for the
+// public range and reserved-internal range; `le_idx` and `le_pair` fall
+// outside both).
 //
 // Under staleMarkersEncoded a stale-marker row first takes its series'
 // bucket layout ([staleMarkerBucketLayout], over the rows layout admits)
@@ -133,10 +135,10 @@ func wrapHistogramBucketFanout(
 	mode staleMarkerMode, layout staleLayoutWindow,
 ) chplan.Node {
 	// Inner Project — pass the histogram row's identity columns through
-	// and add the fanned bucket index via arrayJoin. Every output row
-	// carries one (MetricName, Attributes, TimeUnix, ExplicitBounds,
-	// BucketCounts, le_idx) tuple — the same row repeats N+1 times,
-	// once per BucketCounts entry, with le_idx running 1..length(BucketCounts).
+	// and add the fanned bucket pair via arrayJoin. Every output row
+	// carries one (MetricName, Attributes, TimeUnix, le_pair) tuple — the
+	// same row repeats N+1 times, once per BucketCounts entry, with
+	// le_pair running over the row's buckets in order.
 	//
 	// Merge resource attributes here, where the raw ResourceAttributes
 	// column is still in scope (this Project reads the histogram Scan
@@ -172,16 +174,47 @@ func wrapHistogramBucketFanout(
 		bounds = &chplan.ColumnRef{Name: staleLayoutBoundsAlias}
 		counts = &chplan.ColumnRef{Name: staleLayoutCountsAlias}
 	}
+	// The fan-out expands one (le, cumulative count) pair per bucket. Both
+	// arrays are built per histogram row, before arrayJoin, so the fanned
+	// rows carry two scalars instead of a copy of each bucket array:
+	// arrayJoin replicates every column of the row it expands, and the
+	// arrays are most of a histogram row's width.
+	//
+	//   le_str = if(le_idx > length(ExplicitBounds), '+Inf',
+	//               classicBucketLeStringExpr(ExplicitBounds[le_idx]))
+	//
+	// BucketCounts has length = length(ExplicitBounds)+1 — the trailing
+	// entry is the +Inf overflow bucket. The branch on `le_idx >
+	// length(ExplicitBounds)` selects the +Inf label for that last bucket
+	// and reads from ExplicitBounds for every other one.
+	//
+	//   cum = arrayCumSum(BucketCounts)[le_idx]
+	//
+	// the count of observations with value ≤ ExplicitBounds[le_idx],
+	// wrapped in toFloat64 so the canonical Sample-row Value column stays
+	// Float64 (BucketCounts is UInt64).
+	leStrs := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{bucketIdxAlias},
+			Body:   classicBucketLeStringExpr(&chplan.BareIdent{Name: bucketIdxAlias}, bounds),
+		},
+		&chplan.FuncCall{Fn: chplan.FnArrayEnumerate, Args: []chplan.Expr{counts}},
+	}}
+	cumCounts := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{paramBucketCount},
+			Body:   &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{&chplan.BareIdent{Name: paramBucketCount}}},
+		},
+		&chplan.FuncCall{Fn: chplan.FnArrayCumSum, Args: []chplan.Expr{counts}},
+	}}
 	fanoutProjections := append(
 		rowProjections,
-		chplan.Projection{Expr: bounds, Alias: s.ExplicitBoundsColumn},
-		chplan.Projection{Expr: counts, Alias: s.BucketCountsColumn},
 		chplan.Projection{
 			Expr: &chplan.FuncCall{
 				Fn:   chplan.FnArrayJoin,
-				Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnArrayEnumerate, Args: []chplan.Expr{counts}}},
+				Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnArrayZip, Args: []chplan.Expr{leStrs, cumCounts}}},
 			},
-			Alias: bucketIdxAlias,
+			Alias: bucketPairAlias,
 		},
 	)
 	fanout := &chplan.Project{Roles: metricRoles(s), Input: fanInput, Projections: fanoutProjections}
@@ -189,23 +222,11 @@ func wrapHistogramBucketFanout(
 	// Outer Project — synthesize the canonical Sample shape with the
 	// suffixed metric name + the `le` label baked into Attributes + the
 	// cumulative bucket count as Value.
-	//
-	//   le_str = if(le_idx > length(ExplicitBounds), '+Inf',
-	//               toString(ExplicitBounds[le_idx]))
-	//
-	// BucketCounts has length = length(ExplicitBounds)+1 — the trailing
-	// entry is the +Inf overflow bucket. The branch on `le_idx >
-	// length(ExplicitBounds)` selects the +Inf label for that last row
-	// and reads from ExplicitBounds for every other row.
-	//
-	//   cum    = arraySum(arraySlice(BucketCounts, 1, le_idx))
-	//
-	// CH's arraySlice(arr, 1, N) returns the first N elements; arraySum
-	// gives the cumulative count for observations with value ≤
-	// ExplicitBounds[le_idx]. Wrapped in toFloat64 so the canonical
-	// Sample-row Value column stays Float64 (BucketCounts is UInt64).
-	leIdx := &chplan.BareIdent{Name: bucketIdxAlias}
-	leStr := classicBucketLeStringExpr(leIdx, &chplan.ColumnRef{Name: s.ExplicitBoundsColumn})
+	pairField := func(pos int64) chplan.Expr {
+		return &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{
+			&chplan.ColumnRef{Name: bucketPairAlias}, &chplan.LitInt{V: pos},
+		}}
+	}
 	// No canonicalisation here: mapConcat appends `le` to whatever the
 	// inner projection produced, and that projection already binds
 	// Attributes canonically, so every row of one logical series gets the
@@ -219,29 +240,12 @@ func wrapHistogramBucketFanout(
 				Fn: chplan.FnMap,
 				Args: []chplan.Expr{
 					&chplan.LitString{V: bucketBoundLabel},
-					leStr,
+					pairField(bucketPairLe),
 				},
 			},
 		},
 	}
-	cumCount := &chplan.FuncCall{
-		Fn: chplan.FnToFloat64,
-		Args: []chplan.Expr{
-			&chplan.FuncCall{
-				Fn: chplan.FnArraySum,
-				Args: []chplan.Expr{
-					&chplan.FuncCall{
-						Fn: chplan.FnArraySlice,
-						Args: []chplan.Expr{
-							&chplan.ColumnRef{Name: s.BucketCountsColumn},
-							&chplan.LitInt{V: 1},
-							leIdx,
-						},
-					},
-				},
-			},
-		},
-	}
+	cumCount := pairField(bucketPairCount)
 	metricNameExpr := chplan.Expr(&chplan.LitString{V: suffixedName})
 	if suffixedName == "" {
 		metricNameExpr = syntheticMetricNameExpr(s, bucketSuffix)
@@ -259,11 +263,20 @@ func wrapHistogramBucketFanout(
 	return &chplan.Project{Roles: metricRoles(s), Input: fanout, Projections: outer}
 }
 
-// bucketIdxAlias is the CH-safe bare identifier used to surface the
-// fanned `arrayJoin(arrayEnumerate(BucketCounts))` value into the outer
-// Project's expressions. Lowercase ASCII / underscore / digit shape
-// satisfies the BareIdent trust contract (see chplan.BareIdent doc).
+// bucketIdxAlias is the CH-safe bare identifier naming a bucket's 1-based
+// index inside the fan-out's per-row arrays. Lowercase ASCII / underscore
+// / digit shape satisfies the BareIdent trust contract (see
+// chplan.BareIdent doc).
 const bucketIdxAlias = "le_idx"
+
+// bucketPairAlias names the fanned `(le, cumulative count)` tuple the
+// fan-out's arrayJoin yields; bucketPairLe / bucketPairCount are the
+// tuple's 1-based element positions.
+const (
+	bucketPairAlias       = "le_pair"
+	bucketPairLe    int64 = 1
+	bucketPairCount int64 = 2
+)
 
 // isClassicBucketFanoutProject recognizes the row expansion produced above.
 // It changes one stored histogram into independent cumulative bucket counters,
@@ -271,14 +284,22 @@ const bucketIdxAlias = "le_idx"
 // the enclosing canonical sample projection (and any synthetic le filter).
 func isClassicBucketFanoutProject(p *chplan.Project, s schema.Metrics) bool {
 	for _, projection := range p.Projections {
-		if projection.Alias != bucketIdxAlias {
+		if projection.Alias != bucketPairAlias {
 			continue
 		}
 		join, ok := projection.Expr.(*chplan.FuncCall)
 		if !ok || join.Fn != chplan.FnArrayJoin || len(join.Args) != 1 {
 			return false
 		}
-		enumerate, ok := join.Args[0].(*chplan.FuncCall)
+		zip, ok := join.Args[0].(*chplan.FuncCall)
+		if !ok || zip.Fn != chplan.FnArrayZip || len(zip.Args) == 0 {
+			return false
+		}
+		les, ok := zip.Args[0].(*chplan.FuncCall)
+		if !ok || les.Fn != chplan.FnArrayMap || len(les.Args) != 2 {
+			return false
+		}
+		enumerate, ok := les.Args[1].(*chplan.FuncCall)
 		if !ok || enumerate.Fn != chplan.FnArrayEnumerate || len(enumerate.Args) != 1 {
 			return false
 		}

@@ -70,8 +70,8 @@ with parallel arrays:
 | `ExplicitBounds` | `Array(Float64)` — the finite `le` upper bounds                                                                                              |
 
 At query time cerberus reconstructs the classic `le` series with
-`arraySum(arraySlice(BucketCounts, 1, le_idx))` — i.e. it cumulates across
-buckets itself, and synthesizes `le = ExplicitBounds[le_idx]` (or `+Inf`).
+`arrayCumSum(BucketCounts)` — i.e. it cumulates across buckets itself, and
+synthesizes `le = ExplicitBounds[le_idx]` (or `+Inf`).
 
 The generator writes the **same** distribution to Prometheus/Mimir in the
 classic exploded form — one `<metric>_bucket{le=…}` series per bound
