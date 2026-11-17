@@ -29,6 +29,13 @@ const (
 
 const labelValuesRenamed = "label_values_matcher_stock_key_renamed"
 
+// spreadRefusingHeadroom is a headroom whose margin the 26.9 gating runs'
+// spread outgrows: 1.20x of their highest, 32.6M, leaves 6.53M against the
+// 6.75M down to their lowest. The cases below that are built from those runs
+// use it so they pin calibratedBound's anchoring and spread check, not the
+// sentinel's own labelValuesBaselineHeadroom, which covers that spread.
+const spreadRefusingHeadroom = 1.20
+
 // runnerSets is nightlyCalibrationRunners runners that each measured rounds.
 func runnerSets(rounds []uint64) [][]uint64 {
 	runners := make([][]uint64, nightlyCalibrationRunners)
@@ -46,11 +53,11 @@ func runnerSets(rounds []uint64) [][]uint64 {
 // low-tail runner falls among them, so the gating runs held out of the
 // calibration clear it. The low-tail runner is built around the low
 // calibration's 24,632,333 and the other runners' rounds are chosen to sit
-// inside the 1.20x margin, so this pins the anchoring alone: the measured 26.9
-// gating spread is wider than that margin, and the next test shows it refused
-// (#4151).
+// inside spreadRefusingHeadroom's margin, so this pins the anchoring alone:
+// the measured 26.9 gating spread is wider than that margin, and the next
+// test shows it refused.
 func TestCalibratedBound_LowTailRunnerCannotSetTheCeiling(t *testing.T) {
-	const headroom = labelValuesBaselineHeadroom
+	const headroom = spreadRefusingHeadroom
 	lowTail := []uint64{23_800_000, 24_100_000, labelValuesRenamedCalibrationLow, 24_300_000, 24_450_000}
 	runners := [][]uint64{
 		lowTail,
@@ -109,14 +116,14 @@ func TestCalibratedBound_RefusesSpreadOverTheMargin(t *testing.T) {
 		{29_349_973, 29_100_000, 29_200_000, 29_000_000, 29_300_000},
 		{labelValuesRenamedGatingRedThird, 32_400_000, 32_500_000, 32_300_000, 32_600_000},
 	}
-	if _, err := calibratedBound(labelValuesRenamed, http.StatusOK, runners, labelValuesBaselineHeadroom); err == nil {
-		t.Fatalf("runners %v under a %.2fx headroom were accepted", runners, labelValuesBaselineHeadroom)
+	if _, err := calibratedBound(labelValuesRenamed, http.StatusOK, runners, spreadRefusingHeadroom); err == nil {
+		t.Fatalf("runners %v under a %.2fx headroom were accepted", runners, spreadRefusingHeadroom)
 	}
 	// The refusal is the runners' doing together: each runner's own rounds
 	// span less than the margin its own highest round's ceiling would leave.
 	for _, rounds := range runners {
 		lowest, highest := slices.Min(rounds), slices.Max(rounds)
-		if margin := committedCeilingBytes(highest, labelValuesBaselineHeadroom) - highest; highest-lowest >= margin {
+		if margin := committedCeilingBytes(highest, spreadRefusingHeadroom) - highest; highest-lowest >= margin {
 			t.Fatalf("runner %v alone spans %d, not inside its own %d margin — the case does not isolate the cross-runner span",
 				rounds, highest-lowest, margin)
 		}
