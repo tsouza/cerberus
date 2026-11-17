@@ -101,12 +101,18 @@ const (
 	// regression they exist for, the emitter's PREWHERE split on a server
 	// where move_to_prewhere resolved in, measured 35.8M-40.1M and
 	// 36.8M-45.3M on the same data and server — at least 1.38x. On the
-	// perf-nightly runners the renamed sentinel's max-of-5 spans 24.5M-33.0M
-	// on 26.8 (1.34x), wider than the margin 1.20x leaves above the highest
-	// (#4151) and close to that step, so this ceiling is a backstop: the
-	// statement prong (ServerPrewhereOn) is what separates the split on the
-	// lines where the server places it.
-	labelValuesBaselineHeadroom = 1.20
+	// perf-nightly runners, over 81 gating runs of unchanged code (28 to 81
+	// per line), the renamed sentinel's max-of-5 spans 24.55M-32.97M on 26.8
+	// (1.343x), 24.53M-32.64M on 26.9 (1.331x) and 20.97M-27.53M on 25.9
+	// (1.313x); the twin's widest is 27.12M-31.78M on 26.8 (1.172x). 1.40x
+	// clears the widest with about 4% to spare (1.40x / 1.343x = 1.043x), so
+	// a ceiling calibrated from the lowest of those runs still clears the
+	// highest (TestLabelValuesBaselineHeadroom_CoversTheRunnerSpread). That
+	// headroom reaches past the split's 1.38x step, so this ceiling is a
+	// backstop for other memory growth: the statement prong
+	// (ServerPrewhereOn) is what separates the split on the lines where the
+	// server places it.
+	labelValuesBaselineHeadroom = 1.40
 	// rateByRouteBaselineHeadroom (rate_by_route_matcher_stock_key): the
 	// same rate query measured over 6 repeats per server when the PREWHERE
 	// split was chosen (docs/clickhouse-optimizations.background.md): 54.0M-
