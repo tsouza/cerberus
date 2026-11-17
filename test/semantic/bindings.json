@@ -38,6 +38,15 @@
       "status": "active"
     },
     {
+      "id": "BINDING-SIGNAL-LABEL-MATCHER-SET-REWRITE",
+      "contract": "SIGNAL-LABEL-MATCHER-CONSISTENCY",
+      "verifier": "VERIFIER-CHDB-EMIT-FORM-EQUIVALENCE",
+      "evidence_class": "execution",
+      "independence_group": "literal-set-emit-equivalence",
+      "test_ref": "internal/chsql/regex_literal_set_chdb_test.go:TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB",
+      "status": "active"
+    },
+    {
       "id": "BINDING-PROMQL-COUNTER-RESET-INSTANT-PROPERTY",
       "contract": "PROMQL-COUNTER-RESET-EXTRAPOLATION",
       "verifier": "VERIFIER-PROPERTY-BASED-ORACLE-DIFFERENTIAL",
@@ -98,6 +107,15 @@
       "evidence_class": "reference",
       "independence_group": "reference-differential",
       "test_ref": "compatibility/prometheus/query-corpus/header.yml",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-PROMQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
+      "contract": "PROMQL-LABEL-MATCHER-REGEX-ANCHORING",
+      "verifier": "VERIFIER-CHDB-EMIT-FORM-EQUIVALENCE",
+      "evidence_class": "execution",
+      "independence_group": "literal-set-emit-equivalence",
+      "test_ref": "internal/chsql/regex_literal_set_chdb_test.go:TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB",
       "status": "active"
     },
     {
@@ -413,6 +431,15 @@
       "evidence_class": "reference",
       "independence_group": "reference-differential",
       "test_ref": "compatibility/loki/cerberus-queries/regression/anchored-regex-matcher.yaml",
+      "status": "active"
+    },
+    {
+      "id": "BINDING-LOGQL-LABEL-MATCHER-ANCHORING-SET-REWRITE",
+      "contract": "LOGQL-LABEL-MATCHER-REGEX-ANCHORING",
+      "verifier": "VERIFIER-CHDB-EMIT-FORM-EQUIVALENCE",
+      "evidence_class": "execution",
+      "independence_group": "literal-set-emit-equivalence",
+      "test_ref": "internal/chsql/regex_literal_set_chdb_test.go:TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB",
       "status": "active"
     },
     {

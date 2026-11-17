@@ -917,9 +917,10 @@ func (b *Builder) exprNestedArrayExists(n *chplan.NestedArrayExists) error {
 // semantics from upstream — PromQL and LogQL both compile matchers
 // through prometheus/model/labels, and Tempo's own regex evaluator
 // (grafana/tempo/pkg/regexp) is built on labels.NewFastRegexMatcher
-// too — so anchoring centrally here, at the one SQL emission site both
-// render paths share, covers every head without touching any of the
-// three lowering packages. See issue #1741.
+// too — so anchoring centrally here, the one step ahead of both of
+// [Builder.regexMatcher]'s emission forms (match() over the anchored
+// pattern, and the literal-set IN rewrite), covers every head without
+// touching any of the three lowering packages. See issue #1741.
 //
 // The non-capturing group is required: `^1|2.5$` alternates between
 // `^1` and `2.5$`, not the intended "the whole string is 1 or 2.5" —
@@ -961,11 +962,9 @@ func anchoredRegexPattern(v chplan.Expr) chplan.Expr {
 	}
 }
 
-// regexMatcher renders a label matcher — `match(<subject>, <anchored
-// pattern>)`, negated for OpNotMatch — through [goRegexMatch], so a
-// subject that is not valid UTF-8 is matched as the reference engines'
-// Go regexp matches it. A pattern known only at query time is always
-// guarded. A pattern that fails to render latches its error on b.
+// regexMatcher renders a label matcher — [anchoredRegexMatch] over the
+// pattern [anchoredRegexPattern] anchors. A pattern that fails to render
+// latches its error on b.
 //
 // A pattern whose anchored form matches exactly a finite set of literals
 // ([anchoredRegexLiteralSet]) renders as set membership instead —
@@ -974,19 +973,29 @@ func anchoredRegexPattern(v chplan.Expr) chplan.Expr {
 // skip index where match() is evaluated row by row.
 func (b *Builder) regexMatcher(op chplan.BinaryOp, subject Frag, pattern chplan.Expr) {
 	anchored := anchoredRegexPattern(pattern)
-	readsInvalid := true
 	if lit, ok := anchored.(*chplan.LitString); ok {
 		if set, ok := anchoredRegexLiteralSet(lit.V); ok {
 			literalSetMembership(op == chplan.OpNotMatch, subject, set)(b)
 			return
 		}
+	}
+	anchoredRegexMatch(op, subject, anchored)(b)
+}
+
+// anchoredRegexMatch renders `match(<subject>, <anchored>)`, negated for
+// OpNotMatch, through [goRegexMatch], so a subject that is not valid
+// UTF-8 is matched as the reference engines' Go regexp matches it. A
+// pattern known only at query time is always guarded.
+func anchoredRegexMatch(op chplan.BinaryOp, subject Frag, anchored chplan.Expr) Frag {
+	readsInvalid := true
+	if lit, ok := anchored.(*chplan.LitString); ok {
 		readsInvalid = regexReadsInvalidUTF8(lit.V)
 	}
 	m := goRegexMatch(subject, func(fb *Builder) { _ = fb.Expr(anchored) }, readsInvalid)
 	if op == chplan.OpNotMatch {
 		m = Not(m)
 	}
-	m(b)
+	return m
 }
 
 func (b *Builder) exprBinary(bx *chplan.Binary) error {

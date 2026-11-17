@@ -719,11 +719,13 @@ record here names one specific, reviewable mutation as a unified diff — the
 format #3447's spike settled on precisely because it is also what lets a
 mutant be reviewed and versioned like a #3445 counterexample record — never a
 bulk-generated AST edit. The committed corpus is two cohorts under one
-directory: six real (`synthetic: false`) per-head domain mutations from
-issues #3449-#3451 — two LogQL, two PromQL, two TraceQL — whose patches target
+directory: seven real (`synthetic: false`) domain mutations — two LogQL,
+two PromQL and two TraceQL from issues #3449-#3451, and one in the regex
+literal-set rewrite every head's label matcher shares — whose patches target
 `internal/chsql/builder.go`, `internal/chsql/range_window.go`,
-`internal/logql/lower.go` and `internal/traceql/lower.go` and whose
-detectors are real spec fixtures and property tests; and seven synthetic
+`internal/chsql/regex_literal_set.go`, `internal/logql/lower.go` and
+`internal/traceql/lower.go` and whose detectors are real spec fixtures,
+property tests and chDB-executed Go tests; and seven synthetic
 (`synthetic: true`) self-test records that exercise every one of the
 runner's seven classification paths against the throwaway package under
 `test/semantic/mutants/testdata/fixtures/`. That fixture package — never
