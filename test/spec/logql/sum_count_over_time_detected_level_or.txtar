@@ -1,0 +1,27 @@
+-- query.logql --
+sum by (detected_level) (count_over_time({job="api"} | detected_level="info" or detected_level="NOTICE" or detected_level="unknown" [5m]))
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    SeverityText LowCardinality(String) DEFAULT '',
+    SeverityNumber UInt8 DEFAULT 0,
+    ResourceAttributes Map(String, String),
+    LogAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, SeverityText, ResourceAttributes) VALUES
+    (toDateTime64('2025-12-31 23:57:00', 9), 'a', 'INFO',        map('job', 'api')),
+    (toDateTime64('2025-12-31 23:57:10', 9), 'b', 'information', map('job', 'api')),
+    (toDateTime64('2025-12-31 23:57:20', 9), 'c', 'Info',        map('job', 'api')),
+    (toDateTime64('2025-12-31 23:57:30', 9), 'd', 'NOTICE',      map('job', 'api')),
+    (toDateTime64('2025-12-31 23:57:40', 9), 'e', 'notice',      map('job', 'api')),
+    (toDateTime64('2025-12-31 23:57:50', 9), 'f', '',            map('job', 'api')),
+    (toDateTime64('2025-12-31 23:58:00', 9), 'g', 'unknown',     map('job', 'api')),
+    (toDateTime64('2025-12-31 23:58:10', 9), 'h', 'UNKNOWN',     map('job', 'api')),
+    (toDateTime64('2025-12-31 23:58:20', 9), 'i', 'ERROR',       map('job', 'api')),
+    (toDateTime64('2025-12-31 23:58:30', 9), 'j', 'warning',     map('job', 'api'));
+-- expected_rows --
+[]
+-- parity_exempt --
+reason: structured-metadata-unobservable
+detail: seed populates SeverityText, which upstream's in-process querier discards before the pipeline runs, so the detected_level filter would be answered over different data on the two sides

@@ -2,7 +2,6 @@ package logql
 
 import (
 	"slices"
-	"strings"
 
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
@@ -317,6 +316,18 @@ func normaliseLevelExpr(value chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{Fn: chplan.FnMultiIf, Args: args}
 }
 
+// lowerASCII lowercases the ASCII letters of s and leaves every other
+// byte as it is, as ClickHouse's `lower` does.
+func lowerASCII(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
 // unknownLevel is the level reference Loki stamps on a record with no
 // detectable level (constants.LogLevelUnknown).
 const unknownLevel = "unknown"
@@ -355,7 +366,9 @@ var levelNormalizationGroups = []levelNormalizationGroup{
 // comment). A non-empty input that matches none of the known variants
 // falls through UNCHANGED — upstream `normalizeLogLevel` folds case
 // only to MATCH (`bytes.EqualFold`) and returns the caller's own string
-// from its default branch.
+// from its default branch. The fold is ASCII-only, as ClickHouse's
+// `lower` and upstream's `bytes.EqualFold` against ASCII variants are:
+// `İNFO` is no spelling of `info`.
 //
 // Used by `/loki/api/v1/patterns` (internal/api/loki/patterns.go) to
 // bucket pattern mining per detected level: that handler resolves each
@@ -363,7 +376,7 @@ var levelNormalizationGroups = []levelNormalizationGroup{
 // through the optimizer/emit pipeline for a value it already has in
 // hand.
 func NormalizeDetectedLevel(raw string) string {
-	lower := strings.ToLower(raw)
+	lower := lowerASCII(raw)
 	if lower == "" {
 		return unknownLevel
 	}
@@ -420,7 +433,7 @@ func levelEqualsExpr(source chplan.Expr, levels ...string) chplan.Expr {
 					folded = append(folded, &chplan.LitString{V: v})
 				}
 			}
-			isVariant = isVariant || slices.Contains(g.variants, strings.ToLower(level))
+			isVariant = isVariant || slices.Contains(g.variants, lowerASCII(level))
 		}
 		if level == unknownLevel {
 			folded = append(folded, &chplan.LitString{V: ""})

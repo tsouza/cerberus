@@ -272,10 +272,12 @@ func TestRowLayersGatherAtScanLeavesWhatItMustNotMove(t *testing.T) {
 		build func(rows *rowLayers) []chplan.Expr
 		maps  []string
 		// moved are the aliases the scan's scope must define, bottom
-		// first, and "filter" for the filter it must run; folded is
-		// whether the scan's own filter gains a conjunct.
-		moved  []string
-		folded bool
+		// first, and "filter" for the filter it must run, with filtered
+		// conjuncts; folded is whether the scan's own filter gains a
+		// conjunct.
+		moved    []string
+		filtered int
+		folded   bool
 	}{
 		{
 			name: "a value reading an outside value before a moved one",
@@ -334,8 +336,9 @@ func TestRowLayersGatherAtScanLeavesWhatItMustNotMove(t *testing.T) {
 				rows.filter(eq(value, "v"))
 				return []chplan.Expr{&chplan.ColumnRef{Name: "Timestamp"}}
 			},
-			maps:  []string{"M"},
-			moved: []string{"_value", "filter"},
+			maps:     []string{"M"},
+			moved:    []string{"_value", "filter"},
+			filtered: 1,
 		},
 		{
 			name: "a line filter after a moved filter",
@@ -345,7 +348,21 @@ func TestRowLayersGatherAtScanLeavesWhatItMustNotMove(t *testing.T) {
 				rows.filter(eq(&chplan.ColumnRef{Name: "Body"}, "line"))
 				return []chplan.Expr{&chplan.ColumnRef{Name: "Timestamp"}}
 			},
-			moved: []string{"_value", "filter"},
+			moved:    []string{"_value", "filter"},
+			filtered: 2,
+		},
+		{
+			name: "a key filter after a moved filter, over a map read whole",
+			build: func(rows *rowLayers) []chplan.Expr {
+				value := rows.define("_value", lowerOf("Y"))
+				rows.filter(eq(value, "v"))
+				rows.filter(eq(key, "v"))
+				return []chplan.Expr{mapCol}
+			},
+			maps:     []string{"M"},
+			moved:    []string{"_value", "filter"},
+			filtered: 1,
+			folded:   true,
 		},
 		{
 			name: "a map read by key alone",
@@ -368,12 +385,14 @@ func TestRowLayersGatherAtScanLeavesWhatItMustNotMove(t *testing.T) {
 
 			var moved []string
 			var scan *chplan.Filter
+			filtered := 0
 			for _, n := range rows.atScan {
 				switch v := n.(type) {
 				case *chplan.Project:
 					moved = append(moved, v.Projections[len(v.Projections)-1].Alias)
 				case *chplan.Filter:
 					moved = append(moved, "filter")
+					filtered = len(conjuncts(v.Predicate))
 				}
 			}
 			for n := rows.node; n != nil; n = inputOf(n) {
@@ -385,6 +404,9 @@ func TestRowLayersGatherAtScanLeavesWhatItMustNotMove(t *testing.T) {
 			}
 			if !slices.Equal(moved, tc.moved) {
 				t.Errorf("moved into the scan's scope = %v, want %v", moved, tc.moved)
+			}
+			if filtered != tc.filtered {
+				t.Errorf("the moved filter has %d conjuncts, want %d", filtered, tc.filtered)
 			}
 			if scan == nil {
 				t.Fatal("no filter over the scan")

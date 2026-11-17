@@ -1964,29 +1964,6 @@ func regexpMergeLabels(prev chplan.Expr, s schema.Logs, pattern string) (chplan.
 // humanize.ParseBytes — see durationLabelFilterExpr /
 // numericLabelFilterExpr / bytesLabelFilterExpr). String filters never
 // error in reference Loki, so they contribute no mark.
-// detectedLevelEqualities returns the levels lf compares `detected_level`
-// against when lf is a `detected_level` equality or an OR of them, and
-// false otherwise.
-func detectedLevelEqualities(lf syntax.LabelFilterer) ([]string, bool) {
-	switch v := lf.(type) {
-	case *syntax.StringLabelFilter:
-		if m := v.Matcher; isDetectedLevelLabel(m.Name) && m.Type == labels.MatchEqual {
-			return []string{m.Value}, true
-		}
-	case *syntax.BinaryLabelFilter:
-		if v.And {
-			return nil, false
-		}
-		left, ok := detectedLevelEqualities(v.Left)
-		if !ok {
-			return nil, false
-		}
-		right, ok := detectedLevelEqualities(v.Right)
-		return append(left, right...), ok
-	}
-	return nil, false
-}
-
 func labelFiltererLower(lf syntax.LabelFilterer, s schema.Logs, labelsExpr chplan.Expr, row filterRow) (chplan.Expr, []labelFilterMark, error) {
 	switch v := lf.(type) {
 	case *syntax.StringLabelFilter:
@@ -2041,6 +2018,29 @@ func labelFiltererLower(lf syntax.LabelFilterer, s schema.Logs, labelsExpr chpla
 		return pred, nil, err
 	}
 	return nil, nil, fmt.Errorf("logql: unsupported label filterer %T", lf)
+}
+
+// detectedLevelEqualities returns the levels lf compares `detected_level`
+// against when lf is a `detected_level` equality or an OR of them, and
+// false otherwise.
+func detectedLevelEqualities(lf syntax.LabelFilterer) ([]string, bool) {
+	switch v := lf.(type) {
+	case *syntax.StringLabelFilter:
+		if m := v.Matcher; isDetectedLevelLabel(m.Name) && m.Type == labels.MatchEqual {
+			return []string{m.Value}, true
+		}
+	case *syntax.BinaryLabelFilter:
+		if v.And {
+			return nil, false
+		}
+		left, ok := detectedLevelEqualities(v.Left)
+		if !ok {
+			return nil, false
+		}
+		right, ok := detectedLevelEqualities(v.Right)
+		return append(left, right...), ok
+	}
+	return nil, false
 }
 
 // numericLabelFilterExpr lowers `| field > 5` / `>= 5` / `< 5` / `<= 5`

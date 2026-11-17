@@ -31,16 +31,19 @@ const maxScanScopeExpansion = 3
 //
 // Walking the stack from the bottom:
 //
-//   - a filter conjunct that reads no layer, and that no conjunct moved
-//     ahead of it, is folded into the stream scan's own filter;
+//   - a filter conjunct that reads no layer is folded into the stream
+//     scan's own filter when no conjunct moved ahead of it, or when its
+//     own text reads a key of a map column that some expression of the
+//     stage, or of consumer, reads as a whole in its own text; behind a
+//     moved conjunct otherwise, it joins the moved filter;
 //   - a layer whose value reads only the table's columns and the values
-//     already moved, and a filter conjunct that reads only those values
-//     or no layer at all, moves into the scan's scope while the scope
-//     stays within [maxScanScopeExpansion];
-//   - neither happens to a filter conjunct whose own text reads a map
-//     column as a whole, or to a value or conjunct whose own text reads a
-//     key of a map column that some expression of the stage, or of
-//     consumer, reads as a whole in its own text;
+//     already moved, and a filter conjunct that reads only those values,
+//     moves into the scan's scope while the scope stays within
+//     [maxScanScopeExpansion];
+//   - none of this happens to a filter conjunct whose own text reads a
+//     map column as a whole, and a value or a conjunct that reads a layer
+//     does not move when its own text reads a key of a map column the
+//     stage reads as a whole;
 //   - a moved layer that reads another value goes back to its place
 //     unless a moved filter reads it.
 //
@@ -141,8 +144,12 @@ func (g *scanGather) takeFilter(scope *scanScope, i int, n *chplan.Filter) {
 		switch {
 		case g.reads.readsWhole(conjunct):
 			kept = append(kept, conjunct)
-		case !scope.readsLayer(conjunct) && len(g.filtered) == 0:
+		case !scope.readsLayer(conjunct) && (len(g.filtered) == 0 || g.reads.readsWholeKey(conjunct)):
 			g.base = andFilter(g.base, conjunct)
+		case !scope.readsLayer(conjunct):
+			// Behind a moved filter it joins the moved ones in order; it
+			// reads no value, so it adds nothing to expand.
+			g.filtered = append(g.filtered, conjunct)
 		case g.movable(scope, conjunct):
 			scope.add(conjunct)
 			g.filtered = append(g.filtered, conjunct)
