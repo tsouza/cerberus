@@ -21,13 +21,13 @@ A verifier's `substrate` is never collapsed into one meaning. `chdb` and `real-c
 
 | status           | count  |
 | ---------------- | ------ |
-| active           | 49     |
+| active           | 50     |
 | draft            | 0      |
 | superseded       | 2      |
 | explicit_deficit | 2      |
-| **total**        | **53** |
+| **total**        | **54** |
 
-Of the 49 active contracts, **49** are structurally assured (bound evidence covers every required class and independence group).
+Of the 50 active contracts, **50** are structurally assured (bound evidence covers every required class and independence group).
 
 ### Verifiers
 
@@ -42,9 +42,9 @@ Of the 49 active contracts, **49** are structurally assured (bound evidence cove
 
 | status    | count   |
 | --------- | ------- |
-| active    | 128     |
+| active    | 148     |
 | draft     | 0       |
-| **total** | **128** |
+| **total** | **148** |
 
 Executions on record: **0**.
 
@@ -55,48 +55,48 @@ Active bindings, classified by which existing identity system their `test_ref` n
 | evidence system       | active bindings |
 | --------------------- | --------------- |
 | property-shape        | 14              |
-| txtar-fixture         | 32              |
+| txtar-fixture         | 42              |
 | surface-parity-symbol | 0               |
 | rejection-parity-site | 1               |
 | oracle-inventory-case | 0               |
-| source-path           | 81              |
+| source-path           | 91              |
 | unclassified          | 0               |
 
 ## Lane inventory (merge / release obligations)
 
 | CI lane                                                     | merge-required | release-required | active bindings bound |
 | ----------------------------------------------------------- | -------------- | ---------------- | --------------------- |
-| ci.agpl-clean                                               | true           | true             | 30                    |
-| ci.forbid-skip                                              | true           | true             | 82                    |
-| compatibility.gate                                          | false          | false            | 111                   |
-| chdb.ch-server-safety                                       | true           | true             | 29                    |
-| chdb.perf-guards                                            | false          | true             | 66                    |
-| chdb.probe                                                  | true           | true             | 21                    |
+| ci.agpl-clean                                               | true           | true             | 40                    |
+| ci.forbid-skip                                              | true           | true             | 92                    |
+| compatibility.gate                                          | false          | false            | 131                   |
+| chdb.ch-server-safety                                       | true           | true             | 39                    |
+| chdb.perf-guards                                            | false          | true             | 86                    |
+| chdb.probe                                                  | true           | true             | 29                    |
 | chdb.query-log-union                                        | false          | false            | 10                    |
-| chdb.regex-jit                                              | false          | false            | 29                    |
-| chdb.strict-scan                                            | true           | true             | 65                    |
-| ci.check                                                    | true           | true             | 74                    |
-| e2e.chaos                                                   | false          | false            | 32                    |
-| e2e.compose-crawl                                           | false          | false            | 22                    |
-| e2e.compose-smoke                                           | false          | true             | 22                    |
-| e2e.quickstart                                              | true           | true             | 29                    |
-| e2e.startup-bench                                           | false          | false            | 29                    |
-| performance.benchmark                                       | false          | false            | 32                    |
-| performance.profile                                         | false          | true             | 66                    |
-| quality.coverage-enrollment                                 | true           | true             | 30                    |
-| quality.coverage-measured                                   | true           | true             | 105                   |
+| chdb.regex-jit                                              | false          | false            | 39                    |
+| chdb.strict-scan                                            | true           | true             | 85                    |
+| ci.check                                                    | true           | true             | 94                    |
+| e2e.chaos                                                   | false          | false            | 42                    |
+| e2e.compose-crawl                                           | false          | false            | 30                    |
+| e2e.compose-smoke                                           | false          | true             | 30                    |
+| e2e.quickstart                                              | true           | true             | 39                    |
+| e2e.startup-bench                                           | false          | false            | 39                    |
+| performance.benchmark                                       | false          | false            | 42                    |
+| performance.profile                                         | false          | true             | 86                    |
+| quality.coverage-enrollment                                 | true           | true             | 40                    |
+| quality.coverage-measured                                   | true           | true             | 125                   |
 | agpl.oracle                                                 | false          | false            | 14                    |
-| e2e.dashboard                                               | false          | true             | 14                    |
+| e2e.dashboard                                               | false          | true             | 22                    |
 | chdb.roundtrip-promql                                       | false          | true             | 8                     |
-| quality.post-merge-drift                                    | false          | false            | 37                    |
+| quality.post-merge-drift                                    | false          | false            | 47                    |
 | chdb.roundtrip-logql                                        | false          | true             | 14                    |
-| chdb.roundtrip-traceql                                      | false          | true             | 10                    |
-| quality.mutation                                            | false          | false            | 6                     |
+| chdb.roundtrip-traceql                                      | false          | true             | 22                    |
+| quality.mutation                                            | false          | false            | 8                     |
 | compatibility.loki                                          | false          | true             | 9                     |
 | compatibility.prometheus                                    | false          | true             | 7                     |
 | compatibility.prometheus-floor                              | false          | false            | 6                     |
 | compatibility.prometheus-forced-route                       | false          | true             | 7                     |
-| compatibility.tempo                                         | false          | true             | 7                     |
+| compatibility.tempo                                         | false          | true             | 17                    |
 | perf-nightly-selfcheck.perf-nightly-selfcheck               | false          | false            | 2                     |
 | perf-nightly-selfcheck.perf-nightly-selfcheck-health-notify | false          | false            | 2                     |
 | perf-nightly.calibrate                                      | false          | false            | 2                     |
@@ -104,7 +104,7 @@ Active bindings, classified by which existing identity system their `test_ref` n
 | perf-nightly.perf-nightly                                   | false          | true             | 2                     |
 | perf-nightly.perf-nightly-health-notify                     | false          | false            | 2                     |
 | perf-nightly.ts-grid-instant-memory                         | false          | true             | 2                     |
-| quality.property                                            | true           | true             | 20                    |
+| quality.property                                            | true           | true             | 22                    |
 | chdb.integration-promql                                     | false          | false            | 1                     |
 | compatibility.promql-surface                                | false          | false            | 1                     |
 | schema.clickhouse-upgrade                                   | false          | false            | 3                     |
@@ -113,6 +113,7 @@ Active bindings, classified by which existing identity system their `test_ref` n
 | e2e.datashard-replica-affinity                              | false          | false            | 3                     |
 | e2e.nightly-health-notify                                   | false          | false            | 3                     |
 | migration.e2e                                               | false          | true             | 3                     |
+| chdb.integration-traceql                                    | false          | false            | 2                     |
 
 2 active binding(s) resolve to no CI lane from their test_ref alone (expected for non-file-shaped identities such as property-shape IDs): BINDING-ARCH-DEPENDENCY-GO-ARCH-LINT, BINDING-ARCH-PARSER-ACCESSOR-FORBIDIGO.
 
@@ -679,7 +680,7 @@ compatibility/loki/upstream-skip-baseline.txt pins, as opaque IDs (corpus.Opaque
 
 ## TraceQL (`HEAD-TRACEQL`)
 
-10 contract(s) scoped exclusively to this head.
+11 contract(s) scoped exclusively to this head.
 
 ### TRACEQL-ATTRIBUTE-SCOPE-RESOLUTION
 
@@ -867,6 +868,59 @@ Missing: classes `reference`, groups `none`.
 **Complement gaps** (informational — does not change assurance above):
 
 - verifier `VERIFIER-IN-PROCESS-FORKED-REFERENCE-EVALUATOR` documents complement(s) not in active use here: `VERIFIER-REFERENCE-DIFFERENTIAL`
+
+### TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK
+
+Every subquery a TraceQL statement renders over the spans table reads the span its window reads. On /api/search the window is the request window \[start, end\]; on a metrics query it is the RangeWindow's input span (Start - Offset - Range, End - Offset\]: (start - step, end\] on /api/metrics/query\_range, whose first anchor, start, counts the spans in (start - step, start\], and (start, end\] on /api/metrics/query. The span rows a search ranks its traces by and the span rows a metric counts read that span, and so do the anchor and step arms of a recursive structural closure and the nested-set numbering's recursive scope. A per-trace subquery reads that span widened on both sides by the configured maximum trace duration (schema.Traces.MaxTraceDuration, CERBERUS\_TEMPO\_MAX\_TRACE\_DURATION, default 1h), and no further: a TraceLookupFilter lookup (rootName, rootServiceName or traceDuration compared with a span value), a cohort membership subquery (a trace-scoped intrinsic compared with a literal, a spanset aggregate, a compare() selection), a recursive scan inside either, and a search's drain of each chosen trace's matching spans. A trace no longer than that duration which overlaps the window is read whole; a span lying further than that duration outside the window is read by no subquery of the statement. The metrics half is chplan.BoundMetricsPerTraceSubqueries (internal/chplan/per\_trace\_window.go: RangeWindowInputBound, PerTraceWindowBound, WindowPerTraceSubqueries; internal/chplan/recursive\_scan\_window.go: windowMetricsRecursiveScans over StampRecursiveScanWindow), run at the top of chsql.Emit and of the compare() root-leg statement (internal/chsql/metrics\_compare.go), with WindowMetricsAggregatePerTraceSubqueries on the exemplar statement (internal/chsql/exemplars.go), beside the RangeWindow emitter's own bound on the metrics input. The search half is internal/traceql/search\_limit.go: stampSearchTraceLimit and boundSearchRowSource (the plain shape's ranking over the request window, its drain over drainWindow, its per-trace subqueries over perTraceWindow), stampSearchWindow over chplan.PushLeafWindow (the compound and structural shapes), stampNestedSetTraceLimit (the structure tab's top-N root ranking, a BoundedTraceScope, and its nested-set numbering over the request window), WithSearchDrain (the phase-B re-lowering of the two-phase search, internal/api/tempo/structural\_two\_phase.go) and BoundPerTraceCohorts (tag discovery's q filter, internal/api/tempo/search\_tags\_filter.go). Both halves lower their recursive scans with the request window through stampRecursiveScanWindow over chplan.StampRecursiveScanWindow, a recursive scan inside a per-trace subquery taking the widened window; the metrics half replaces that window at emit. The rule binds the statement a query lowers to; the search response's follow-up root-metadata query (resolveTraceRoots, internal/api/tempo/root\_lookup.go) is keyed by the returned trace ids alone and lies outside it.
+
+- scope: `head` · applicable heads: `HEAD-TRACEQL`
+- authority: `design-decision` · status: `active` · owner: `cerberus-core`
+- related contracts: `TRACEQL-STRUCTURAL-RELATION-SEMANTICS`, `TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE`
+
+**Bound evidence** (structural — assured: **true**): required classes `execution`, required independence groups `metrics-window-spec-fixture, search-window-spec-fixture, metrics-window-handler-chdb, search-window-drain-handler-chdb, statement-window-emit-shape`.
+
+**Observed evidence** (from executions.json): overall **unknown**.
+
+- class `execution`: **unknown** (BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-COHORT-RECURSIVE-EMIT, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-COMPARE-EMIT, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-EXEMPLARS-EMIT, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-HANDLER, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-HISTOGRAM-EMIT, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-NESTED-SET-SPEC, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-PER-TRACE-EMIT, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-RECURSIVE-ARM-EMIT, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-ROOT-NAME-LOOKUP-SPEC, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-STRUCTURAL-CHILD-SPEC, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-STRUCTURAL-DESCENDANT-SPEC, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-TRACE-DURATION-LOOKUP-SPEC, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-TRACE-DURATION-MEMBERSHIP-SPEC, BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-COHORT-RECURSIVE-EMIT, BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-DRAIN-HANDLER, BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-PER-TRACE-EMIT, BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-ROOT-BEFORE-START-SPEC, BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-ROOT-OUTSIDE-WINDOW-SPEC, BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-TRACE-ENDS-AFTER-END-SPEC, BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-TRACE-LONGER-THAN-LOOKBACK-SPEC)
+- group `metrics-window-spec-fixture`: **unknown** (BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-NESTED-SET-SPEC, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-ROOT-NAME-LOOKUP-SPEC, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-STRUCTURAL-CHILD-SPEC, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-STRUCTURAL-DESCENDANT-SPEC, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-TRACE-DURATION-LOOKUP-SPEC, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-TRACE-DURATION-MEMBERSHIP-SPEC)
+- group `search-window-spec-fixture`: **unknown** (BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-ROOT-BEFORE-START-SPEC, BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-ROOT-OUTSIDE-WINDOW-SPEC, BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-TRACE-ENDS-AFTER-END-SPEC, BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-TRACE-LONGER-THAN-LOOKBACK-SPEC)
+- group `metrics-window-handler-chdb`: **unknown** (BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-HANDLER)
+- group `search-window-drain-handler-chdb`: **unknown** (BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-DRAIN-HANDLER)
+- group `statement-window-emit-shape`: **unknown** (BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-COHORT-RECURSIVE-EMIT, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-COMPARE-EMIT, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-EXEMPLARS-EMIT, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-HISTOGRAM-EMIT, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-PER-TRACE-EMIT, BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-RECURSIVE-ARM-EMIT, BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-COHORT-RECURSIVE-EMIT, BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-PER-TRACE-EMIT)
+
+| binding                                                                 | verifier                        | evidence class | independence group               | test_ref                                                                                               | observed | CI lane obligations                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ----------------------------------------------------------------------- | ------------------------------- | -------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-COHORT-RECURSIVE-EMIT          | VERIFIER-GO-UNIT-TEST           | execution      | statement-window-emit-shape      | `internal/api/tempo/metrics_recursive_window_test.go:TestMetricsRecursiveScanWindowCohortAndOriginal`  | unknown  | chdb.ch-server-safety (merge-required) (release-required); chdb.perf-guards (release-required); chdb.probe (merge-required) (release-required); chdb.regex-jit; chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); compatibility.gate; compatibility.tempo (release-required); e2e.chaos; e2e.compose-crawl; e2e.compose-smoke (release-required); e2e.dashboard (release-required); e2e.quickstart (merge-required) (release-required); e2e.startup-bench; performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required)   |
+| BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-COMPARE-EMIT                   | VERIFIER-GO-UNIT-TEST           | execution      | statement-window-emit-shape      | `internal/api/tempo/metrics_per_trace_window_test.go:TestMetricsPerTraceSubqueriesWindowedCompare`     | unknown  | chdb.ch-server-safety (merge-required) (release-required); chdb.perf-guards (release-required); chdb.probe (merge-required) (release-required); chdb.regex-jit; chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); compatibility.gate; compatibility.tempo (release-required); e2e.chaos; e2e.compose-crawl; e2e.compose-smoke (release-required); e2e.dashboard (release-required); e2e.quickstart (merge-required) (release-required); e2e.startup-bench; performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required)   |
+| BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-EXEMPLARS-EMIT                 | VERIFIER-GO-UNIT-TEST           | execution      | statement-window-emit-shape      | `internal/api/tempo/metrics_per_trace_window_test.go:TestMetricsPerTraceSubqueriesWindowedExemplars`   | unknown  | chdb.ch-server-safety (merge-required) (release-required); chdb.perf-guards (release-required); chdb.probe (merge-required) (release-required); chdb.regex-jit; chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); compatibility.gate; compatibility.tempo (release-required); e2e.chaos; e2e.compose-crawl; e2e.compose-smoke (release-required); e2e.dashboard (release-required); e2e.quickstart (merge-required) (release-required); e2e.startup-bench; performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required)   |
+| BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-HANDLER                        | VERIFIER-CHDB-HANDLER-ROUNDTRIP | execution      | metrics-window-handler-chdb      | `internal/api/tempo/metrics_statement_window_chdb_test.go:TestMetricsStatementWindow_ChDB`             | unknown  | chdb.ch-server-safety (merge-required) (release-required); chdb.perf-guards (release-required); chdb.probe (merge-required) (release-required); chdb.regex-jit; chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); compatibility.gate; compatibility.tempo (release-required); e2e.chaos; e2e.compose-crawl; e2e.compose-smoke (release-required); e2e.dashboard (release-required); e2e.quickstart (merge-required) (release-required); e2e.startup-bench; performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required)   |
+| BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-HISTOGRAM-EMIT                 | VERIFIER-GO-UNIT-TEST           | execution      | statement-window-emit-shape      | `internal/api/tempo/metrics_per_trace_window_test.go:TestMetricsPerTraceSubqueriesWindowedHistogram`   | unknown  | chdb.ch-server-safety (merge-required) (release-required); chdb.perf-guards (release-required); chdb.probe (merge-required) (release-required); chdb.regex-jit; chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); compatibility.gate; compatibility.tempo (release-required); e2e.chaos; e2e.compose-crawl; e2e.compose-smoke (release-required); e2e.dashboard (release-required); e2e.quickstart (merge-required) (release-required); e2e.startup-bench; performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required)   |
+| BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-NESTED-SET-SPEC                | VERIFIER-SPEC-FIXTURE-ROUNDTRIP | execution      | metrics-window-spec-fixture      | `test/spec/traceql/metrics_window_nested_set_before_start.txtar`                                       | unknown  | chdb.perf-guards (release-required); chdb.roundtrip-traceql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift                                                                                                                                                                                                                                                                                                                                                                     |
+| BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-PER-TRACE-EMIT                 | VERIFIER-GO-UNIT-TEST           | execution      | statement-window-emit-shape      | `internal/api/tempo/metrics_per_trace_window_test.go:TestMetricsPerTraceSubqueriesWindowed`            | unknown  | chdb.ch-server-safety (merge-required) (release-required); chdb.perf-guards (release-required); chdb.probe (merge-required) (release-required); chdb.regex-jit; chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); compatibility.gate; compatibility.tempo (release-required); e2e.chaos; e2e.compose-crawl; e2e.compose-smoke (release-required); e2e.dashboard (release-required); e2e.quickstart (merge-required) (release-required); e2e.startup-bench; performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required)   |
+| BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-RECURSIVE-ARM-EMIT             | VERIFIER-GO-UNIT-TEST           | execution      | statement-window-emit-shape      | `internal/api/tempo/metrics_recursive_window_test.go:TestMetricsRecursiveArmWindowed`                  | unknown  | chdb.ch-server-safety (merge-required) (release-required); chdb.perf-guards (release-required); chdb.probe (merge-required) (release-required); chdb.regex-jit; chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); compatibility.gate; compatibility.tempo (release-required); e2e.chaos; e2e.compose-crawl; e2e.compose-smoke (release-required); e2e.dashboard (release-required); e2e.quickstart (merge-required) (release-required); e2e.startup-bench; performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required)   |
+| BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-ROOT-NAME-LOOKUP-SPEC          | VERIFIER-SPEC-FIXTURE-ROUNDTRIP | execution      | metrics-window-spec-fixture      | `test/spec/traceql/metrics_window_root_name_span_operand.txtar`                                        | unknown  | chdb.perf-guards (release-required); chdb.roundtrip-traceql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift                                                                                                                                                                                                                                                                                                                                                                     |
+| BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-STRUCTURAL-CHILD-SPEC          | VERIFIER-SPEC-FIXTURE-ROUNDTRIP | execution      | metrics-window-spec-fixture      | `test/spec/traceql/metrics_window_structural_child_before_start.txtar`                                 | unknown  | chdb.perf-guards (release-required); chdb.roundtrip-traceql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift                                                                                                                                                                                                                                                                                                                                                                     |
+| BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-STRUCTURAL-DESCENDANT-SPEC     | VERIFIER-SPEC-FIXTURE-ROUNDTRIP | execution      | metrics-window-spec-fixture      | `test/spec/traceql/metrics_window_structural_descendant_before_start.txtar`                            | unknown  | chdb.perf-guards (release-required); chdb.roundtrip-traceql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift                                                                                                                                                                                                                                                                                                                                                                     |
+| BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-TRACE-DURATION-LOOKUP-SPEC     | VERIFIER-SPEC-FIXTURE-ROUNDTRIP | execution      | metrics-window-spec-fixture      | `test/spec/traceql/metrics_window_trace_duration_span_operand.txtar`                                   | unknown  | chdb.perf-guards (release-required); chdb.roundtrip-traceql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift                                                                                                                                                                                                                                                                                                                                                                     |
+| BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-TRACE-DURATION-MEMBERSHIP-SPEC | VERIFIER-SPEC-FIXTURE-ROUNDTRIP | execution      | metrics-window-spec-fixture      | `test/spec/traceql/metrics_window_trace_duration_literal.txtar`                                        | unknown  | chdb.perf-guards (release-required); chdb.roundtrip-traceql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift                                                                                                                                                                                                                                                                                                                                                                     |
+| BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-COHORT-RECURSIVE-EMIT           | VERIFIER-GO-UNIT-TEST           | execution      | statement-window-emit-shape      | `internal/traceql/per_trace_window_search_test.go:TestSearchCohortStructuralClosureReadsWidenedWindow` | unknown  | chdb.ch-server-safety (merge-required) (release-required); chdb.integration-traceql; chdb.perf-guards (release-required); chdb.regex-jit; chdb.roundtrip-traceql (release-required); chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); compatibility.gate; compatibility.tempo (release-required); e2e.chaos; e2e.quickstart (merge-required) (release-required); e2e.startup-bench; performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required); quality.mutation; quality.property (merge-required) (release-required) |
+| BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-DRAIN-HANDLER                   | VERIFIER-CHDB-HANDLER-ROUNDTRIP | execution      | search-window-drain-handler-chdb | `internal/api/tempo/search_window_drain_chdb_test.go:TestSearch_WindowDrain_ChDB`                      | unknown  | chdb.ch-server-safety (merge-required) (release-required); chdb.perf-guards (release-required); chdb.probe (merge-required) (release-required); chdb.regex-jit; chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); compatibility.gate; compatibility.tempo (release-required); e2e.chaos; e2e.compose-crawl; e2e.compose-smoke (release-required); e2e.dashboard (release-required); e2e.quickstart (merge-required) (release-required); e2e.startup-bench; performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required)   |
+| BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-PER-TRACE-EMIT                  | VERIFIER-GO-UNIT-TEST           | execution      | statement-window-emit-shape      | `internal/traceql/per_trace_window_search_test.go:TestSearchPerTraceSubqueriesReadWidenedWindow`       | unknown  | chdb.ch-server-safety (merge-required) (release-required); chdb.integration-traceql; chdb.perf-guards (release-required); chdb.regex-jit; chdb.roundtrip-traceql (release-required); chdb.strict-scan (merge-required) (release-required); ci.agpl-clean (merge-required) (release-required); ci.check (merge-required) (release-required); compatibility.gate; compatibility.tempo (release-required); e2e.chaos; e2e.quickstart (merge-required) (release-required); e2e.startup-bench; performance.benchmark; performance.profile (release-required); quality.coverage-enrollment (merge-required) (release-required); quality.coverage-measured (merge-required) (release-required); quality.mutation; quality.property (merge-required) (release-required) |
+| BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-ROOT-BEFORE-START-SPEC          | VERIFIER-SPEC-FIXTURE-ROUNDTRIP | execution      | search-window-spec-fixture       | `test/spec/traceql/search_window_root_before_start.txtar`                                              | unknown  | chdb.perf-guards (release-required); chdb.roundtrip-traceql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift                                                                                                                                                                                                                                                                                                                                                                     |
+| BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-ROOT-OUTSIDE-WINDOW-SPEC        | VERIFIER-SPEC-FIXTURE-ROUNDTRIP | execution      | search-window-spec-fixture       | `test/spec/traceql/search_window_root_outside_window.txtar`                                            | unknown  | chdb.perf-guards (release-required); chdb.roundtrip-traceql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift                                                                                                                                                                                                                                                                                                                                                                     |
+| BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-TRACE-ENDS-AFTER-END-SPEC       | VERIFIER-SPEC-FIXTURE-ROUNDTRIP | execution      | search-window-spec-fixture       | `test/spec/traceql/search_window_trace_ends_after_end.txtar`                                           | unknown  | chdb.perf-guards (release-required); chdb.roundtrip-traceql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift                                                                                                                                                                                                                                                                                                                                                                     |
+| BINDING-TRACEQL-STATEMENT-WINDOW-SEARCH-TRACE-LONGER-THAN-LOOKBACK-SPEC | VERIFIER-SPEC-FIXTURE-ROUNDTRIP | execution      | search-window-spec-fixture       | `test/spec/traceql/search_window_trace_longer_than_max_duration.txtar`                                 | unknown  | chdb.perf-guards (release-required); chdb.roundtrip-traceql (release-required); chdb.strict-scan (merge-required) (release-required); ci.check (merge-required) (release-required); ci.forbid-skip (merge-required) (release-required); compatibility.gate; performance.profile (release-required); quality.coverage-measured (merge-required) (release-required); quality.post-merge-drift                                                                                                                                                                                                                                                                                                                                                                     |
+
+**Blind spots:**
+
+- The answers are executed for count\_over\_time() on /api/metrics/query\_range (TestMetricsStatementWindow\_ChDB and the metrics\_window spec fixtures) and for /api/search; histogram\_over\_time, quantile\_over\_time, compare(), the exemplar statement and the instant query's (start, end\] span are checked only by the bounds the Go tests in internal/api/tempo/metrics\_per\_trace\_window\_test.go and metrics\_recursive\_window\_test.go assert on the emitted statement, never by a chDB answer.
+- A recursive scan inside a per-trace subquery (a structural closure under \`| count() > 1\`) is checked only by the windows TestMetricsRecursiveScanWindowCohortAndOriginal and TestSearchCohortStructuralClosureReadsWidenedWindow assert on the plan; no chDB answer places a span of such a trace beyond the maximum trace duration.
+- No reference differential covers the metrics half: its fixtures are parity\_exempt (a time series has no span set to compare), so it is checked against cerberus's own expected rows. On the search half a trace longer than the maximum trace duration is where cerberus and reference Tempo part by design: search\_window\_trace\_longer\_than\_max\_duration.txtar is parity\_exempt, since Tempo reads the whole stored trace.
+
+**Complement gaps** (informational — does not change assurance above):
+
+- verifier `VERIFIER-CHDB-HANDLER-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-INTEGRATION`
+- verifier `VERIFIER-SPEC-FIXTURE-ROUNDTRIP` documents complement(s) not in active use here: `VERIFIER-REAL-CLICKHOUSE-STRICT-SCAN`, `VERIFIER-REFERENCE-DIFFERENTIAL`
 
 ### TRACEQL-STRUCTURAL-RELATION-SEMANTICS
 
@@ -1724,7 +1778,7 @@ Excluded from the assured count above by design — a draft is not yet load-bear
 
 ## Semantic mutation pilot
 
-A bounded, hand-authored cohort of contract-linked domain-semantic mutations (issues #3448-#3452), isolated from the developer checkout via `go test -overlay` (lib/semantic-mutation.mjs) — distinct from, and never a substitute for, the required traditional `mutation` (gremlins) lane. Every disposition below is the record's declared `expected_detection`, which the required `check` job's corpus step re-verifies by running the record for real on every PR (a record on `main` always classifies as it declares). Cohort revision (content fingerprint over every record's id/synthetic/violated_contracts and disposition, so a classification change is visible even when a published rate's own digits do not move): `d8432609ce5cf0818541aaedd6a0eb885f97b15fcc11128da16a805338a0ed54`.
+A bounded, hand-authored cohort of contract-linked domain-semantic mutations (issues #3448-#3452), isolated from the developer checkout via `go test -overlay` (lib/semantic-mutation.mjs) — distinct from, and never a substitute for, the required traditional `mutation` (gremlins) lane. Every disposition below is the record's declared `expected_detection`, which the required `check` job's corpus step re-verifies by running the record for real on every PR (a record on `main` always classifies as it declares). Cohort revision (content fingerprint over every record's id/synthetic/violated_contracts and disposition, so a classification change is visible even when a published rate's own digits do not move): `1cd21713fca77c04c29bb86dc0f5629624a9e8cdf21a0ca31f652951db0f24b0`.
 
 Escape/kill rate is computed ONLY over records in the `denominator` bucket (`killed` + `survived` — a real detector ran, against a validly-applied, non-equivalent mutation, with a passing clean control). `equivalent` (an audited exemption), `invalid` (the mutation never validly applied), and `incomplete` (build-failed/timeout/infrastructure-error — the measurement itself never finished) are each reported separately and never folded into either side of the rate — an incomplete run is neither a kill nor a clean escape.
 
@@ -1734,30 +1788,30 @@ Real, per-head domain-semantic mutations (issues #3449-#3451) — the ONLY cohor
 
 | status               | count |
 | -------------------- | ----- |
-| killed               | 7     |
+| killed               | 8     |
 | survived             | 0     |
 | equivalent-reviewed  | 0     |
 | invalid-transform    | 0     |
 | build-failed         | 0     |
 | timeout              | 0     |
 | infrastructure-error | 0     |
-| **total**            | **7** |
+| **total**            | **8** |
 
-denominator (killed+survived): **7** — **SMALL SAMPLE**, treat the percentages below as illustrative, not conclusive
+denominator (killed+survived): **8** — **SMALL SAMPLE**, treat the percentages below as illustrative, not conclusive
 
-- kill rate: **100.0%** (7/7)
-- escape rate: **0.0%** (0/7)
+- kill rate: **100.0%** (8/8)
+- escape rate: **0.0%** (0/8)
 - excluded: equivalent **0**, invalid **0**, incomplete **0**
 
 #### By detector evidence kind
 
 A `golden-text` detector kills by comparing a TXTAR fixture's emitted sql/args/chplan text against its stored golden (every head's TestLower checks those sections before the chDB round trip is reached), so it fires on any change to the emitted SQL — a semantics-preserving refactor as readily as a wrong answer — and its kill says nothing about whether a semantic verifier would have caught the bug. An `execution` detector executes the mutated code and asserts on values. The rates below are kept apart by kind; the blended rate above is the union.
 
-| evidence kind | records                                                                                                                                                                                                                | denominator | kill rate                    | escape rate                  |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ---------------------------- | ---------------------------- |
-| golden-text   | `MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741`, `MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED`                                                                                                                             | 2           | 100.0% (2/2)                 | 0.0% (0/2)                   |
-| execution     | `MUTANT-PROMQL-COUNTER-RESET-COMPENSATION`, `MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT`, `MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION`, `MUTANT-TRACEQL-DESCENDANT-AS-CHILD`, `MUTANT-TRACEQL-SCOPE-SWAP` | 5           | 100.0% (5/5)                 | 0.0% (0/5)                   |
-| mixed         | (none)                                                                                                                                                                                                                 | 0           | n/a (zero denominator) (0/0) | n/a (zero denominator) (0/0) |
+| evidence kind | records                                                                                                                                                                                                                                                                  | denominator | kill rate                    | escape rate                  |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- | ---------------------------- | ---------------------------- |
+| golden-text   | `MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741`, `MUTANT-LOGQL-PIPELINE-STAGE-ORDER-REVERSED`                                                                                                                                                                               | 2           | 100.0% (2/2)                 | 0.0% (0/2)                   |
+| execution     | `MUTANT-PROMQL-COUNTER-RESET-COMPENSATION`, `MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT`, `MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION`, `MUTANT-TRACEQL-DESCENDANT-AS-CHILD`, `MUTANT-TRACEQL-PER-TRACE-LOOKUP-WINDOW-DROPPED`, `MUTANT-TRACEQL-SCOPE-SWAP` | 6           | 100.0% (6/6)                 | 0.0% (0/6)                   |
+| mixed         | (none)                                                                                                                                                                                                                                                                   | 0           | n/a (zero denominator) (0/0) | n/a (zero denominator) (0/0) |
 
 #### HEAD-LOGQL
 
@@ -1812,26 +1866,27 @@ denominator (killed+survived): **4** — **SMALL SAMPLE**, treat the percentages
 
 #### HEAD-TRACEQL
 
-| id                                 | disposition | bucket      | detector(s)                                                                                  | target                      |
-| ---------------------------------- | ----------- | ----------- | -------------------------------------------------------------------------------------------- | --------------------------- |
-| MUTANT-TRACEQL-DESCENDANT-AS-CHILD | killed      | denominator | `structural-branching-http (execution), structural-branching-grpc (execution)`               | `internal/traceql/lower.go` |
-| MUTANT-TRACEQL-SCOPE-SWAP          | killed      | denominator | `scope-collision-conjunction-http (execution), scope-collision-conjunction-grpc (execution)` | `internal/traceql/lower.go` |
+| id                                             | disposition | bucket      | detector(s)                                                                                  | target                                |
+| ---------------------------------------------- | ----------- | ----------- | -------------------------------------------------------------------------------------------- | ------------------------------------- |
+| MUTANT-TRACEQL-DESCENDANT-AS-CHILD             | killed      | denominator | `structural-branching-http (execution), structural-branching-grpc (execution)`               | `internal/traceql/lower.go`           |
+| MUTANT-TRACEQL-PER-TRACE-LOOKUP-WINDOW-DROPPED | killed      | denominator | `metrics-statement-window-handler (execution)`                                               | `internal/chplan/per_trace_window.go` |
+| MUTANT-TRACEQL-SCOPE-SWAP                      | killed      | denominator | `scope-collision-conjunction-http (execution), scope-collision-conjunction-grpc (execution)` | `internal/traceql/lower.go`           |
 
 | status               | count |
 | -------------------- | ----- |
-| killed               | 2     |
+| killed               | 3     |
 | survived             | 0     |
 | equivalent-reviewed  | 0     |
 | invalid-transform    | 0     |
 | build-failed         | 0     |
 | timeout              | 0     |
 | infrastructure-error | 0     |
-| **total**            | **2** |
+| **total**            | **3** |
 
-denominator (killed+survived): **2** — **SMALL SAMPLE**, treat the percentages below as illustrative, not conclusive
+denominator (killed+survived): **3** — **SMALL SAMPLE**, treat the percentages below as illustrative, not conclusive
 
-- kill rate: **100.0%** (2/2)
-- escape rate: **0.0%** (0/2)
+- kill rate: **100.0%** (3/3)
+- escape rate: **0.0%** (0/3)
 - excluded: equivalent **0**, invalid **0**, incomplete **0**
 
 **Cross-head mutations** (counted under every head their violated contracts apply to, never double-hidden): `MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741`, `MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION`.

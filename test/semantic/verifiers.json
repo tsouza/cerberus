@@ -253,7 +253,8 @@
       "description": "A Go test that seeds a deterministic fixture into a real embedded ClickHouse (chDB) session, mounts a head's real HTTP handler (Mount) onto httptest.Server, issues a genuine HTTP request, and asserts on the DECODED WIRE RESPONSE — the full parse/lower/optimize/emit/execute/render pipeline, not a hand-built comparison string, a stubbed querier, or an internal plan/SQL snapshot.",
       "detects": [
         "wrong resource- or attribute-scope projection reaching the real wire response",
-        "a schema override (a custom table or column name) the handler fails to honor end to end"
+        "a schema override (a custom table or column name) the handler fails to honor end to end",
+        "a subquery of the statement that reads a different time span than the window the handler builds, on a seed that places spans on both sides of each bound"
       ],
       "cannot_detect": [
         "semantic drift against the reference backend's own engine — chDB is cerberus's own embedded ClickHouse, not a reference implementation (see VERIFIER-REFERENCE-DIFFERENTIAL)",

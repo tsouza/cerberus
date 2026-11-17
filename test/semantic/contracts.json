@@ -478,6 +478,28 @@
       "replaced_by": null
     },
     {
+      "id": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "statement": "Every subquery a TraceQL statement renders over the spans table reads the span its window reads. On /api/search the window is the request window [start, end]; on a metrics query it is the RangeWindow's input span (Start - Offset - Range, End - Offset]: (start - step, end] on /api/metrics/query_range, whose first anchor, start, counts the spans in (start - step, start], and (start, end] on /api/metrics/query. The span rows a search ranks its traces by and the span rows a metric counts read that span, and so do the anchor and step arms of a recursive structural closure and the nested-set numbering's recursive scope. A per-trace subquery reads that span widened on both sides by the configured maximum trace duration (schema.Traces.MaxTraceDuration, CERBERUS_TEMPO_MAX_TRACE_DURATION, default 1h), and no further: a TraceLookupFilter lookup (rootName, rootServiceName or traceDuration compared with a span value), a cohort membership subquery (a trace-scoped intrinsic compared with a literal, a spanset aggregate, a compare() selection), a recursive scan inside either, and a search's drain of each chosen trace's matching spans. A trace no longer than that duration which overlaps the window is read whole; a span lying further than that duration outside the window is read by no subquery of the statement. The metrics half is chplan.BoundMetricsPerTraceSubqueries (internal/chplan/per_trace_window.go: RangeWindowInputBound, PerTraceWindowBound, WindowPerTraceSubqueries; internal/chplan/recursive_scan_window.go: windowMetricsRecursiveScans over StampRecursiveScanWindow), run at the top of chsql.Emit and of the compare() root-leg statement (internal/chsql/metrics_compare.go), with WindowMetricsAggregatePerTraceSubqueries on the exemplar statement (internal/chsql/exemplars.go), beside the RangeWindow emitter's own bound on the metrics input. The search half is internal/traceql/search_limit.go: stampSearchTraceLimit and boundSearchRowSource (the plain shape's ranking over the request window, its drain over drainWindow, its per-trace subqueries over perTraceWindow), stampSearchWindow over chplan.PushLeafWindow (the compound and structural shapes), stampNestedSetTraceLimit (the structure tab's top-N root ranking, a BoundedTraceScope, and its nested-set numbering over the request window), WithSearchDrain (the phase-B re-lowering of the two-phase search, internal/api/tempo/structural_two_phase.go) and BoundPerTraceCohorts (tag discovery's q filter, internal/api/tempo/search_tags_filter.go). Both halves lower their recursive scans with the request window through stampRecursiveScanWindow over chplan.StampRecursiveScanWindow, a recursive scan inside a per-trace subquery taking the widened window; the metrics half replaces that window at emit. The rule binds the statement a query lowers to; the search response's follow-up root-metadata query (resolveTraceRoots, internal/api/tempo/root_lookup.go) is keyed by the returned trace ids alone and lies outside it.",
+      "scope": "head",
+      "applicable_heads": ["HEAD-TRACEQL"],
+      "applicable_capabilities": [],
+      "authority": "design-decision",
+      "required_evidence_classes": ["execution"],
+      "required_independence_groups": ["metrics-window-spec-fixture", "search-window-spec-fixture", "metrics-window-handler-chdb", "search-window-drain-handler-chdb", "statement-window-emit-shape"],
+      "blind_spots": [
+        "The answers are executed for count_over_time() on /api/metrics/query_range (TestMetricsStatementWindow_ChDB and the metrics_window spec fixtures) and for /api/search; histogram_over_time, quantile_over_time, compare(), the exemplar statement and the instant query's (start, end] span are checked only by the bounds the Go tests in internal/api/tempo/metrics_per_trace_window_test.go and metrics_recursive_window_test.go assert on the emitted statement, never by a chDB answer.",
+        "A recursive scan inside a per-trace subquery (a structural closure under `| count() > 1`) is checked only by the windows TestMetricsRecursiveScanWindowCohortAndOriginal and TestSearchCohortStructuralClosureReadsWidenedWindow assert on the plan; no chDB answer places a span of such a trace beyond the maximum trace duration.",
+        "No reference differential covers the metrics half: its fixtures are parity_exempt (a time series has no span set to compare), so it is checked against cerberus's own expected rows. On the search half a trace longer than the maximum trace duration is where cerberus and reference Tempo part by design: search_window_trace_longer_than_max_duration.txtar is parity_exempt, since Tempo reads the whole stored trace."
+      ],
+      "related_contracts": ["TRACEQL-STRUCTURAL-RELATION-SEMANTICS", "TRACEQL-TRACE-SCOPED-AGGREGATE-PIPELINE"],
+      "inherits_from": null,
+      "status": "active",
+      "deficit_reason": null,
+      "owner": "cerberus-core",
+      "replaces": null,
+      "replaced_by": null
+    },
+    {
       "id": "TRACEQL-SELECT-PROJECTION-PRESERVES-MATCH-SET",
       "statement": "`| select(<attr>, ...)` adds the named attributes as extra projected columns on an already-matched spanset; it never changes which spans or traces satisfy the preceding filter/structural/aggregate pipeline stage — a query's result row count (and TraceID/SpanID set) is identical with or without a trailing select().",
       "scope": "head",
