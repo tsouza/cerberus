@@ -530,13 +530,13 @@ Notes:
   ([ClickHouse#116569](https://github.com/ClickHouse/ClickHouse/pull/116569)).
   It stamps `max_bytes_before_external_distinct = spillThreshold(cap)` on
   every data-plane query, on both dispatch routes, and on every statement a
-  head's handler dispatches outside the engine, with one exception: a Tempo
-  tag-discovery statement whose `DISTINCT` a spill harms carries no
-  `DISTINCT` threshold. Those are the `name`, `kind` and `status` intrinsic
-  values, the values of a `LowCardinality(String)` materialized span or
-  resource attribute column, and the span, resource and instrumentation-scope
-  tag names read off a Map column's keys, over HTTP and gRPC alike. The
-  handler marks each such statement with `engine.StatementShape`. Every other
+  head's handler dispatches outside the engine, with one exception: a set of
+  Tempo tag-discovery statements carries no `DISTINCT` threshold. Those are
+  the `name`, `kind` and `status` intrinsic values, the values of a
+  `LowCardinality(String)` materialized span or resource attribute column,
+  and the span, resource and instrumentation-scope tag names read off a Map
+  column's keys, over HTTP and gRPC alike. The handler marks each such
+  statement with `engine.StatementShape`. Every other
   statement keeps the threshold: the event and link tag names, the plain-map,
   auto-scope, event, link and numeric-materialized tag values, every other
   intrinsic's values, the JSON-path tag names, every Prom and Loki statement,
