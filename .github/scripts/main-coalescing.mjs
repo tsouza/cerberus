@@ -48,6 +48,7 @@ export const COALESCED_WORKFLOWS = Object.freeze([
   '.github/workflows/codeql.yml',
   '.github/workflows/compatibility.yml',
   '.github/workflows/coverage.yml',
+  '.github/workflows/e2e.yml',
   '.github/workflows/migration-e2e.yml',
   '.github/workflows/mutation.yml',
   '.github/workflows/perf-benchmark.yml',
@@ -132,6 +133,14 @@ export const QUEUE_COALESCED_WORKFLOWS = Object.freeze([
   // The founding member (tsouza/cerberus#2991): 66% cancelled against a single
   // success, 50% of its run-minutes discarded.
   '.github/workflows/coverage.yml',
+  // Q1 decisive: a main-push run posts the `compose-smoke` / `dashboard`
+  // check-runs release.yml's preflight requires on the release commit, and
+  // the per-commit verdict a bisect reads. Q2 follows from the run length:
+  // ~53 min of compose and k3d substrate (median successful main-push run,
+  // 2026-10-21 - 2026-11-16) against an 82-min median push gap, a third of the
+  // gaps shorter than one run. Before enrollment every merge queued its own
+  // full matrix, superseded or not (tsouza/cerberus#4304).
+  '.github/workflows/e2e.yml',
   // Q1 decisive: the tier jobs upload the per-tier reports that are the
   // evidence half of its coverage ratchet. 36% cancelled.
   '.github/workflows/migration-e2e.yml',
@@ -202,7 +211,6 @@ export const MAIN_COALESCED_OWNER_WORKFLOWS = Object.freeze(
 // this guard owns the cancellation boundary.
 export const NEVER_COALESCED_WORKFLOWS = Object.freeze([
   '.github/workflows/ci.yml',
-  '.github/workflows/e2e.yml',
   '.github/workflows/mirror-images.yml',
   '.github/workflows/post-merge-drift.yml',
   '.github/workflows/quickstart.yml',
@@ -221,8 +229,14 @@ export const NEVER_COALESCED_WORKFLOWS = Object.freeze([
 // on a `calibrate` dispatch (`if: inputs.calibrate`), never on a main push.
 // A whole-workflow exclusion (the perf-benchmark pattern below) does not fit
 // here because the OTHER lanes in the same workflow do need coalescing.
+// `e2e.nightly-health-notify` is the same shape in e2e.yml: it runs only on
+// `schedule` (`if: always() && github.event_name == 'schedule'`).
 export const NEVER_COALESCED_LANES = Object.freeze(
-  new Set(['perf-nightly.calibrate', 'perf-nightly.perf-nightly-health-notify']),
+  new Set([
+    'e2e.nightly-health-notify',
+    'perf-nightly.calibrate',
+    'perf-nightly.perf-nightly-health-notify',
+  ]),
 );
 
 export const QUICKSTART_GROUP_EXPRESSION =
@@ -392,21 +406,28 @@ export function validateRunBoundNestedConcurrency(workflow, workflowText) {
   return problems;
 }
 
+export const E2E_WORKFLOW = '.github/workflows/e2e.yml';
+
+// The `release/*.x` push branch e2e.yml must keep: release.yml's maintenance
+// preflight requires the `compose-smoke` / `dashboard` check-runs on a
+// maintenance-line commit, and only a push trigger on that branch posts them.
+export const E2E_RELEASE_BRANCH = "'release/*.x'";
+
+// e2e.yml is queue-coalesced whatever the tier rosters say: its main-push run
+// is the per-commit compose and k3d record, so it keeps the shared latest-main
+// group, never cancels a run in progress, binds every job-level group to the
+// run, and keeps the `release/*.x` push that gives a maintenance commit its
+// own unique-group run.
 export function validateE2EWorkflow(workflowText) {
-  const workflow = '.github/workflows/e2e.yml';
-  const problems = [];
-  if (
-    String(workflowText)
-      .split(/\r?\n/)
-      .some((line) => line === 'concurrency:')
-  ) {
+  const problems = validateEnrolledWorkflow(E2E_WORKFLOW, workflowText, { queueOnly: true });
+  const branches = String(workflowText)
+    .split(/\r?\n/)
+    .find((line) => /^ {4}branches: \[main, /.test(line));
+  if (!branches || !branches.includes(E2E_RELEASE_BRANCH)) {
     problems.push(
-      `${workflow}: exhaustive qualification must not have workflow-level cancellation`,
+      `${E2E_WORKFLOW}: the push trigger must keep ${E2E_RELEASE_BRANCH}, the maintenance-line run release.yml's preflight reads`,
     );
   }
-  problems.push(
-    ...validateRunBoundNestedConcurrency(workflow, workflowText),
-  );
   return problems;
 }
 
@@ -496,7 +517,11 @@ export function auditMainCoalescing(root = process.cwd()) {
       problems.push(`${workflow}: cannot read enrolled workflow: ${caught.message}`);
       continue;
     }
-    problems.push(...validateEnrolledWorkflow(workflow, body));
+    problems.push(
+      ...(workflow === E2E_WORKFLOW
+        ? validateE2EWorkflow(body)
+        : validateEnrolledWorkflow(workflow, body)),
+    );
   }
 
   for (const workflow of NEVER_COALESCED_WORKFLOWS) {
@@ -524,11 +549,6 @@ export function auditMainCoalescing(root = process.cwd()) {
   problems.push(
     ...validateQuickstartWorkflow(
       readFileSync(path.join(root, '.github/workflows/quickstart.yml'), 'utf8'),
-    ),
-  );
-  problems.push(
-    ...validateE2EWorkflow(
-      readFileSync(path.join(root, '.github/workflows/e2e.yml'), 'utf8'),
     ),
   );
 
