@@ -1,0 +1,35 @@
+`delta` over bucket series whose counts fall across the window yields a
+negative ladder. After Prometheus's monotone repair it is flat at the
+lowest bound's (negative) delta, so the rank phi * total sits above every
+rung and bucketQuantile answers the highest finite bound, 4, at every step
+whose window holds two samples.
+
+The seed is one series of bounds 1 / 2 / 4 whose cumulative counts at
+le = 1 / 2 / 4 / +Inf fall from 4 / 8 / 12 / 16 (23:58) through
+2 / 4 / 6 / 8 (23:59) to 1 / 2 / 3 / 4 (00:00).
+
+-- query.promql --
+histogram_quantile(0.8, sum by (le) (delta(request_latency_bucket[5m])))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+1m
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9), Count UInt64, Sum Float64,
+    BucketCounts Array(UInt64), ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('request_latency', map('lb','a'), map(), toDateTime64('2025-12-31 23:58:00', 9), 16, 30.0, [4,4,4,4], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','a'), map(), toDateTime64('2025-12-31 23:59:00', 9), 8,  15.0, [2,2,2,2], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','a'), map(), toDateTime64('2026-01-01 00:00:00', 9), 4,  7.0,  [1,1,1,1], [1.0,2.0,4.0]);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:00Z", 4],
+  ["", {}, "2026-01-01T00:01:00Z", 4],
+  ["", {}, "2026-01-01T00:02:00Z", 4],
+  ["", {}, "2026-01-01T00:03:00Z", 4]
+]

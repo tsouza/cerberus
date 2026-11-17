@@ -1,0 +1,24 @@
+A range function over a counter that is not a histogram bucket, under
+arithmetic: the expression may carry an `le` label, so it is not folded
+statically, and its samples carry none, so Prometheus answers an empty
+vector. In instant mode the range function's rows carry no sample
+timestamp; the ladder reassembly keys them on the evaluation instant and
+drops them for want of an `le`.
+
+-- query.promql --
+histogram_quantile(0.9, rate(requests_total[5m]) * 2)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9), Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('requests_total', map('job','a'), map(), toDateTime64('2025-12-31 23:58:00', 9), 10.0),
+    ('requests_total', map('job','a'), map(), toDateTime64('2025-12-31 23:59:00', 9), 20.0),
+    ('requests_total', map('job','a'), map(), toDateTime64('2026-01-01 00:00:00', 9), 40.0);
+-- expected_rows --
+[]

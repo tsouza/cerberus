@@ -740,6 +740,9 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 		if v.BucketCountsCumulative {
 			b.WriteString(" cumulative")
 		}
+		if v.BucketCountsSigned {
+			b.WriteString(" signed")
+		}
 		if len(gb) > 0 {
 			fmt.Fprintf(b, " groupBy=[%s]", strings.Join(gb, ", "))
 		}

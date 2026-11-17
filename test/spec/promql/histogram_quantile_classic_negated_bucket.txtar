@@ -1,0 +1,30 @@
+Negating a bucket selector makes every rung of each series' ladder
+negative. Prometheus repairs the ladder to be monotone — each rung is raised
+to the one below it — so it ends flat at the lowest bound's count, and the
+total is negative. The rank phi * total then sits above every rung: no
+bucket reaches it, and bucketQuantile answers the highest finite bound, 4.
+
+-- query.promql --
+histogram_quantile(0.8, -request_latency_bucket)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9), Count UInt64, Sum Float64,
+    BucketCounts Array(UInt64), ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('request_latency', map('lb','a'), map(), toDateTime64('2025-12-31 23:58:00', 9), 4,  6.0,  [1,1,1,1], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','a'), map(), toDateTime64('2025-12-31 23:59:00', 9), 10, 15.0, [2,3,3,2], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','a'), map(), toDateTime64('2026-01-01 00:00:00', 9), 16, 30.0, [3,4,6,3], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','b'), map(), toDateTime64('2025-12-31 23:58:00', 9), 2,  3.0,  [1,1,0,0], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','b'), map(), toDateTime64('2025-12-31 23:59:00', 9), 7,  12.0, [2,3,1,1], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','b'), map(), toDateTime64('2026-01-01 00:00:00', 9), 13, 25.0, [3,4,4,2], [1.0,2.0,4.0]);
+-- expected_rows --
+[
+  ["", {"lb": "a"}, "2026-01-01T00:00:00Z", 4],
+  ["", {"lb": "b"}, "2026-01-01T00:00:00Z", 4]
+]

@@ -1,0 +1,27 @@
+Float samples carrying an `le` label need not share a timestamp: here one
+series' rungs were last scraped at 23:59:50, 23:59:55 and 23:59:58. An
+instant vector stands every sample at the evaluation instant, so
+Prometheus reassembles the three into one ladder — {1: 2, 2: 4, +Inf: 4} —
+and answers one quantile: rank 2 lands in the first bucket, interpolated
+from 0, 0 + (1 - 0) * (2 - 0) / (2 - 0) = 1. The ladder must be keyed on the
+evaluation instant, not on each sample's own time.
+
+-- query.promql --
+histogram_quantile(0.5, lat * 1)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9), Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('lat', map('le','1'), map(), toDateTime64('2025-12-31 23:59:50', 9), 2.0),
+    ('lat', map('le','2'), map(), toDateTime64('2025-12-31 23:59:55', 9), 4.0),
+    ('lat', map('le','+Inf'), map(), toDateTime64('2025-12-31 23:59:58', 9), 4.0);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:01Z", 1]
+]

@@ -69,11 +69,16 @@ const hqFloatMinRungs = 2
 //	          Filter <sample carries a parseable `le`>
 //	            <the argument, lowered as an ordinary float expression>
 //
-// The fan-out is the reason this route is GUARDED rather than universal.
-// It multiplies a histogram row into one row per bucket, and the classic
+// The fan-out is the reason this route is not the first choice. It
+// multiplies a histogram row into one row per bucket, and the classic
 // `sum by(le)` idiom — the hottest cost centre in the product — must keep
 // reaching the array-domain fold that reads the bucket arrays in place.
-// Only an aggregation with no fold gets here.
+// Only an argument the array-domain idioms cannot express gets here: an
+// aggregation with no fold, and — through
+// [lowerHistogramQuantileClassicFloatOverPlan] from lowerHistogramQuantile's
+// unrecognised-shape fallback — every other float expression whose samples
+// may carry `le` (range functions the idioms do not accept, instant
+// functions and arithmetic over a bucket selector, …).
 //
 // Range mode needs no separate lowering. The argument's own lowering
 // already fans across the step grid, stamping each row with its anchor, so
@@ -93,6 +98,9 @@ func lowerHistogramQuantileClassicFloat(
 	return lowerHistogramQuantileClassicFloatOverPlan(inner, phi, s, ctx), nil
 }
 
+// lowerHistogramQuantileClassicFloatOverPlan reassembles the ladder over an
+// argument already lowered as an ordinary float expression; see
+// [lowerHistogramQuantileClassicFloat].
 func lowerHistogramQuantileClassicFloatOverPlan(inner chplan.Node, phi phiArg, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	attrs := chplan.Expr(&chplan.ColumnRef{Name: s.AttributesColumn})
 
@@ -188,6 +196,7 @@ func lowerHistogramQuantileClassicFloatOverPlan(inner chplan.Node, phi phiArg, s
 		BucketCountsColumn:     s.BucketCountsColumn,
 		ExplicitBoundsColumn:   s.ExplicitBoundsColumn,
 		BucketCountsCumulative: true,
+		BucketCountsSigned:     true,
 		GroupBy: []chplan.Expr{
 			&chplan.ColumnRef{Name: s.AttributesColumn},
 			&chplan.ColumnRef{Name: s.TimestampColumn},
