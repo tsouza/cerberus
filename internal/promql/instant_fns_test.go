@@ -30,9 +30,12 @@ func TestLower_HistogramQuantile_NonBucketInputFoldsEmpty(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
-	p := parser.NewParser(parser.Options{})
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 
 	for q, wantFold := range map[string]bool{
+		`histogram_quantile(0.9, info(up))`:                             true,
+		`histogram_quantile(0.9, info(up, {k8s_cluster_name=~".+"}))`:   true,
+		`histogram_quantile(0.9, info(up, {le=~".+"}))`:                 false,
 		`histogram_quantile(0.9, sum(up))`:                              true,
 		`histogram_quantile(0.9, vector(1))`:                            true,
 		`histogram_quantile(0.9, sum by (job) (up) * 2)`:                true,

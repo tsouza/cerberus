@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 
@@ -526,18 +527,44 @@ var labelKeepingFunctions = map[string]struct{}{
 //   - `absent` / `absent_over_time` output the labels their argument's
 //     equality matchers pin, so they carry `le` when a selector in the
 //     argument matches on it.
-//   - `info` copies labels from other series, which may include `le`.
+//   - `info` keeps its vector argument's labels and copies data labels
+//     from the info series its second argument selects: see
+//     [infoSeriesMayCarryBucketBound].
 func callMayCarryBucketBound(c *parser.Call) bool {
 	switch c.Func.Name {
 	case fnLabelReplace, fnLabelJoin, "histogram_quantiles":
 		return mintsBucketBound(c.Args[1]) || mayCarryBucketBound(c.Args[0])
 	case "absent", "absent_over_time":
 		return mentionsBucketBound(c.Args[0])
+	case "info":
+		if mayCarryBucketBound(c.Args[0]) {
+			return true
+		}
+		return len(c.Args) > 1 && infoSeriesMayCarryBucketBound(c.Args[1])
 	}
 	if _, keeps := labelKeepingFunctions[c.Func.Name]; !keeps {
 		return true
 	}
 	return slices.ContainsFunc(c.Args, mayCarryBucketBound)
+}
+
+// infoSeriesMayCarryBucketBound reports whether the info series `info`'s
+// data-label selector sel picks can contribute an `le` label. Without a
+// `__name__` matcher the info metric is [targetInfoMetric], so the series
+// carry `le` only when sel names it; a pinned info-metric name is judged
+// by [selectorMayCarryBucketBound]'s rule; a regex or negated name
+// matcher may select any metric, so it answers true.
+func infoSeriesMayCarryBucketBound(sel parser.Expr) bool {
+	vs, ok := sel.(*parser.VectorSelector)
+	if !ok || hasBucketBoundMatcher(vs.LabelMatchers) {
+		return true
+	}
+	if !slices.ContainsFunc(vs.LabelMatchers, func(m *labels.Matcher) bool {
+		return m.Name == model.MetricNameLabel
+	}) {
+		return false
+	}
+	return selectorMayCarryBucketBound(vs.LabelMatchers)
 }
 
 // mintsBucketBound reports whether a label-name argument may name `le`:
