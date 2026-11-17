@@ -7,6 +7,7 @@ import {
   CANCEL_COALESCED_WORKFLOWS,
   CANCEL_EXPRESSION,
   COALESCED_WORKFLOWS,
+  E2E_WORKFLOW,
   GROUP_EXPRESSION,
   LATEST_MAIN_SUFFIX,
   MAIN_REF,
@@ -288,8 +289,14 @@ jobs: {}
   assert.match(problems, /must never enter a latest-main cancellation group/);
 });
 
-test('exhaustive E2E has no workflow cancellation and no ref-shared job groups', () => {
+test('e2e.yml must carry the queue-coalesced block, run-bound job groups and its release branch', () => {
   const valid = `name: e2e
+on:
+  push:
+    branches: [main, 'release/*.x']
+concurrency:
+  group: ${GROUP_EXPRESSION}
+  cancel-in-progress: ${QUEUE_CANCEL_LITERAL}
 jobs:
   qualification:
     concurrency:
@@ -298,22 +305,125 @@ jobs:
 `;
   assert.deepEqual(validateE2EWorkflow(valid), []);
 
-  const refShared = valid.replace('github.run_id', 'github.ref');
+  // Queue-coalesced regardless of the tier rosters: the cancel expression,
+  // or a bare `true`, kills a run in progress and is refused.
+  for (const value of [CANCEL_EXPRESSION, 'true']) {
+    assert.match(
+      validateE2EWorkflow(
+        valid.replace(`cancel-in-progress: ${QUEUE_CANCEL_LITERAL}\njobs`, `cancel-in-progress: ${value}\njobs`),
+      ).join('\n'),
+      /queue-coalesced/,
+      value,
+    );
+  }
+
+  // The block itself is required, and its group must be the canonical one.
+  const unenrolled = valid.replace(
+    `concurrency:\n  group: ${GROUP_EXPRESSION}\n  cancel-in-progress: ${QUEUE_CANCEL_LITERAL}\n`,
+    '',
+  );
+  assert.notEqual(unenrolled, valid);
+  assert.match(validateE2EWorkflow(unenrolled).join('\n'), /exactly one top-level concurrency mapping/);
   assert.match(
-    validateE2EWorkflow(refShared).join('\n'),
+    validateE2EWorkflow(valid.replace(GROUP_EXPRESSION, 'e2e-${{ github.ref }}')).join('\n'),
+    /concurrency group/,
+  );
+
+  // The job-level groups stay bound to the run.
+  assert.match(
+    validateE2EWorkflow(valid.replace('qualification-${{ github.run_id }}', 'qualification-${{ github.ref }}')).join('\n'),
     /job-level concurrency group is not bound to github.run_id/,
   );
 
-  const workflowCancellation = `name: e2e
-concurrency:
-  group: e2e-latest
-  cancel-in-progress: true
-jobs: {}
-`;
+  // Dropping the maintenance-line push leaves release.yml's preflight with no
+  // compose-smoke / dashboard run on a release/*.x commit.
   assert.match(
-    validateE2EWorkflow(workflowCancellation).join('\n'),
-    /must not have workflow-level cancellation/,
+    validateE2EWorkflow(valid.replace(", 'release/*.x'", '')).join('\n'),
+    /must keep 'release\/\*\.x'/,
   );
+});
+
+// e2e.yml's own decision table, read from the checked-in workflow: the model
+// is bound to the workflow text by validateE2EWorkflow, so these rows are the
+// runs e2e.yml actually groups and cancels.
+test('e2e.yml coalesces only main pushes and its own cron, and cancels nothing', () => {
+  const body = readFileSync(path.join(process.cwd(), E2E_WORKFLOW), 'utf8');
+  assert.deepEqual(validateE2EWorkflow(body), []);
+  assert.ok(QUEUE_COALESCED_WORKFLOWS.includes(E2E_WORKFLOW));
+  assert.ok(!NEVER_COALESCED_WORKFLOWS.includes(E2E_WORKFLOW));
+  const cron = /^ {4}- cron: '([^']+)'$/m.exec(body)?.[1];
+  assert.ok(cron, 'e2e.yml declares a nightly cron');
+
+  const e2e = (eventName, ref, runId, schedule = '') =>
+    coalescingDecision({ eventName, ref, schedule, workflow: 'e2e', runId, queueOnly: true });
+
+  // Main push: one shared group, so a burst collapses to one pending run, and
+  // a run already executing is never cancelled.
+  assert.deepEqual(e2e('push', MAIN_REF, '1'), {
+    cancelInProgress: false,
+    group: 'e2e-latest-main-push',
+    reason: 'latest_main_push',
+  });
+  assert.equal(e2e('push', MAIN_REF, '1').group, e2e('push', MAIN_REF, '2').group);
+
+  // Nightly: grouped by its exact cron, apart from the main pushes.
+  assert.deepEqual(e2e('schedule', MAIN_REF, '1', cron), {
+    cancelInProgress: false,
+    group: `e2e-latest-main-schedule-${cron}`,
+    reason: 'equivalent_schedule',
+  });
+  assert.notEqual(e2e('schedule', MAIN_REF, '1', cron).group, e2e('push', MAIN_REF, '1').group);
+
+  // A release/*.x push is never coalesced: each maintenance commit keeps its
+  // own run, and so its own compose-smoke / dashboard check-runs.
+  for (const ref of ['refs/heads/release/1.24.x', 'refs/heads/release/1.25.x']) {
+    const first = e2e('push', ref, '101');
+    const second = e2e('push', ref, '102');
+    assert.equal(first.reason, 'distinct_run', ref);
+    assert.equal(first.cancelInProgress, false, ref);
+    assert.equal(first.group, 'e2e-101', ref);
+    assert.notEqual(first.group, second.group, ref);
+  }
+
+  // Pull requests, a dispatch and anything else keep a unique group too.
+  for (const [eventName, ref] of [
+    ['pull_request', 'refs/pull/4304/merge'],
+    ['pull_request', MAIN_REF],
+    ['workflow_dispatch', MAIN_REF],
+    ['merge_group', 'refs/heads/gh-readonly-queue/main/pr-7-deadbeef'],
+  ]) {
+    const first = e2e(eventName, ref, '101');
+    assert.equal(first.reason, 'distinct_run', `${eventName} ${ref}`);
+    assert.equal(first.cancelInProgress, false, `${eventName} ${ref}`);
+    assert.notEqual(first.group, e2e(eventName, ref, '102').group, `${eventName} ${ref}`);
+  }
+});
+
+// Coalescing the main-push run does not relax the release gate: release.yml
+// still names compose-smoke and dashboard in RELEASE_REQUIRED_CHECKS, the
+// registry still marks both lanes release-required, and e2e.yml still pushes
+// on release/*.x, so a commit whose run was superseded has no check-run and
+// release-preflight.mjs refuses to publish it.
+test('the release preflight still requires compose-smoke and dashboard from e2e.yml', () => {
+  const release = readFileSync(path.join(process.cwd(), '.github/workflows/release.yml'), 'utf8');
+  const block = /^ {10}RELEASE_REQUIRED_CHECKS: \|\n((?: {12}.*\n)+)/m.exec(release);
+  assert.ok(block, 'release.yml carries RELEASE_REQUIRED_CHECKS');
+  const required = block[1].split('\n').map((line) => line.trim()).filter(Boolean);
+  for (const name of ['compose-smoke', 'dashboard']) {
+    assert.ok(required.includes(name), name);
+  }
+
+  const registry = JSON.parse(readFileSync(path.join(process.cwd(), '.github/ci-lanes.json'), 'utf8'));
+  for (const id of ['e2e.compose-smoke', 'e2e.dashboard']) {
+    const lane = registry.lanes.find((candidate) => candidate.id === id);
+    assert.ok(lane, id);
+    assert.equal(lane.owner.workflow, E2E_WORKFLOW, id);
+    assert.equal(lane.release_posture, 'required', id);
+    assert.equal(lane.main_posture, 'coalesced', id);
+  }
+
+  const e2e = readFileSync(path.join(process.cwd(), E2E_WORKFLOW), 'utf8');
+  assert.match(e2e, /^ {4}branches: \[main, 'release\/\*\.x'\]$/m);
 });
 
 test('the checked-in registry and every enrolled workflow match the policy', () => {
@@ -429,6 +539,7 @@ test('the two cancellation tiers partition the enrollment exactly', () => {
   // reversion would.
   assert.ok(QUEUE_COALESCED_WORKFLOWS.includes('.github/workflows/mutation.yml'));
   assert.ok(QUEUE_COALESCED_WORKFLOWS.includes('.github/workflows/chdb.yml'));
+  assert.ok(QUEUE_COALESCED_WORKFLOWS.includes('.github/workflows/e2e.yml'));
   for (const workflow of [
     '.github/workflows/agpl-oracle.yml',
     '.github/workflows/codeql.yml',
