@@ -69,25 +69,13 @@ func (r *rowLayers) gatherAtScan(maps []string, consumer ...chplan.Expr) {
 
 	// whole holds the map columns some expression of the stage reads as a
 	// whole.
-	whole := map[string]bool{}
-	readsWhole := func(e chplan.Expr) bool {
-		w, _ := mapReads(e, maps)
-		return len(w) > 0
-	}
-	readsWholeKey := func(e chplan.Expr) bool {
-		_, keyed := mapReads(e, maps)
-		for name := range keyed {
-			if whole[name] {
-				return true
-			}
-		}
-		return false
-	}
+	var whole []string
 	note := func(e chplan.Expr) {
-		w, _ := mapReads(e, maps)
-		for name := range w {
-			whole[name] = true
-		}
+		forEachMapRead(e, maps, func(name string, keyed bool) {
+			if !keyed && !slices.Contains(whole, name) {
+				whole = append(whole, name)
+			}
+		})
 	}
 	for _, e := range consumer {
 		note(e)
@@ -99,6 +87,22 @@ func (r *rowLayers) gatherAtScan(maps []string, consumer ...chplan.Expr) {
 		case *chplan.Filter:
 			note(n.Predicate)
 		}
+	}
+	// readsWhole reports whether e reads a map column as a whole, and
+	// readsWholeKey whether it reads a key of one the stage reads whole.
+	readsWhole := func(e chplan.Expr) bool {
+		found := false
+		forEachMapRead(e, maps, func(_ string, keyed bool) { found = found || !keyed })
+		return found
+	}
+	readsWholeKey := func(e chplan.Expr) bool {
+		found := false
+		if len(whole) > 0 {
+			forEachMapRead(e, maps, func(name string, keyed bool) {
+				found = found || keyed && slices.Contains(whole, name)
+			})
+		}
+		return found
 	}
 	movable := func(e chplan.Expr) bool {
 		return !readsWholeKey(e) && scope.admits(e)
@@ -223,28 +227,29 @@ type scanScope struct {
 
 // readsLayer reports whether e reads an alias the stack defines.
 func (s *scanScope) readsLayer(e chplan.Expr) bool {
-	read := map[string]bool{}
-	addColumnsRead(read, e)
-	for name := range read {
-		if s.aliases[name] {
-			return true
+	found := false
+	chplan.InspectExpr(e, func(sub chplan.Expr) bool {
+		if ref, ok := sub.(*chplan.ColumnRef); ok && s.aliases[ref.Name] {
+			found = true
 		}
-	}
-	return false
+		return !found
+	})
+	return found
 }
 
 // admits reports whether e — a layer's value or a filter conjunct — reads
 // no alias outside the scope and keeps the scope within
 // [maxScanScopeExpansion] once added.
 func (s *scanScope) admits(e chplan.Expr) bool {
-	read := map[string]bool{}
-	addColumnsRead(read, e)
-	for name := range read {
-		if _, in := s.defs[name]; s.aliases[name] && !in {
-			return false
+	outside := false
+	chplan.InspectExpr(e, func(sub chplan.Expr) bool {
+		if ref, ok := sub.(*chplan.ColumnRef); ok && s.aliases[ref.Name] {
+			_, in := s.defs[ref.Name]
+			outside = !in
 		}
-	}
-	return s.expandedTotal+s.expandedSize(e) <= maxScanScopeExpansion*(s.text+exprSize(e))
+		return !outside
+	})
+	return !outside && s.expandedTotal+s.expandedSize(e) <= maxScanScopeExpansion*(s.text+exprSize(e))
 }
 
 // add counts e into the scope's sizes.
@@ -296,26 +301,25 @@ func conjunction(preds []chplan.Expr) chplan.Expr {
 	return out
 }
 
-// mapReads splits the columns of maps that e reads into those it reads as
-// a whole and those it reads only through a constant key.
-func mapReads(e chplan.Expr, maps []string) (whole, keyed map[string]bool) {
-	whole, keyed = map[string]bool{}, map[string]bool{}
+// forEachMapRead calls visit for each read e makes of a column of maps:
+// keyed for a read through a constant key, and not keyed for a read of the
+// map as a whole.
+func forEachMapRead(e chplan.Expr, maps []string, visit func(name string, keyed bool)) {
 	chplan.InspectExpr(e, func(sub chplan.Expr) bool {
 		switch v := sub.(type) {
 		case *chplan.MapAccess:
 			ref, isColumn := v.Map.(*chplan.ColumnRef)
 			if _, constant := v.Key.(*chplan.LitString); isColumn && constant && slices.Contains(maps, ref.Name) {
-				keyed[ref.Name] = true
+				visit(ref.Name, true)
 				return false
 			}
 		case *chplan.ColumnRef:
 			if slices.Contains(maps, v.Name) {
-				whole[v.Name] = true
+				visit(v.Name, false)
 			}
 		}
 		return true
 	})
-	return whole, keyed
 }
 
 // logMapColumns names the map columns of the logs table s.
