@@ -14,7 +14,10 @@ import (
 // its expanded size — every alias read replaced by what it names — rather
 // than at the size of its text. A value or filter joins the scope only
 // while the expanded size of everything in it stays within this many
-// times the size of its text.
+// times the size of its text. The parser and label-filter scopes of the
+// shapes the stage lowers to expand to 1.8–2.9 times their text; the
+// unwrap conversion chain above them expands past 3.4, and moved into the
+// scan's scope it adds seconds of analysis on ClickHouse 24.8.
 const maxScanScopeExpansion = 3
 
 // gatherAtScan moves into the stream scan's own scope the part of a range
@@ -29,12 +32,15 @@ const maxScanScopeExpansion = 3
 // Walking the stack from the bottom:
 //
 //   - a filter conjunct that reads no layer is folded into the stream
-//     scan's own filter, unless it reads a map column as a whole;
+//     scan's own filter;
 //   - a layer whose value reads only the table's columns and the values
 //     already moved, and a filter conjunct that reads only those values,
 //     moves into the scan's scope while the scope stays within
-//     [maxScanScopeExpansion], unless it reads a key of a map column the
-//     stage reads as a whole anywhere;
+//     [maxScanScopeExpansion];
+//   - neither happens to a filter conjunct whose own text reads a map
+//     column as a whole, or to a value or conjunct whose own text reads a
+//     key of a map column that some expression of the stage, or of
+//     consumer, reads as a whole in its own text;
 //   - a moved layer that reads another value goes back to its place
 //     unless a moved filter reads it.
 //
@@ -137,7 +143,7 @@ func (r *rowLayers) gatherAtScan(maps []string, consumer ...chplan.Expr) {
 				switch {
 				case !scope.readsLayer(conjunct) && !readsWhole(conjunct):
 					base = andFilter(base, conjunct)
-				case scope.readsLayer(conjunct) && movable(conjunct):
+				case scope.readsLayer(conjunct) && !readsWhole(conjunct) && movable(conjunct):
 					scope.add(conjunct)
 					filtered = append(filtered, conjunct)
 				default:
@@ -244,8 +250,9 @@ func (s *scanScope) admits(e chplan.Expr) bool {
 	outside := false
 	chplan.InspectExpr(e, func(sub chplan.Expr) bool {
 		if ref, ok := sub.(*chplan.ColumnRef); ok && s.aliases[ref.Name] {
-			_, in := s.defs[ref.Name]
-			outside = !in
+			if _, in := s.defs[ref.Name]; !in {
+				outside = true
+			}
 		}
 		return !outside
 	})

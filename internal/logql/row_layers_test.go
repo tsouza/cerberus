@@ -250,3 +250,138 @@ func TestRowLayersGatherAtScan(t *testing.T) {
 		t.Errorf("the scan's filter = %v, want the selector's predicate AND the line filter", got)
 	}
 }
+
+// TestRowLayersGatherAtScanLeavesWhatItMustNotMove pins what gatherAtScan
+// leaves above the scan's scope: a value that reads a value left above it
+// — wherever in its expression that read sits — with the filter on it,
+// and, over a map the stage reads as a whole, a filter that reads the map
+// whole and a value that reads a key of it.
+func TestRowLayersGatherAtScanLeavesWhatItMustNotMove(t *testing.T) {
+	t.Parallel()
+
+	eq := func(left chplan.Expr, v string) chplan.Expr {
+		return &chplan.Binary{Op: chplan.OpEq, Left: left, Right: &chplan.LitString{V: v}}
+	}
+	mapCol := &chplan.ColumnRef{Name: "M"}
+	key := &chplan.MapAccess{Map: mapCol, Key: &chplan.LitString{V: "k"}}
+	hasKey := &chplan.FuncCall{Fn: chplan.FnMapContainsKey, Args: []chplan.Expr{mapCol, &chplan.LitString{V: "k"}}}
+
+	for _, tc := range []struct {
+		name string
+		// build defines the stack and returns what the consumer reads.
+		build func(rows *rowLayers) []chplan.Expr
+		maps  []string
+		// moved are the aliases the scan's scope must define, bottom
+		// first, and "filter" for the filter it must run; folded is
+		// whether the scan's own filter gains a conjunct.
+		moved  []string
+		folded bool
+	}{
+		{
+			name: "a value reading an outside value before a moved one",
+			build: func(rows *rowLayers) []chplan.Expr {
+				// deep is an 8-node value of the table's column X.
+				deep := chplan.Expr(&chplan.ColumnRef{Name: "X"})
+				for range 7 {
+					deep = &chplan.FuncCall{Fn: chplan.FnLower, Args: []chplan.Expr{deep}}
+				}
+				source := rows.define("_source", deep)
+				reads := make([]chplan.Expr, 8)
+				for i := range reads {
+					reads[i] = source
+				}
+				// _wide multiplies _source past the bound and stays above.
+				wide := rows.define("_wide", &chplan.FuncCall{Fn: chplan.FnConcat, Args: reads})
+				part := rows.define("_part", lowerOf("Y"))
+				mix := rows.define("_mix", &chplan.FuncCall{Fn: chplan.FnConcat, Args: []chplan.Expr{wide, part}})
+				rows.filter(eq(mix, "m"))
+				return []chplan.Expr{&chplan.ColumnRef{Name: "Timestamp"}}
+			},
+			moved: []string{"_source", "_part"},
+		},
+		{
+			name: "a map read whole by the consumer",
+			build: func(rows *rowLayers) []chplan.Expr {
+				rows.define("_key", key)
+				rows.filter(hasKey)
+				return []chplan.Expr{mapCol}
+			},
+			maps: []string{"M"},
+		},
+		{
+			name: "a map read whole by a filter",
+			build: func(rows *rowLayers) []chplan.Expr {
+				rows.define("_key", key)
+				rows.filter(hasKey)
+				return []chplan.Expr{&chplan.ColumnRef{Name: "Timestamp"}}
+			},
+			maps: []string{"M"},
+		},
+		{
+			name: "a filter reading a value and a map whole",
+			build: func(rows *rowLayers) []chplan.Expr {
+				value := rows.define("_value", lowerOf("Y"))
+				rows.filter(&chplan.Binary{Op: chplan.OpOr, Left: eq(value, "v"), Right: hasKey})
+				return []chplan.Expr{&chplan.ColumnRef{Name: "Timestamp"}}
+			},
+			maps:  []string{"M"},
+			moved: []string{"_value"},
+		},
+		{
+			name: "a filter reading a value",
+			build: func(rows *rowLayers) []chplan.Expr {
+				value := rows.define("_value", lowerOf("Y"))
+				rows.filter(eq(value, "v"))
+				return []chplan.Expr{&chplan.ColumnRef{Name: "Timestamp"}}
+			},
+			maps:  []string{"M"},
+			moved: []string{"_value", "filter"},
+		},
+		{
+			name: "a map read by key alone",
+			build: func(rows *rowLayers) []chplan.Expr {
+				rows.define("_key", key)
+				rows.filter(eq(key, "v"))
+				return []chplan.Expr{&chplan.ColumnRef{Name: "Timestamp"}}
+			},
+			maps:   []string{"M"},
+			moved:  []string{"_key"},
+			folded: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			scanFilter := &chplan.Filter{Input: &chplan.Scan{Table: "otel_logs"}, Predicate: eq(&chplan.ColumnRef{Name: "Job"}, "api")}
+			rows := newRowLayers(scanFilter)
+			reads := tc.build(rows)
+			rows.gatherAtScan(tc.maps, reads...)
+
+			var moved []string
+			var scan *chplan.Filter
+			for _, n := range rows.atScan {
+				switch v := n.(type) {
+				case *chplan.Project:
+					moved = append(moved, v.Projections[len(v.Projections)-1].Alias)
+				case *chplan.Filter:
+					moved = append(moved, "filter")
+				}
+			}
+			for n := rows.node; n != nil; n = inputOf(n) {
+				if f, ok := n.(*chplan.Filter); ok {
+					if _, onScan := f.Input.(*chplan.Scan); onScan {
+						scan = f
+					}
+				}
+			}
+			if !slices.Equal(moved, tc.moved) {
+				t.Errorf("moved into the scan's scope = %v, want %v", moved, tc.moved)
+			}
+			if scan == nil {
+				t.Fatal("no filter over the scan")
+			}
+			if folded := !scan.Predicate.Equal(scanFilter.Predicate); folded != tc.folded {
+				t.Errorf("the scan's filter gained a conjunct = %v, want %v: %v", folded, tc.folded, scan.Predicate)
+			}
+		})
+	}
+}

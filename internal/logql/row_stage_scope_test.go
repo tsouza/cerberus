@@ -27,9 +27,10 @@ func rangeAggregationSQL(t *testing.T, q string) (string, chplan.Node) {
 
 // TestRangeAggregationFiltersRunWhereTheTableIsRead pins that a range
 // aggregation evaluates its filters, and the values they read, in the
-// SELECT that reads the logs table: a line filter or a label filter on a
-// stored column joins the scan's own predicates, the detected_level
-// source reads the table's map there, and a filter on a parsed label or on
+// SELECT that reads the logs table: a line filter joins the scan's own
+// predicates, the detected_level source reads the table's map there, an
+// absent_over_time reads its line filter there, and a filter on a parsed
+// label or on
 // the unwrap source runs there with the parser's labels map it reads.
 // Behind a subquery ClickHouse reads a map key as the whole map and cannot
 // place the filter in PREWHERE.
@@ -42,6 +43,7 @@ func TestRangeAggregationFiltersRunWhereTheTableIsRead(t *testing.T) {
 	}{
 		{`sum(count_over_time({job="wide"} |= "orders/5 " [5m]))`, []string{"position(`Body`", "AS `_logql_level_source`"}},
 		{`sum(count_over_time({job="wide"} | detected_level="fatal" [5m]))`, []string{"AS `_logql_level_source`"}},
+		{`absent_over_time({job="api"} |= "timeout" [5m])`, []string{"position(`Body`"}},
 		{`sum_over_time({job="api"} | logfmt | unwrap duration(latency) [5m])`, []string{"AS `_logql_unwrap_source`", "(`_logql_unwrap_source` != ?)"}},
 		{`sum by (level) (count_over_time({service_name="api"} | logfmt | level=~"error|warn" [1h]))`, []string{"AS `_logql_labels_0`", "mapContains(`_logql_labels_0`"}},
 		{`sum by (category) (count_over_time({job="api"} | unpack | __error__="" [5m]))`, []string{"AS `_logql_labels_0`", "mapContains(`_logql_labels_0`"}},
@@ -79,6 +81,7 @@ func TestRangeAggregationMultiplyingValuesStayNested(t *testing.T) {
 		{`avg_over_time({service_name="web-server"} | json | status >= 400 | unwrap duration(duration) [1h]) by (method)`, []string{"_logql_labels_1", "_logql_unwrap_stripped"}},
 		{`sum_over_time({job="api"} | logfmt | unwrap duration(latency) | __error__ = "" [5m])`, []string{"_logql_unwrap_stripped", "_logql_unwrap_labels"}},
 		{`count_over_time({service_name="mimir"} | logfmt | latency > 250ms or latency < 1ms [5m])`, []string{"_logql_filter_1_stripped", "_logql_filter_2_stripped"}},
+		{`quantile_over_time(0.9, {service_name="web-server"} | json | status >= 400 | unwrap duration(duration) [1h]) by (method)`, []string{"_logql_labels_1", "_logql_unwrap_stripped"}},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			t.Parallel()
@@ -96,22 +99,37 @@ func TestRangeAggregationMultiplyingValuesStayNested(t *testing.T) {
 	}
 }
 
-// TestRangeAggregationWholeMapReadsStayAboveTheScan pins that a label
-// filter on a stored label, which reads LogAttributes as a whole through
-// mapContains, stays above the scan, and that the detected_level source
-// then reads LogAttributes there too: a key subcolumn read in the scan's
-// scope would read the map a second time.
+// TestRangeAggregationWholeMapReadsStayAboveTheScan pins that a map the
+// stage reads as a whole keeps the scan's scope from reading it again by
+// key: a label filter on a stored label, which reads LogAttributes whole
+// through mapContains, stays above the scan, and so does the
+// detected_level source; a range aggregation whose grouping label reads
+// LogAttributes whole leaves the source above the scan too, and one that
+// groups by detected_level alone moves it into the scan's scope.
 func TestRangeAggregationWholeMapReadsStayAboveTheScan(t *testing.T) {
 	t.Parallel()
-	sql, _ := rangeAggregationSQL(t, `sum(count_over_time({job="wide"} | tenant="tenant-7" [5m]))`)
-	scope := scopeAround(t, sql, "FROM `otel_logs`")
-	for _, absent := range []string{"mapContains(`LogAttributes`", "AS `_logql_level_source`"} {
-		if strings.Contains(scope, absent) {
-			t.Errorf("the SELECT reading otel_logs contains %s: %s", absent, scope)
-		}
-	}
-	if !strings.Contains(sql, "mapContains(`LogAttributes`") {
-		t.Fatalf("the label filter is missing: %s", sql)
+	for _, tc := range []struct {
+		query       string
+		scanDefines bool
+	}{
+		{`sum(count_over_time({job="wide"} | tenant="tenant-7" [5m]))`, false},
+		{`sum by (env) (rate({job="api"}[5m]))`, false},
+		{`sum by (detected_level) (count_over_time({job="api"}[5m]))`, true},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			t.Parallel()
+			sql, _ := rangeAggregationSQL(t, tc.query)
+			if !strings.Contains(sql, "AS `_logql_level_source`") {
+				t.Fatalf("the detected_level source is not defined: %s", sql)
+			}
+			scope := scopeAround(t, sql, "FROM `otel_logs`")
+			if strings.Contains(scope, "mapContains(`LogAttributes`") {
+				t.Errorf("the SELECT reading otel_logs reads LogAttributes whole: %s", scope)
+			}
+			if got := strings.Contains(scope, "AS `_logql_level_source`"); got != tc.scanDefines {
+				t.Errorf("the SELECT reading otel_logs defines the detected_level source = %v, want %v: %s", got, tc.scanDefines, scope)
+			}
+		})
 	}
 }
 
