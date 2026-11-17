@@ -177,10 +177,20 @@ permissions:
   # ghcr.io (.github/scripts/lib/mirror.mjs); the packages are private.
   packages: read
 
-# No workflow-level cancellation: this workflow includes the exhaustive root
-# Compose proof, so every main push remains observable. Nested groups are bound
-# to run_id; no PR, release, maintenance, or manual qualification can replace a
-# pending job. Replaceable deep lanes live in separately enrolled workflows.
+concurrency:
+  # Main pushes and matching cron schedules share a group, so a burst of merges
+  # collapses into one QUEUED run instead of one full matrix per superseded
+  # commit. Pull request, release/*.x, dispatch and any other event or ref
+  # keeps a unique run-id group, so no qualification run is ever replaced.
+  group: ${{ github.workflow }}-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'latest-main-push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') && format('latest-main-schedule-{0}', github.event.schedule) || github.run_id }}
+  # NEVER cancel a run already in progress: a main-push run is ~53 minutes of
+  # compose and k3d substrate whose compose-smoke / dashboard check-runs are the
+  # per-commit record a bisect and release.yml's preflight read. Only a still
+  # PENDING run, which holds no runner, is replaced. This workflow is a member
+  # of QUEUE_COALESCED_WORKFLOWS in .github/scripts/main-coalescing.mjs, whose
+  # audit fails if the enrollment and this line ever disagree. The job-level
+  # groups below stay bound to github.run_id.
+  cancel-in-progress: false
 
 jobs:
   # compose-smoke is sharded into a balanced matrix of isolated-compose-stack
