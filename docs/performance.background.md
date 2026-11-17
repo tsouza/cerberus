@@ -43,17 +43,20 @@ Across fifteen gating runs of unchanged code its max-of-5 spanned 25.9M-32.6M
 bytes, a 1.26x range; the 1.20x headroom it then had covers rounds whose
 highest is at most 1/(2-1.20) = 1.25x their lowest. Its twin
 `label_values_matcher_stock_key`, measured seconds apart on the same server
-over the same data, did not move with it. Over 81 gating runs the renamed
+over the same data, did not move with it. Over 81 gating runs (4dd9a1701 to
+be7f7bb58, commits that left these statements' peak in place) the renamed
 sentinel's max-of-5 spanned up to 1.343x on 26.8 (24.55M-32.97M) and 1.331x
-on 26.9, and its twin's up to 1.172x, so both now carry a 1.40x headroom:
-1.40x clears the widest spread with about 4% to spare, and a calibration's
-spread check accepts rounds whose highest is up to 1/(2-1.40) = 1.67x their
-lowest. That headroom also clears the PREWHERE split these sentinels exist
-for, measured at 1.38x or more above the noise, so their memory ceiling is a
-backstop for other growth; the statement check that the dispatched statement
-carries no explicit `PREWHERE` on a line where `move_to_prewhere` resolves in
-is what catches the split. A gating run above 1.40x is a finding to
-investigate, not noise to absorb.
+on 26.9, so its headroom is now 1.40x: that clears the widest spread with
+about 4% to spare, and a calibration's spread check accepts rounds whose
+highest is up to 1/(2-1.40) = 1.67x their lowest. The twin's spread, at most
+1.172x, would fit inside 1.20x; it carries 1.40x too because both sentinels
+share `labelValuesBaselineHeadroom`. The PREWHERE split these sentinels exist
+for measured 35.8M-45.3M against 25.85M-25.98M unsplit on the same local
+server, at least 1.38x, so a 1.40x headroom reaches past the low end of that
+step and the memory ceiling is a backstop for other growth. What catches the
+split is the statement check: the dispatched statement must carry no
+explicit `PREWHERE` on a line where `move_to_prewhere` resolves in. A gating
+run above 1.40x is a finding to investigate, not noise to absorb.
 
 Locally the spread is per query. On a local 26.9 server limited to four CPUs, five
 fresh containers gave round maxima of 22.4M-26.2M, and the five repeats inside
@@ -89,8 +92,7 @@ The runner count, `nightlyCalibrationRunners`, is four. A runner is in the low
 tail when a ceiling anchored on its highest round is one an ordinary run of
 the same code crosses: for this sentinel, a max-of-5 below the highest
 measured run (32,643,773) divided by the 1.20 headroom it had when this was
-measured, about 27.2M. Five of
-the seventeen 26.9 runs measured — the two calibrations and three of the
+measured, about 27.2M. Five of the seventeen 26.9 runs measured — the two calibrations and three of the
 fifteen gating runs — landed there, a rate of 5/17, about 0.29. Under 1.40
 the same line sits at about 23.3M, below every 26.9 run measured, so the
 figures that follow are the ones the runner count was chosen against. The committed

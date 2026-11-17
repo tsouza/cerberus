@@ -151,9 +151,9 @@ func TestSentinels_ServerPrewhereOnLines(t *testing.T) {
 }
 
 // TestLabelValuesBaselineHeadroom_CoversTheRunnerSpread pins the label_values
-// sentinels' headroom against the runner spread labelValuesBaselineHeadroom's
-// comment records: the lowest and highest max-of-5 of the perf-nightly gating
-// runs of unchanged code on each line. On every line, a ceiling calibrated
+// sentinels' headroom against the per-line runner spread measured over the
+// gating runs labelValuesBaselineHeadroom's comment names: the lowest and
+// highest max-of-5 of each sentinel on each line. On every line, a ceiling calibrated
 // from the lowest still clears the highest, so no gating run inside the
 // measured spread trips a calibration that landed in its low tail.
 func TestLabelValuesBaselineHeadroom_CoversTheRunnerSpread(t *testing.T) {

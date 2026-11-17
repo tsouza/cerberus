@@ -45,7 +45,8 @@ func writeRunners(t *testing.T, sentinel string, perRunner ...[]uint64) []string
 func TestRun_ExitStatusAndFileTellTheOutcomesApart(t *testing.T) {
 	const sentinel = "label_values_matcher_stock_key_renamed"
 	settled := []uint64{29_000_000, 29_100_000, 29_200_000, 29_300_000, 29_400_000}
-	// The sentinel's 1.40x of 29.4M leaves an 11.76M margin; 10M spans 19.4M.
+	// The sentinel's headroom, 1.40x, of 29.4M leaves an 11.76M margin; 10M
+	// spans 19.4M.
 	low := []uint64{10_000_000, 29_100_000, 29_200_000, 29_300_000, 29_400_000}
 	for _, tc := range []struct {
 		name        string
