@@ -227,7 +227,7 @@ func TestLimitPushdown_SafeShapes_IdenticalToGoOnlyClamp_ChDB(t *testing.T) {
 // PR would wrap a naive Limit(OrderBy(...)) around carries ONLY
 // `app="x"` plus the request window — the `__error__=""` predicate is
 // entirely absent from SQL (internal/logql/lower.go's
-// lowerPipelineWithLabels `continue`-skips it), so the row's real
+// lowerPipelineStages `continue`-skips it), so the row's real
 // ResourceAttributes `__error__` value (a legitimate Map key like any
 // other — nothing in the OTel-CH schema or the lowering's `Map(String,
 // String)` access reserves it) is the ONLY place that predicate is ever
@@ -284,7 +284,7 @@ func TestLimitPushdown_UnsafeShape_NaivePushdownWouldBeWrong_ChDB(t *testing.T) 
 
 	// The correct (shipped) path: Lang.Parse itself, exactly as
 	// production runs it. Because this shape is UNSAFE,
-	// maybePushLogLineLimit leaves the plan un-pushed regardless of
+	// logLineLimit leaves the plan un-pushed regardless of
 	// LogLineLimit being set — confirmed structurally by
 	// TestLogLineLimitPushdown_ShapeAndGating in internal/logql; this
 	// assertion is the end-to-end behavioral half of that same claim.
@@ -311,10 +311,17 @@ func TestLimitPushdown_UnsafeShape_NaivePushdownWouldBeWrong_ChDB(t *testing.T) 
 	if err != nil {
 		t.Fatalf("LowerAt (base plan): %v", err)
 	}
-	naivePlan := &chplan.Limit{
+	// The limit goes directly under the log-row projection, the node
+	// ProjectSamples reads, so every value the projection reads is
+	// computed below it.
+	naivePlan, ok := basePlan.(*chplan.Project)
+	if !ok {
+		t.Fatalf("base plan is %T, want the log-row projection", basePlan)
+	}
+	naivePlan.Input = &chplan.Limit{
 		Count: limit,
 		Input: &chplan.OrderBy{
-			Input: basePlan,
+			Input: naivePlan.Input,
 			Keys: []chplan.OrderKey{
 				{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Desc: true},
 			},

@@ -376,7 +376,7 @@ func absentSynthLabels(sel syntax.LogSelectorExpr) []chplan.SynthLabel {
 }
 
 // lowerLogRange unwraps the LogRangeExpr's inner selector (either bare
-// matchers or a pipeline) into a materialising per-row stage
+// matchers or a pipeline) into a per-row stage
 // ([rowLayers]) and returns it plus the final labelsExpr the pipeline
 // produced and the normalised `detected_level` column
 // ([defineDetectedLevel]). Range aggregations thread this labelsExpr to
@@ -393,7 +393,7 @@ func lowerLogRange(lr *syntax.LogRangeExpr, s schema.Logs, lc lowerCtx) (rows *r
 	default:
 		return nil, nil, nil, fmt.Errorf("logql: range-aggregation inner is %T (not MatchersExpr or PipelineExpr)", lr.Left)
 	}
-	rows = newRowLayers(lowerMatchers(stream, s, lc), true)
+	rows = newRowLayers(lowerMatchers(stream, s, lc))
 	level = defineDetectedLevel(rows, s)
 	// No pipeline — labels-map is the ResourceAttributes column.
 	labelsExpr = &chplan.ColumnRef{Name: s.ResourceAttributesColumn}

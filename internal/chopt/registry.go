@@ -1782,7 +1782,7 @@ const (
 	// matches the chplan shape, not the query language). Tempo's handler.go
 	// builds it directly for /search/recent, boundNewestTraces, and
 	// structural_two_phase.go's phase-A ranking; since cerberus issue #2829,
-	// Loki's LogQL lowering (internal/logql/lower.go's maybePushLogLineLimit)
+	// Loki's LogQL lowering (internal/logql/lower.go's logLineLimit)
 	// also emits it for the request `limit`, for every log-line pipeline shape
 	// proven incapable of dropping a row in Go after SQL executes
 	// (pipelineCanDropRowsInGo).

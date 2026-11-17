@@ -60,8 +60,8 @@ func TestLowerDropKeep_NoSQLImpact(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			gotWith := emitSQL(t, tc.with, s)
-			gotWithout := emitSQL(t, tc.without, s)
+			gotWith := emitSelectionSQL(t, tc.with, s)
+			gotWithout := emitSelectionSQL(t, tc.without, s)
 			if gotWith != gotWithout {
 				t.Errorf("projection stage altered SQL\nwith stage:    %s\nwithout stage: %s",
 					gotWith, gotWithout)
@@ -110,8 +110,8 @@ func TestLowerDropKeep_OnAggregation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			gotWith := emitSQL(t, tc.with, s)
-			gotWithout := emitSQL(t, tc.without, s)
+			gotWith := emitSelectionSQL(t, tc.with, s)
+			gotWithout := emitSelectionSQL(t, tc.without, s)
 			if gotWith == gotWithout {
 				t.Errorf("projection stage left the SQL untouched, so it never reached the grouping key\nSQL: %s",
 					gotWith)

@@ -96,7 +96,7 @@ func TestDetectedLevel_SeverityNumberResolvesWhenNoTextIsPresent(t *testing.T) {
 			}
 			body := fmt.Sprintf("n=%d;t=%s", r.number, r.text)
 			var n int
-			if err := db.QueryRow("SELECT count() FROM ("+sqlStr+") WHERE Body = ?", append(args, body)...).Scan(&n); err != nil {
+			if err := db.QueryRow("SELECT count() FROM ("+sqlStr+") WHERE "+LogLineColumn+" = ?", append(args, body)...).Scan(&n); err != nil {
 				t.Fatalf("%s: %v", query, err)
 			}
 			if n != 1 {

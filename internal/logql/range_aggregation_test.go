@@ -758,7 +758,7 @@ func TestRangeAggregationGroupByEmitsLabelKeyAndValuePairs(t *testing.T) {
 	}
 
 	got, err := rangeAggregationGroupBy(ra, s, &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
-		func() chplan.Expr { return detectedLevelIdentityExpr(s, ra.Left.Left) })
+		func() chplan.Expr { return detectedLevelIdentityExpr(ra.Left.Left, detectedLevelExpr(s)) })
 	if err != nil {
 		t.Fatalf("rangeAggregationGroupBy: %v", err)
 	}
@@ -850,7 +850,7 @@ func TestRangeAggregationGroupByWithoutStripsFromIdentityBase(t *testing.T) {
 		Keys: []string{"latency"},
 	}
 	got, err := rangeAggregationGroupBy(ra, s, identityBase,
-		func() chplan.Expr { return detectedLevelIdentityExpr(s, ra.Left.Left) })
+		func() chplan.Expr { return detectedLevelIdentityExpr(ra.Left.Left, detectedLevelExpr(s)) })
 	if err != nil {
 		t.Fatalf("rangeAggregationGroupBy: %v", err)
 	}

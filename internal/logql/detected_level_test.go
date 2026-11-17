@@ -303,9 +303,9 @@ func TestDetectedLevel_LabelFilterLevelDoesNotAlias(t *testing.T) {
 	// ResourceAttributes + extracted keys), not to a multiIf on
 	// SeverityText. Walk the predicate tree and assert the level
 	// matcher's LHS is a MapAccess, not a FuncCall named multiIf.
-	filt, ok := plan.(*chplan.Filter)
-	if !ok {
-		t.Fatalf("lower top is %T; want *chplan.Filter", plan)
+	filt := selectionFilter(plan)
+	if filt == nil {
+		t.Fatalf("no Filter under the Project layers of %T", plan)
 	}
 	// The `level="error"` comparison's LHS must resolve `level` through
 	// the labels maps — NOT through the SeverityText-derived
@@ -418,8 +418,14 @@ func mustFindDetectedLevelBinary(t *testing.T, expr syntax.Expr, s schema.Logs) 
 		}
 	})
 
+	defs := columnDefinitions(plan)
 	for _, b := range bins {
-		fn, ok := b.Left.(*chplan.FuncCall)
+		left := b.Left
+		if ref, ok := left.(*chplan.ColumnRef); ok && defs[ref.Name] != nil {
+			left = defs[ref.Name]
+			b = &chplan.Binary{Op: b.Op, Left: left, Right: b.Right}
+		}
+		fn, ok := left.(*chplan.FuncCall)
 		if !ok || fn.Fn != chplan.FnMultiIf {
 			continue
 		}
@@ -429,6 +435,38 @@ func mustFindDetectedLevelBinary(t *testing.T, expr syntax.Expr, s schema.Logs) 
 	}
 	t.Fatalf("no detected_level Binary found in plan; bins=%d", len(bins))
 	return nil
+}
+
+// columnDefinitions maps every column a Project in plan defines under an
+// alias to the expression that defines it.
+func columnDefinitions(plan chplan.Node) map[string]chplan.Expr {
+	defs := map[string]chplan.Expr{}
+	chplan.Walk(plan, func(n chplan.Node) bool {
+		if p, ok := n.(*chplan.Project); ok {
+			for _, projection := range p.Projections {
+				if projection.Alias != "" {
+					defs[projection.Alias] = projection.Expr
+				}
+			}
+		}
+		return true
+	})
+	return defs
+}
+
+// selectionFilter returns the Filter under the Project layers on top of
+// a log query's plan: the predicate that selects its rows. It is nil
+// when the node there is not a Filter.
+func selectionFilter(plan chplan.Node) *chplan.Filter {
+	for {
+		p, ok := plan.(*chplan.Project)
+		if !ok {
+			break
+		}
+		plan = p.Input
+	}
+	f, _ := plan.(*chplan.Filter)
+	return f
 }
 
 // walkChplanExpr is a minimal sibling of the local expr walker in

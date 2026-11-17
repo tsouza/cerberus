@@ -626,9 +626,21 @@ func conjunctionFrag(exprs []chplan.Expr) Frag {
 }
 
 func (e *emitter) emitProject(p *chplan.Project) error {
-	sub, err := e.subqueryFrag(p.Input)
-	if err != nil {
-		return err
+	// A select list names every column this Project reads, so it can read
+	// a fused row chain, whose columns are a superset of its Input's. Only
+	// a Project marked [chplan.Project.OneScopeRows] reads its Input fused.
+	var sub Frag
+	fused := false
+	var err error
+	if p.OneScopeRows && len(p.Projections) > 0 {
+		if sub, fused, err = e.rowChainFrag(p.Input); err != nil {
+			return err
+		}
+	}
+	if !fused {
+		if sub, err = e.subqueryFrag(p.Input); err != nil {
+			return err
+		}
 	}
 	sb := NewQuery().From(sub)
 	// An empty Projections slice leaves the SELECT list empty, which

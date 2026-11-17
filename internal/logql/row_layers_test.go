@@ -34,7 +34,7 @@ func TestRowLayersSeal(t *testing.T) {
 	t.Parallel()
 
 	scan := &chplan.Scan{Table: "otel_logs"}
-	rows := newRowLayers(scan, true)
+	rows := newRowLayers(scan)
 	a := rows.define("_a", lowerOf("X"))
 	layerA := rows.node
 	rows.filter(&chplan.Binary{Op: chplan.OpEq, Left: a, Right: &chplan.LitString{V: "x"}})
@@ -79,7 +79,7 @@ func TestRowLayersSeal(t *testing.T) {
 func TestRowLayersSealCarry(t *testing.T) {
 	t.Parallel()
 
-	rows := newRowLayers(&chplan.Scan{Table: "otel_logs"}, true)
+	rows := newRowLayers(&chplan.Scan{Table: "otel_logs"})
 	a := rows.define("_a", lowerOf("X"))
 	layer := rows.node
 	consumer := &chplan.Project{Input: rows.node, Projections: []chplan.Projection{{Expr: a, Alias: "out"}}}
@@ -90,20 +90,80 @@ func TestRowLayersSealCarry(t *testing.T) {
 	}
 }
 
-// TestRowLayersInline pins that a stack that does not materialise
-// builds no layer: define returns the expression itself and filters
-// fold onto the scan.
-func TestRowLayersInline(t *testing.T) {
+// TestRowLayersHoist pins how [rowLayers.hoist] splits the stack at a log
+// query's ORDER BY … LIMIT:
+//
+//   - a value a filter reads is defined below the limit, and a value only
+//     the consumer reads is defined above it alone;
+//   - a wide value both read is defined once on each side, never carried
+//     through the sort, while any other value both read is defined
+//     below and carried;
+//   - between the filter and the sort a Project passes on only the
+//     columns read above it.
+func TestRowLayersHoist(t *testing.T) {
 	t.Parallel()
 
-	scan := &chplan.Scan{Table: "otel_logs"}
-	rows := newRowLayers(scan, false)
-	value := lowerOf("X")
-	if got := rows.define("_a", value); got != value {
-		t.Errorf("define = %#v, want the expression itself", got)
+	rows := newRowLayers(&chplan.Scan{Table: "otel_logs"})
+	both := rows.defineWide("_both", lowerOf("X"))
+	filterOnly := rows.define("_filter_only", lowerOf("Y"))
+	consumerOnly := rows.define("_consumer_only", lowerOf("Z"))
+	carried := rows.define("_carried", lowerOf("W"))
+	rows.filter(&chplan.Binary{
+		Op:   chplan.OpAnd,
+		Left: &chplan.Binary{Op: chplan.OpEq, Left: both, Right: &chplan.LitString{V: "x"}},
+		Right: &chplan.Binary{
+			Op:    chplan.OpAnd,
+			Left:  &chplan.Binary{Op: chplan.OpEq, Left: filterOnly, Right: &chplan.LitString{V: "y"}},
+			Right: &chplan.Binary{Op: chplan.OpEq, Left: carried, Right: &chplan.LitString{V: "w"}},
+		},
+	})
+	order := &chplan.OrderBy{Keys: []chplan.OrderKey{{Expr: &chplan.ColumnRef{Name: "Timestamp"}, Desc: true}}}
+	limit := &chplan.Limit{Count: 100}
+	rows.hoist(order, limit)
+	consumer := &chplan.Project{
+		Input: rows.node,
+		Projections: []chplan.Projection{
+			{Expr: both, Alias: "out_both"},
+			{Expr: consumerOnly, Alias: "out_consumer"},
+			{Expr: carried, Alias: "out_carried"},
+			{Expr: &chplan.ColumnRef{Name: "Timestamp"}},
+		},
 	}
-	rows.filter(&chplan.Binary{Op: chplan.OpEq, Left: value, Right: &chplan.LitString{V: "x"}})
-	if f, ok := rows.node.(*chplan.Filter); !ok || f.Input != scan {
-		t.Errorf("row stage = %#v, want one filter over the scan", rows.node)
+	rows.seal(consumer)
+
+	var above, below []string
+	side := &above
+	var narrow *chplan.Project
+	for n := consumer.Input; n != nil; n = inputOf(n) {
+		switch v := n.(type) {
+		case *chplan.Limit:
+			side = &below
+		case *chplan.Project:
+			if slices.Contains(rows.passes, n) {
+				narrow = v
+				continue
+			}
+			*side = append(*side, v.Projections[len(v.Projections)-1].Alias)
+		}
+	}
+	if want := []string{"_consumer_only", "_both"}; !slices.Equal(above, want) {
+		t.Errorf("values defined above the limit, top first = %v, want %v", above, want)
+	}
+	if want := []string{"_carried", "_filter_only", "_both"}; !slices.Equal(below, want) {
+		t.Errorf("values defined below the limit, top first = %v, want %v", below, want)
+	}
+	if narrow == nil {
+		t.Fatal("no Project between the filter and the sort")
+	}
+	if _, ok := narrow.Input.(*chplan.Filter); !ok {
+		t.Fatalf("the narrowing Project reads %T, want the filter", narrow.Input)
+	}
+	if order.Input != narrow {
+		t.Fatalf("the sort reads %T, want the narrowing Project", order.Input)
+	}
+	// Above the limit _both reads X and _consumer_only Z; the consumer
+	// reads Timestamp, which the sort orders by too, and _carried.
+	if got, want := projectedNames(narrow), []string{"Timestamp", "X", "Z", "_carried"}; !slices.Equal(got, want) {
+		t.Errorf("the sort carries %v, want %v: no wide value, and the narrow one the consumer reads", got, want)
 	}
 }
