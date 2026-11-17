@@ -300,28 +300,35 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		// scalar-scaling machinery composes with sum()/avg() exactly the
 		// way [isExpHistogramValuedShape]'s own doc describes), so they
 		// carry a real merged distribution for histogram_quantile to walk
-		// — not the "provably no bucket data" float pipeline the
-		// fallback below assumes (cerberus issue #2554).
+		// — not the `le`-labelled float samples the fallback below
+		// reassembles a ladder from (cerberus issue #2554).
 		if node, matched, err := lowerHistogramQuantileHistogramValuedArg(c.Args[1], phi, s, ctx); matched {
 			return node, err
 		}
 
-		// Unrecognised inner shape — `histogram_quantile(0.9, sum(up))`,
-		// `histogram_quantile(0.9, vector(1))`, … . Reference Prometheus
-		// accepts any instant-vector second argument: classic-histogram
-		// interpolation reads each float sample's `le` label, and
-		// samples WITHOUT an `le` label are skipped (with an info
-		// annotation) — so a non-bucket input evaluates to an EMPTY
-		// vector, not an error (see promql/engine.go's
-		// histogram_quantile float-bucket path).
+		// Unrecognised inner shape — `sum by(le)(irate(m_bucket[5m]))`,
+		// `m_bucket * 2`, `histogram_quantile(0.9, sum(up))`, … .
+		// Reference Prometheus accepts any instant-vector second argument:
+		// classic-histogram interpolation reads each float sample's `le`
+		// label, and samples WITHOUT an `le` label are skipped (with an
+		// info annotation) — so a non-bucket input evaluates to an EMPTY
+		// vector, not an error (see promql/engine.go's histogram_quantile
+		// float-bucket path).
 		//
-		// In cerberus's OTel-CH model, classic-histogram buckets live as
-		// parallel BucketCounts × ExplicitBounds array rows — float
-		// pipelines (aggregations, arithmetic, vector()) can never carry
-		// `le`-keyed bucket series. Every shape outside the recognised
-		// idioms therefore provably holds no bucket data: lower the
-		// argument (preserving its own rejection/typing errors) and fold
-		// to zero rows, matching the reference's empty result.
+		// The ordinary pipeline carries exactly that representation: it
+		// fans a `<base>_bucket` selector into one Sample row per bucket
+		// with a synthesised `le` label (wrapHistogramBucketFanout), and
+		// every function, aggregation and operator has a float lowering
+		// over those rows. So the argument is lowered as an ordinary float
+		// expression (preserving its own rejection/typing errors) and the
+		// ladder is reassembled from its `le`-labelled samples, exactly as
+		// for the shaping aggregations above. A sample with no parseable
+		// `le` drops out of that reassembly, so a non-bucket argument
+		// still answers the reference's empty vector — and an argument
+		// whose label algebra already proves it carries no `le`
+		// (mayCarryBucketBound: `sum(up)`, `vector(1)`, …), or whose own
+		// lowering already folded it to zero rows (planProvablyEmpty),
+		// folds to that empty vector without being evaluated at all.
 		//
 		// A mixed relation an intermediate wrapper already lowered
 		// (cerberus issue #3562: `histogram_quantile(0.9,
@@ -332,16 +339,7 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		if err != nil {
 			return nil, err
 		}
-		if err := requireMixedPlanPolicy(inner, mixedHistogramValueFamily, mixedBespoke); err != nil {
-			return nil, err
-		}
-		if mixedRowsNeedPreparation(inner) {
-			return lowerHistogramQuantileNativeOverProjection(wrapMixedHistogramPartition(inner, s), phi, s), nil
-		}
-		return &chplan.Filter{
-			Input:     inner,
-			Predicate: &chplan.LitBool{V: false},
-		}, nil
+		return histogramQuantileOverUnrecognisedArg(c.Args[1], inner, phi, s, ctx)
 	}
 
 	if s.IsExpHistogramMetric(vs.Name) {
@@ -386,6 +384,25 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		return broadcastHistogramAtPin(inner, s, ctx), nil
 	}
 	return lowerHistogramQuantileClassicBare(vs, phi, s, ctx)
+}
+
+// histogramQuantileOverUnrecognisedArg is lowerHistogramQuantile's
+// unrecognised-inner-shape fallback over arg's ordinary lowering inner:
+// see the comment at its call site.
+func histogramQuantileOverUnrecognisedArg(arg parser.Expr, inner chplan.Node, phi phiArg, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if err := requireMixedPlanPolicy(inner, mixedHistogramValueFamily, mixedBespoke); err != nil {
+		return nil, err
+	}
+	if mixedRowsNeedPreparation(inner) {
+		return lowerHistogramQuantileNativeOverProjection(wrapMixedHistogramPartition(inner, s), phi, s), nil
+	}
+	if !mayCarryBucketBound(arg) || planProvablyEmpty(inner) {
+		return &chplan.Filter{
+			Input:     inner,
+			Predicate: &chplan.LitBool{V: false},
+		}, nil
+	}
+	return lowerHistogramQuantileClassicFloatOverPlan(inner, phi, s, ctx), nil
 }
 
 // histogramScalarArgCtx returns the context a computed scalar argument of
@@ -1188,11 +1205,12 @@ func matchHistogramAggIdiom(e parser.Expr, s schema.Metrics) (histogramAggShape,
 	// Gated on the same strict wire-name test #1483 enforces downstream
 	// (histogramQuantileMatcherPredicate): a PINNED `__name__` that names
 	// neither a `_bucket`-suffixed classic series nor a registered
-	// exp-histogram metric can never carry bucket data, so it must keep
-	// falling through to the "unrecognised inner shape" empty-Filter
-	// fallback below — matching it here would wrongly route provably
-	// non-bucket aggregations like `sum(up)` through the histogram
-	// machinery instead of the compile-time-empty shape that pins.
+	// exp-histogram metric holds no bucket arrays, so it must keep
+	// falling through to the "unrecognised inner shape" fallback below —
+	// matching it here would wrongly route non-bucket aggregations like
+	// `sum(up)` through the array-domain histogram machinery instead of
+	// the fallback, which answers from whatever `le` labels the float
+	// samples carry (none, for `sum(up)`, which it folds to empty).
 	// An UNPINNED name (regex / negated matcher, vs.Name == "") is left
 	// to the same downstream wire-name handling the rate/increase/
 	// sum_over_time arm already relies on without a name check here.
@@ -1349,7 +1367,7 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	shaping := ctx.lowerers.ClassicBucketMerge.LowerClassicBucketMerge(shape.classicFold, shape.classicFoldIsSum, s)
 	agg := &chplan.Aggregate{
 		Roles:              metricRoles(s),
-		Input:              classicBucketMergeInputGate(perSeries, s, ctx.resourceBounds.ClassicBucketMergeMaxEntries),
+		Input:              perSeries,
 		GroupBy:            userGroupBy,
 		GroupByAliases:     userAliases,
 		AggFuncs:           shaping.aggs,
@@ -1358,8 +1376,7 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	// Inner Projects re-shape the aggregate output back into the
 	// histogram-row contract HistogramQuantile expects: an Attributes
 	// column (rebuilt from the gkey aliases) plus the merged
-	// BucketCounts + ExplicitBounds pair. The Aggregate reads the per-series
-	// rows through the bucket-merge guard — see classic_bucket_merge_bound.go.
+	// BucketCounts + ExplicitBounds pair.
 	rebuilt, cumulative := shaping.reshape(agg, []chplan.Projection{
 		{Expr: attrsRebuild, Alias: s.AttributesColumn},
 	}, s)
@@ -1579,10 +1596,6 @@ func classicBucketMergeShaping(fold classicBucketRungFold, s schema.Metrics) cla
 // carrying `passthrough` through every layer it adds. It reports whether
 // the resulting BucketCounts is an already-cumulative ladder, which the
 // caller hands to chplan.HistogramQuantile.BucketCountsCumulative.
-//
-// A layout-merge group must read its rows through
-// classicBucketMergeInputGate (classic_bucket_merge_bound.go), which bounds
-// the merge before the Aggregate runs.
 func (sh classicBucketShaping) reshape(
 	group chplan.Node,
 	passthrough []chplan.Projection,

@@ -232,9 +232,9 @@ type lowerCtx struct {
 	wantsTemporalityColumn bool
 
 	// resourceBounds carries the operator-tunable cost ceilings for the
-	// cross-series histogram-merge resource-bound guards
-	// (histogram_merge_bound.go, classic_bucket_merge_bound.go — cerberus
-	// issue #2667). It is resolved from [LowerOpts.ResourceBounds] via
+	// histogram resource-bound guards (histogram_merge_bound.go,
+	// classic_bucket_window_bound.go and their siblings — cerberus issue
+	// #2667). It is resolved from [LowerOpts.ResourceBounds] via
 	// [ResourceBounds.withDefaults] at the SAME single lowering-entry seam
 	// [lowerers] is resolved at ([Lower], [LowerAt], [LowerAtRange],
 	// [LowerAtRangeOpts], [LowerMetadataRange]), so every ctx built by this

@@ -291,6 +291,7 @@ test("real corpus: the two TestLower-detector LogQL mutants are golden-text and 
     "MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT",
     "MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION",
     "MUTANT-TRACEQL-DESCENDANT-AS-CHILD",
+    "MUTANT-TRACEQL-PER-TRACE-LOOKUP-WINDOW-DROPPED",
     "MUTANT-TRACEQL-SCOPE-SWAP",
   ]);
   assert.deepEqual(byKind.mixed.record_ids, []);
@@ -300,7 +301,7 @@ test("real corpus: every canonical head has real, non-empty membership, includin
   const records = loadMutants();
   const model = loadSemanticModel(DEFAULT_SEMANTIC_MODEL_DIR);
   const report = buildMutationCohortReport(records, { contracts: model.contracts });
-  assert.equal(report.records.length, 14);
+  assert.equal(report.records.length, 15);
 
   // Real membership, not just "the key exists" — each canonical head must
   // actually have at least one real record attributed to it, and the two
@@ -320,7 +321,7 @@ test("real corpus: every canonical head has real, non-empty membership, includin
   ]);
 
   assert.equal(report.synthetic_cohort.rates.total, 7);
-  assert.equal(report.semantic_cohort.rates.total, 7);
+  assert.equal(report.semantic_cohort.rates.total, 8);
 });
 
 test("real corpus: the synthetic cohort's seven records exercise every one of the seven CLASSIFICATIONS at least once", () => {

@@ -485,7 +485,7 @@ search
 -- expected_max_traces --
 500
 
-# --- Metrics pipeline: /api/metrics/query_range (4) ---
+# --- Metrics pipeline: /api/metrics/query_range (8) ---
 # These hit cerberus's /api/metrics/query_range (implemented today —
 # see internal/api/tempo/metrics_query_range.go) and Tempo's native
 # /api/metrics/query_range. The wire shape is `{series:[{labels,
@@ -539,6 +539,43 @@ metrics_rate_after_aggregate_filter
 # rate counts all of their spans, not one row per trace.
 -- query --
 { } | count() > 3 | rate()
+-- endpoint --
+metrics_range
+-- step --
+60s
+-- expected_min_series --
+1
+-- expected_max_series --
+1
+-- semantic_checks --
+samples_non_negative
+
+-- name --
+metrics_rate_after_leading_aggregate_filter
+# A pipeline may open with a scalar filter, a by() or a select(). The
+# reference hands that stage every span of every trace, as `{ }` would, so
+# this answers what metrics_rate_after_aggregate_filter answers.
+-- query --
+count() > 3 | rate()
+-- endpoint --
+metrics_range
+-- step --
+60s
+-- expected_min_series --
+1
+-- expected_max_series --
+1
+-- semantic_checks --
+samples_non_negative
+
+-- name --
+metrics_rate_after_leading_by
+# A by() stage right before a metrics function is invisible to it: the
+# reference observes every span of every group and labels a series only from
+# the metrics function's own by-clause, so this answers the one unlabelled
+# series `{ } | rate()` answers, not one series per service.
+-- query --
+by(resource.service.name) | rate()
 -- endpoint --
 metrics_range
 -- step --

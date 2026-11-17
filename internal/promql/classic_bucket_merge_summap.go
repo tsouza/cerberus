@@ -73,33 +73,30 @@ import (
 //
 // # Cost (real ClickHouse 26.6.8.7 and 26.8.36.3)
 //
-// Measured exactly as classic_bucket_merge_bound.go's calibration —
+// Measured on clickhouse/clickhouse-server containers capped at 8 GiB —
 // `histogram_quantile(0.5, sum by (le) (sum_over_time(<bucket>[5m])))`
-// through the production handler, guard lifted, 6 GiB query cap, peak from
-// system.query_log — with this feature enabled:
+// through the production handler, 6 GiB query cap, peak from
+// system.query_log, series i carrying one sample with W bounds
+// `[i*W+1 .. i*W+W]` (disjoint) or the same W bounds as every other series
+// (shared) — with this feature enabled and, for comparison, through the
+// groupArray merge (classic_bucket_bound_runs.go):
 //
-//	layout    series x W     entries     peak 26.8    peak 26.6
-//	disjoint  25,000 x  50   1,275,000    448.1 MiB    379.4 MiB
-//	disjoint  50,000 x  50   2,550,000    603.3 MiB    599.0 MiB
-//	disjoint 100,000 x  50   5,100,000   1201.3 MiB   1197.8 MiB
-//	shared   100,000 x  50   5,100,000    149.9 MiB    149.8 MiB
-//	disjoint  10,000 x 250   2,510,000    602.1 MiB    601.3 MiB
+//	                                         sumMap                   groupArray
+//	layout    series x W     entries     peak 26.8   peak 26.6    peak 26.8   peak 26.6
+//	disjoint  25,000 x  50   1,275,000   448.1 MiB   379.4 MiB    448.4 MiB   379.8 MiB
+//	disjoint  50,000 x  50   2,550,000   603.3 MiB   599.0 MiB    624.4 MiB   517.5 MiB
+//	disjoint 100,000 x  50   5,100,000  1201.3 MiB  1197.8 MiB   1246.9 MiB  1028.8 MiB
+//	shared   100,000 x  50   5,100,000   149.9 MiB   149.8 MiB   1246.9 MiB  1028.7 MiB
+//	disjoint  10,000 x 250   2,510,000   602.1 MiB   601.3 MiB    648.8 MiB   539.7 MiB
 //
-// Against the groupArray merge's calibration (classic_bucket_merge_bound.go)
-// the two are within 0.1% of each other at 25,000 x 50 disjoint on both
-// builds (448.1 against 448.4 MiB on 26.8, 379.4 against 379.8 MiB on
-// 26.6). On the larger disjoint layouts sumMap costs 3-7% less per entry on
-// 26.8 and 11-16% more on 26.6 (599.0 against 517.5 MiB at 50,000 x 50,
-// 1197.8 against 1028.8 MiB at 100,000 x 50, 601.3 against 539.7 MiB at
-// 10,000 x 250), and far less on a
-// shared layout, whose sumMap state holds one key per distinct bound. Under
-// the 1 GiB cap with the default guard, 58,000 x 50 disjoint completes at
-// 747.0 / 746.4 MiB (26.8 / 26.6), inside the cap share the ceiling is sized
-// for, so [ResourceBounds.ClassicBucketMergeMaxEntries] bounds this path too and no second
-// ceiling exists. The guard counts the entries before the sumMap aggregate
-// reads a row (classicBucketMergeInputGate), so 60,000 x 50 is refused at
-// 128.1 / 127.7 MiB and 100,000 x 50 at 246.0 / 245.4 MiB, before the
-// aggregate runs.
+// The two are within 0.1% of each other at 25,000 x 50 disjoint on both
+// builds. On the larger disjoint layouts sumMap costs 3-7% less per entry on
+// 26.8 and 11-16% more on 26.6, and far less on a shared layout, whose sumMap
+// state holds one key per distinct bound. No ceiling bounds either merge:
+// under the 1 GiB cap, 60,000 x 50 disjoint answers through sumMap at
+// 712-713 MiB on 26.8 and 948-964 MiB on 26.6, and 100,000 x 50 fails at the
+// cap (code 241) on both builds, which the Prometheus head answers with its
+// classic-histogram memory-limit 422.
 //
 // The feature keeps `AutoSelect: false`; it stays reachable through
 // `CERBERUS_CH_OPTIMIZATIONS=classic_bucket_merge_summap`.

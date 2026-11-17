@@ -59,9 +59,9 @@ type hqClassicHelperColumns struct {
 //     so this captures every observation).
 //  3. target = phi * total — the desired cumulative-count cutoff.
 //  4. idx = arrayFirstIndex(c -> c >= target, cum) — the 1-based bucket
-//     index whose cumulative first crosses target. Zero means no bucket
-//     reaches target (only possible when phi <= 0 + total > 0; the phi
-//     guard handles it).
+//     index whose cumulative first crosses target. On a signed ladder
+//     whose total is negative or NaN none does, and idx is length(cum),
+//     the trailing +Inf rung, as Prometheus's bucketQuantile answers.
 //  5. Linear interpolation between the bucket's lower and upper bounds
 //     using the cumulative counts at each edge. The lower edge of bucket
 //     1 is (bound=0, cum=0); subsequent buckets read from ExplicitBounds
@@ -521,20 +521,36 @@ func newHQClassicWriters(h *chplan.HistogramQuantile, helpers hqClassicHelperCol
 	// (hqNativeLet) would not do: the older analyzer substitutes an
 	// alias's expression at every read, so the correlated lookup would
 	// land back inside `c -> ...`.
+	//
+	// On a signed ladder (chplan.HistogramQuantile.BucketCountsSigned) a
+	// search that finds no rung lands on the trailing +Inf rung, which
+	// answers the highest finite bound. That is Prometheus's own
+	// bucketQuantile: its sort.Search over every rung but the last
+	// returns the last index when none reaches the rank. A signed ladder
+	// gets there whenever its total is negative or NaN, so phi * total
+	// sits above every rung. A non-negative ladder's top rung is its
+	// total, which phi * total never exceeds, so its search always finds
+	// a rung and its SQL carries no guard.
 	w.idx = func() Frag {
 		if helpers.idx != "" {
 			return Col(helpers.idx)
 		}
+		var found Frag
 		if h.PhiExpr != nil {
 			const targetAlias = "_cerb_hqc_target"
 			cmp := Gte(BareIdent("c"), BareIdent(targetAlias))
 			pred := Paren(Eq(If(cmp, InlineLit(1), InlineLit(0)), InlineLit(1)))
 			search := Call("arrayFirstIndex", Lambda1("c", pred), w.cum())
 			bound := func(b *Builder) { b.Lambda([]string{targetAlias}, search) }
-			return Subscript(Call("arrayMap", bound, Array(w.target())), InlineLit(1))
+			found = Subscript(Call("arrayMap", bound, Array(w.target())), InlineLit(1))
+		} else {
+			cmp := Gte(BareIdent("c"), w.target())
+			found = Call("arrayFirstIndex", Lambda1("c", cmp), w.cum())
 		}
-		cmp := Gte(BareIdent("c"), w.target())
-		return Call("arrayFirstIndex", Lambda1("c", cmp), w.cum())
+		if !h.BucketCountsSigned {
+			return found
+		}
+		return Call("ifNull", Call("nullIf", found, InlineLit(0)), Call("length", w.cum()))
 	}
 	// idxAtOffset renders `<idx>` or `<idx> - 1` (the `idx - 1` lower-edge
 	// lookups). offsetMinusOne selects the `- 1` form.

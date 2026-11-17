@@ -5,13 +5,17 @@
       "site": "internal/traceql/lower.go:lowerPipelineElement#3ea8ac7a",
       "message": "traceql: pipeline element %T is unsupported",
       "class": "internal",
-      "rationale": "type-switch default: every pipeline element type the pinned grammar produces is handled",
+      "rationale": "type-switch default: lowerPipeline puts a `{ }` spanset filter before a pipeline that opens with a scalar filter, by() or select() (withImplicitSpansetFilter), the only other stages the grammar admits first, so the element it dispatches here is always a spanset filter or a spanset operation",
       "evidence": {
         "guard": [
           "past exhaustive switch v := elem.(type) over [case *traceql.SpansetFilter; case traceql.SpansetOperation; case *traceql.SpansetOperation]"
         ],
         "callers": [
           "lowerPipeline"
+        ],
+        "cited": [
+          "lowerPipeline",
+          "withImplicitSpansetFilter"
         ]
       }
     }

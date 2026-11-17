@@ -211,17 +211,9 @@ func TestConfigDocsPreambleDefaultsMatchBinary(t *testing.T) {
 
 	pb := promql.DefaultResourceBounds()
 	assertDocumented(t, doc, "CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS", pb.HistogramMergeMaxCostUnits)
-	// The classic bucket-merge ceiling has no fixed default: unset, it is
-	// derived from CERBERUS_CH_QUERY_MAX_MEMORY. The preamble states the value
-	// the default cap derives, pinned here to the derivation.
-	derived := strconv.FormatInt(promql.ClassicBucketMergeEntriesForMemory(config.DefaultCHQueryMaxMemory), 10)
-	if raw, err := os.ReadFile(configDocsPath); err != nil {
-		t.Fatalf("read %s: %v", configDocsPath, err)
-	} else if !strings.Contains(string(raw), "`"+derived+"` at the 1 GiB default") {
-		t.Errorf("%s: CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES: the preamble does not state the derived default `%s` at the 1 GiB default cap", configDocsPath, derived)
-	}
-	// The classic per-series window ceiling is derived the same way; its
-	// entry must state the value the default cap derives.
+	// The classic per-series window ceiling has no fixed default: unset, it
+	// is derived from CERBERUS_CH_QUERY_MAX_MEMORY. Its entry must state the
+	// value the default cap derives.
 	raw, err := os.ReadFile(configDocsPath)
 	if err != nil {
 		t.Fatalf("read %s: %v", configDocsPath, err)

@@ -110,17 +110,17 @@ func lowerRoot(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 		return nil, fmt.Errorf("traceql: empty pipeline")
 	}
 
-	// Fold a standalone trailing `| by(X)` grouping stage into a following
-	// metrics aggregate so `{...} | by(X) | rate()` lowers identically to the
-	// valid `{...} | rate() by (X)`. Without this the `by(X)` stage lowers to a
-	// standalone GROUP-BY Aggregate that strips Timestamp, and the metrics rate
-	// grid the /api/metrics/query_range handler wraps over it then references a
-	// Timestamp the inner aggregate already collapsed away — ClickHouse code 47
-	// ("Unknown expression or function identifier `Timestamp`"), a 502. Routing
-	// the grouping through the aggregate's by-clause keeps Timestamp in scope.
-	pipeline, mp := expr.Pipeline, expr.MetricsPipeline
+	// A metrics function never sees a `by(X)` stage right before it, so those
+	// stages are dropped (dropGroupByBeforeMetrics): `{ } | by(name) | rate()`
+	// answers what `{ } | rate()` answers.
+	//
+	// The implicit `{ }` before a leading stage goes in first, so dropping the
+	// stage of `by(X) | rate()` leaves that `{ }` behind instead of an empty
+	// pipeline.
+	pipeline := withImplicitSpansetFilter(expr.Pipeline)
+	mp := expr.MetricsPipeline
 	if mp != nil {
-		pipeline, mp = foldTrailingGroupByIntoMetrics(pipeline, mp)
+		pipeline = dropGroupByBeforeMetrics(pipeline)
 	}
 
 	stage, err := lowerPipeline(pipeline, s)
@@ -160,10 +160,14 @@ func lowerRoot(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 // per-trace or per-group row (lowerFollowingStage). Only the last stage's
 // node may stay per trace or per group, where the /api/search envelope reads
 // it.
+//
+// A pipeline that opens with a scalar filter, `by(...)` or `select(...)`
+// lowers as if `{ }` came first (withImplicitSpansetFilter).
 func lowerPipeline(p traceql.Pipeline, s schema.Traces) (pipelineStage, error) {
 	if len(p.Elements) == 0 {
 		return pipelineStage{}, fmt.Errorf("traceql: empty pipeline")
 	}
+	p = withImplicitSpansetFilter(p)
 	plan, err := lowerPipelineElement(p.Elements[0], s)
 	if err != nil {
 		return pipelineStage{}, err
@@ -176,6 +180,34 @@ func lowerPipeline(p traceql.Pipeline, s schema.Traces) (pipelineStage, error) {
 		}
 	}
 	return stage, nil
+}
+
+// withImplicitSpansetFilter returns p with a `{ }` spanset filter in front
+// when p opens with a scalar filter, `by(...)` or `select(...)` — the three
+// stages Tempo's grammar admits as the first element of a spanset pipeline
+// (`count() > 1`, `by(name)`, `select(name)`). Tempo evaluates such a stage
+// over every span of every trace: no spanset filter contributes a fetch
+// condition, and its fetch layer returns every span when no condition selects
+// one. That is the input `{ }` hands the stage, so `count() > 1` answers what
+// `{ } | count() > 1` answers. Any other pipeline is returned unchanged.
+func withImplicitSpansetFilter(p traceql.Pipeline) traceql.Pipeline {
+	if len(p.Elements) == 0 || !isLeadingStage(p.Elements[0]) {
+		return p
+	}
+	matchAll := &traceql.SpansetFilter{Expression: traceql.NewStaticBool(true)}
+	return traceql.Pipeline{Elements: append([]traceql.PipelineElement{matchAll}, p.Elements...)}
+}
+
+// isLeadingStage reports whether elem is one of the non-spanset stages Tempo's
+// grammar lets open a pipeline: a scalar filter, `by(...)` or `select(...)`.
+func isLeadingStage(elem traceql.PipelineElement) bool {
+	switch elem.(type) {
+	case traceql.ScalarFilter, *traceql.ScalarFilter,
+		traceql.GroupOperation, *traceql.GroupOperation,
+		traceql.SelectOperation, *traceql.SelectOperation:
+		return true
+	}
+	return false
 }
 
 // lowerMetricsSecondStage wraps the metrics-aggregate subtree with a
@@ -415,8 +447,9 @@ func lowerScalarExpr(prev chplan.Node, e traceql.ScalarExpression, s schema.Trac
 
 // lowerPipelineElement dispatches the first TraceQL pipeline element to
 // its corresponding lowering routine: SpansetFilter or SpansetOperation.
-// Aggregates, select, and scalar filters appear only as following
-// elements and are dispatched by lowerFollowingElement.
+// Select, group and scalar filters are dispatched by lowerFollowingElement:
+// a pipeline that opens with one of them has had a `{ }` placed before it by
+// withImplicitSpansetFilter.
 func lowerPipelineElement(elem traceql.PipelineElement, s schema.Traces) (chplan.Node, error) {
 	switch v := elem.(type) {
 	case *traceql.SpansetFilter:
