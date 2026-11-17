@@ -176,7 +176,8 @@ func (e *Engine) WithSpillThresholds(ctx context.Context) context.Context {
 // The zero value is a statement with no fact to report.
 type StatementShape struct {
 	// DistinctSpillHarmful reports that the statement is one whose DISTINCT
-	// a spill was measured to make abort where it completes unspilled. The
+	// a spill was measured to make abort where it completes unspilled, or
+	// the unmeasured instrumentation-scope tag names of the same shape. The
 	// Tempo handler's tag-discovery classifier (attributeTagScopes,
 	// tagValuesStatementShape) is the one place that names those shapes.
 	// See applyDistinctSpillSettings for why such a statement is not stamped
@@ -254,12 +255,14 @@ func applyJoinSpillSettings(ctx context.Context, f planShapeFacts, maxMemory int
 // 256-byte values, each completes unspilled under a cap just above its
 // unspilled peak and aborts with MEMORY_LIMIT_EXCEEDED under that cap once
 // the threshold is stamped at half of it. The set is a measured one, not a
-// shape rule: other LowCardinality(String) DISTINCTs, the Prom label-name
+// shape rule, save for one unmeasured member named below: other LowCardinality(String) DISTINCTs, the Prom label-name
 // and __name__-value and Loki label statements, measured the same with and
 // without the threshold, the plain-map tag-value DISTINCT over short values
 // completes with it where it aborts without, and the event and link tag
 // names completed with it at every cap tried
-// (docs/clickhouse-optimizations.background.md has the measurements). Every
+// (docs/clickhouse-optimizations.background.md has the measurements). The
+// instrumentation-scope tag names share the span and resource tag names'
+// Map-key shape and are marked with them until measured (#4376). Every
 // statement the fact does not mark keeps the threshold. No engine
 // plan carries one of those shapes (inspectPlanShape never sets the fact);
 // only a handler's StatementShape does.

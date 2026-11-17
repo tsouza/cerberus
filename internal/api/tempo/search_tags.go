@@ -281,9 +281,9 @@ func (h *Handler) collectAttributeTagScopes(
 
 // attributeTagScope binds one scope bucket to the CH projection that
 // enumerates its attribute keys. distinctSpillHarmful reports that the
-// projection is a tag-name shape a DISTINCT spill harms
-// (engine.StatementShape): the span and resource keys read off a Map
-// column.
+// projection is a tag-name shape whose DISTINCT goes without the spill
+// threshold (engine.StatementShape): the span, resource and
+// instrumentation-scope keys read off a Map column.
 type attributeTagScope struct {
 	name                 string
 	keys                 chsql.Frag
@@ -303,25 +303,27 @@ type attributeTagScope struct {
 // and answers with whatever its storage reports, which is nothing.
 func attributeTagScopes(s schema.Traces, strategies chsql.SchemaStrategies) []attributeTagScope {
 	out := make([]attributeTagScope, 0, 5)
-	// attrs adds a flat attribute-map bucket; harmful says the bucket is
-	// one whose Map-key DISTINCT a spill was measured to harm.
-	attrs := func(name, col string, harmful bool) {
+	// attrs adds a flat attribute-map bucket. A spill was measured to harm
+	// the span and resource Map-key DISTINCT; the instrumentation-scope one
+	// has the same shape and goes without the threshold until it is
+	// measured (#4376).
+	attrs := func(name, col string) {
 		out = append(out, attributeTagScope{
 			name: name, keys: chsql.DistinctAttrKeys(strategies.Attrs, col),
-			distinctSpillHarmful: harmful && chsql.AttrKeysFromMap(strategies.Attrs, col),
+			distinctSpillHarmful: chsql.AttrKeysFromMap(strategies.Attrs, col),
 		})
 	}
 	nested := func(name, col string) {
 		out = append(out, attributeTagScope{name: name, keys: distinctNestedMapKeysFrag(col)})
 	}
 	if s.ResourceAttributesColumn != "" {
-		attrs(tagScopeResource, s.ResourceAttributesColumn, true)
+		attrs(tagScopeResource, s.ResourceAttributesColumn)
 	}
 	if s.ScopeAttributesColumn != "" {
-		attrs(tagScopeInstrumentation, s.ScopeAttributesColumn, false)
+		attrs(tagScopeInstrumentation, s.ScopeAttributesColumn)
 	}
 	if s.AttributesColumn != "" {
-		attrs(tagScopeSpan, s.AttributesColumn, true)
+		attrs(tagScopeSpan, s.AttributesColumn)
 	}
 	if s.EventsColumn != "" {
 		nested(tagScopeEvent, s.EventsColumn)

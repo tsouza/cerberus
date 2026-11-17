@@ -724,7 +724,7 @@ the 26.8 LTS. Flipping `AutoSelect` is tracked in
   `DISTINCT` feeds a `GLOBAL IN` set of the same rows, which the threshold
   does not bound.
 
-**Why seven Tempo tag-discovery shapes go without the threshold.** The set is
+**Why seven measured Tempo tag-discovery shapes go without the threshold.** The set is
 the statements a spill was measured to harm, not a shape rule.
 `test/chserver`'s `TestDistinctSpill_WithheldShapesAnswer` drives each
 through the handler over 1M spans carrying unique 256-byte values on
@@ -863,8 +863,11 @@ One local run measured P at 389 MiB for the auto-scope tag values and
 The instrumentation-scope tag names take the same Map-key `DISTINCT` as the
 span and resource tag names, but the default traces DDL carries no
 instrumentation-scope attribute column, so that statement has not been
-measured, and it keeps the threshold like every unmeasured statement
-([#4146](https://github.com/tsouza/cerberus/issues/4146) measures it).
+measured. It goes without the threshold, as it did before the measured set
+replaced the Map-key rule, because stamping it would change an unmeasured
+statement's behaviour in a direction the measured shapes show can abort a
+request that completed
+([#4376](https://github.com/tsouza/cerberus/issues/4376) measures it).
 
 A data-plane `DISTINCT` keeps it too: the Prom `unless on(__name__)` set
 operation, instant and range, measured the same with and without it, and
