@@ -21,8 +21,38 @@ INSERT INTO otel_traces VALUES
     ('a0000000000000000000000000000002', '0000000000000005', '0000000000000004', 'cache.get', toDateTime64('2026-01-01 00:00:04', 9), map('service.name', 'checkout'), 20000000),
     ('a0000000000000000000000000000003', '0000000000000006', '', 'POST /c', toDateTime64('2026-01-01 00:00:05', 9), map('service.name', 'orders'), 10000000);
 -- expected_rows --
-[]
+[
+  ["GET /a", {"__cerberus_parentSpanID": "", "__cerberus_sel_name": "GET /a", "__cerberus_spanID": "0000000000000001", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "frontend"}, "2026-01-01T00:00:00Z", 10000000],
+  ["GET /b", {"__cerberus_parentSpanID": "", "__cerberus_sel_name": "GET /b", "__cerberus_spanID": "0000000000000004", "__cerberus_traceID": "a0000000000000000000000000000002", "service.name": "checkout"}, "2026-01-01T00:00:03Z", 10000000],
+  ["POST /c", {"__cerberus_parentSpanID": "", "__cerberus_sel_name": "POST /c", "__cerberus_spanID": "0000000000000006", "__cerberus_traceID": "a0000000000000000000000000000003", "service.name": "orders"}, "2026-01-01T00:00:05Z", 10000000],
+  ["cache.get", {"__cerberus_parentSpanID": "0000000000000004", "__cerberus_sel_name": "cache.get", "__cerberus_spanID": "0000000000000005", "__cerberus_traceID": "a0000000000000000000000000000002", "service.name": "checkout"}, "2026-01-01T00:00:04Z", 20000000],
+  ["db.query", {"__cerberus_parentSpanID": "0000000000000001", "__cerberus_sel_name": "db.query", "__cerberus_spanID": "0000000000000002", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "backend"}, "2026-01-01T00:00:01Z", 20000000],
+  ["db.query", {"__cerberus_parentSpanID": "0000000000000001", "__cerberus_sel_name": "db.query", "__cerberus_spanID": "0000000000000003", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "backend"}, "2026-01-01T00:00:02Z", 30000000]
+]
 -- parity --
 oracle: tempo
 endpoint: /api/search
 scope: full
+-- args --
+[0] bool = true
+-- args_optimized --
+[0] string = "__cerberus_traceID"
+[1] string = "__cerberus_parentSpanID"
+[2] string = "__cerberus_spanID"
+[3] string = "__cerberus_sel_name"
+[4] bool = true
+-- chplan --
+Project [TraceId, SpanId, Timestamp, SpanName AS name]
+  Filter predicate=true
+    Scan(otel_traces)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT `TraceId`, `SpanId`, `Timestamp`, `SpanName` AS `name` FROM (SELECT * FROM `otel_traces` WHERE ?)
+-- sql_optimized --
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`, ?, toString(`SpanName`))) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE ?)

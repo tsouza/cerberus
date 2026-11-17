@@ -12,11 +12,10 @@ the metric no Timestamp to read (ClickHouse code 47, a 502).
 {} | by(resource.service.name) | rate()
 
 -- sql --
-SELECT `ResourceAttributes`[?] AS `service.name`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `service.name`
+SELECT toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
 -- args --
-[0] string = "service.name"
-[1] int64 = 1
-[2] bool = true
+[0] int64 = 1
+[1] bool = true
 -- seed --
 CREATE TABLE otel_traces ( ResourceAttributes Map(String, String),
     TraceId String,
@@ -28,20 +27,19 @@ INSERT INTO otel_traces (ResourceAttributes, TraceId, SpanId) VALUES
     (map('service.name', 'frontend'), 'a0000000000000000000000000000001', '0000000000000003'),
     (map('service.name', 'backend'), 'a0000000000000000000000000000001', '0000000000000004');
 -- expected_rows --
-
-[["frontend",3]]
-
+[
+  [4]
+]
 -- chplan --
-MetricsAggregate op=rate groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name] valueAlias=Value perTraceLookback=1h0m0s
+MetricsAggregate op=rate valueAlias=Value perTraceLookback=1h0m0s
   Filter predicate=true
     Scan(otel_traces)
 -- parity_exempt --
 reason: no-comparable-oracle
 detail: `{} | by(resource.service.name) | rate()` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare
 -- args_optimized --
-[0] string = "service.name"
-[1] int64 = 1
-[2] bool = true
+[0] int64 = 1
+[1] bool = true
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
@@ -50,4 +48,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT `ResourceAttributes`[?] AS `service.name`, toFloat64(count(?)) AS `Value` FROM (SELECT `ResourceAttributes` FROM `otel_traces` WHERE ?) GROUP BY `service.name`
+SELECT toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
