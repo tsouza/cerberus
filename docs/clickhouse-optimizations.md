@@ -534,13 +534,13 @@ Notes:
   tag-discovery statement whose `DISTINCT` a spill harms carries no
   `DISTINCT` threshold. Those are the `name`, `kind` and `status` intrinsic
   values, the values of a `LowCardinality(String)` materialized span or
-  resource attribute column, and the span and resource tag names read off a
-  Map column's keys, over HTTP and gRPC alike. The handler marks each such
-  statement with `engine.StatementShape`. Every other statement keeps the
-  threshold: the event and link tag names, the plain-map, auto-scope, event,
-  link and numeric-materialized tag values, every other intrinsic's values,
-  the instrumentation-scope and JSON-path tag names, every Prom and Loki
-  statement, and every data-plane statement.
+  resource attribute column, and the span, resource and instrumentation-scope
+  tag names read off a Map column's keys, over HTTP and gRPC alike. The
+  handler marks each such statement with `engine.StatementShape`. Every other
+  statement keeps the threshold: the event and link tag names, the plain-map,
+  auto-scope, event, link and numeric-materialized tag values, every other
+  intrinsic's values, the JSON-path tag names, every Prom and Loki statement,
+  and every data-plane statement.
   ClickHouse compares the threshold with the whole query's tracked memory,
   and only a `DISTINCT` reads it. **Version floor is 26.9**: 26.8 rejects the
   setting name with code 115. `Stability` is `experimental` and `AutoSelect`
