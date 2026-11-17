@@ -17,3 +17,28 @@ INSERT INTO otel_metrics_gauge VALUES
     ('up', map('job','a'), map(), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
 -- expected_rows --
 []
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+[3] float64 = 1
+[4] bool = false
+-- args_optimized --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] int64 = 9
+[3] float64 = 1
+[4] bool = false
+-- chplan --
+Filter predicate=false
+  Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, FnNow64(9) AS TimeUnix, 1 AS Value]
+    OneRow
+-- settings --
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:filter
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+-- sql --
+SELECT * FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT 1)) WHERE ?
+-- sql_optimized --
+SELECT * FROM (SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT 1)) WHERE ?
