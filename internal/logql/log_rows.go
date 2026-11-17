@@ -30,8 +30,9 @@ import (
 // rows the limit returns. The Project that reads the filtered rows — the
 // projection, or the one the sort reads when there is a limit — is marked
 // [chplan.Project.OneScopeRows]: the filters run in the SELECT that reads
-// the table. A range aggregation's
-// per-row stage is not marked and renders one SELECT per layer.
+// the table. A range aggregation's per-row stage reads the table in one
+// SELECT only for the part [rowLayers.gatherAtScan] moves there, and
+// renders one SELECT per layer above it.
 //
 // The Attributes column carries the synthesized `detected_level` label.
 // Reference Loki surfaces `detected_level` on every log query that

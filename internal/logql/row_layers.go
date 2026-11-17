@@ -35,6 +35,10 @@ import (
 // the narrow values the consumer also reads. Every value no filter reads is
 // computed above the limit alone.
 //
+// [rowLayers.gatherAtScan] is a range aggregation's counterpart: it moves
+// the values and filters the table is best read with into the stream
+// scan's own scope, and leaves the rest of the stack in order above it.
+//
 // A layer is created with its defined value only; [rowLayers.seal]
 // decides what else it passes through, once the consumer above the stack
 // is known. It walks the stack from the top, gives each layer exactly the
@@ -47,7 +51,10 @@ type rowLayers struct {
 	// columns read above it.
 	passes []chplan.Node
 	// wide are the layers [rowLayers.defineWide] added.
-	wide   []*chplan.Project
+	wide []*chplan.Project
+	// atScan are the nodes [rowLayers.gatherAtScan] moved into the stream
+	// scan's scope; seal marks the Project that reads them.
+	atScan []chplan.Node
 	scopes int
 }
 
@@ -110,8 +117,16 @@ func (r *rowLayers) defineWide(alias string, expr chplan.Expr) chplan.Expr {
 // first node the stack did not build — the stream scan and its filter —
 // which already exposes every column of the logs table. It walks through
 // the nodes [rowLayers.hoist] added, adding the columns an ORDER BY
-// reads.
+// reads. Once the layers are sealed, the Project that reads the part
+// [rowLayers.gatherAtScan] moved into the stream scan's scope is marked.
 func (r *rowLayers) seal(consumer *chplan.Project, carry ...string) {
+	r.sealLayers(consumer, carry)
+	r.markAtScan(consumer)
+}
+
+// sealLayers is [rowLayers.seal] without the mark [rowLayers.markAtScan]
+// adds.
+func (r *rowLayers) sealLayers(consumer *chplan.Project, carry []string) {
 	needed := map[string]bool{}
 	for _, name := range carry {
 		needed[name] = true

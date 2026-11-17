@@ -57,6 +57,24 @@ func TestEmitProject_FusesARowChainIntoOneSelect(t *testing.T) {
 	}
 }
 
+// TestEmitProject_FusesTableOnlyLayersWithNoFilter pins that a layer whose
+// values read the table's columns alone renders in the SELECT that reads
+// the table even with no filter above it, so its map key reads are read
+// where the table is.
+func TestEmitProject_FusesTableOnlyLayersWithNoFilter(t *testing.T) {
+	t.Parallel()
+	p := rowChainPlan([]chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: "Body"}},
+		{Expr: &chplan.MapAccess{Map: &chplan.ColumnRef{Name: "LogAttributes"}, Key: &chplan.LitString{V: "level"}}, Alias: "_level"},
+	})
+	p.Input = p.Input.(*chplan.Filter).Input
+	sql := emitNodeSQL(t, p)
+	want := "SELECT `Body` AS `Line` FROM (SELECT `Body`, `LogAttributes`[?] AS `_level` FROM `otel_logs` WHERE (`Timestamp` >= ?))"
+	if sql != want {
+		t.Fatalf("fused table-only layer:\n got %s\nwant %s", sql, want)
+	}
+}
+
 // TestEmitProject_RowChainFusionRefusals pins each shape the fusion must
 // leave nested: one SELECT would change what a name means, or what a
 // value is evaluated over.
@@ -147,11 +165,15 @@ func TestEmitProject_RowChainFusionRefusals(t *testing.T) {
 			},
 		},
 		{
-			// With no filter above the layer there is nothing to fuse.
-			name: "no filter above a layer",
+			// With no filter above a layer, fusing would only read a
+			// layer's alias in the scope that defines it.
+			name: "no filter above a layer that reads an alias",
 			plan: func() *chplan.Project {
 				p := rowChainPlan(lowerBodyLayer())
-				p.Input = p.Input.(*chplan.Filter).Input
+				p.Input = &chplan.Project{Input: p.Input.(*chplan.Filter).Input, Projections: []chplan.Projection{
+					{Expr: &chplan.ColumnRef{Name: "Body"}},
+					{Expr: &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{&chplan.ColumnRef{Name: "_lower"}}}, Alias: "_length"},
+				}}
 				return p
 			},
 		},
