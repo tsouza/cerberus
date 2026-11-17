@@ -323,11 +323,14 @@ func (h *Handler) runTwoPhase(
 
 // runPhaseB runs plan restricted to the traces topN: every structural join
 // through restrictStructural and, for a drain, every leaf span scan through a
-// literal id list (chplan.PushLeafPredicate).
+// literal id list (chplan.PushLeafPredicate). The leaf list carries topN as
+// phase A read it from the trace-id column, so it matches that column's
+// stored values whatever form they take; restrictStructural's padded ids are
+// the structural closure's form, not the column's.
 func (h *Handler) runPhaseB(ctx context.Context, plan chplan.Node, topN []string, meta engine.Meta, drain bool) (engine.Result, error) {
 	restricted, ids, external := restrictStructural(plan, topN, h.ExternalTraceIDPush)
 	if drain {
-		restricted = chplan.PushLeafPredicate(restricted, traceIDsIn(h.Schema.TraceIDColumn, ids))
+		restricted = chplan.PushLeafPredicate(restricted, traceIDsIn(h.Schema.TraceIDColumn, topN))
 	}
 	if external {
 		var err error
