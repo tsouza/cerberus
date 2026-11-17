@@ -569,12 +569,13 @@ samples_non_negative
 
 -- name --
 metrics_rate_after_group_aggregate_filter
-# A spanset-aggregate filter after by() counts the spans of each group. Every
-# seeded trace belongs to one service, so each trace is one group, and
-# `count() > 3` keeps the traces of four and five spans; the rate counts all
-# of their spans.
+# A spanset-aggregate filter after by() counts the spans of each group. The
+# seeder gives a trace's children distinct kinds and its root kind Server, so
+# the only group of more than one span is a root with a Server child: the rate
+# counts those two spans of each such trace. Counting per trace instead would
+# keep every span of every trace.
 -- query --
-{ } | by(resource.service.name) | count() > 3 | rate()
+{ } | by(kind) | count() > 1 | rate()
 -- endpoint --
 metrics_range
 -- step --

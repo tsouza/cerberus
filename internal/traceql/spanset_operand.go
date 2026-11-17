@@ -51,7 +51,7 @@ import (
 // Any other shape — a bare selector, a nested set operation, a structural
 // join — is returned untouched.
 func spanGranularOperand(n chplan.Node, s schema.Traces) chplan.Node {
-	agg := traceGranularAggregate(n, s)
+	agg := spansetAggregate(n, s)
 	if agg == nil {
 		return n
 	}
@@ -75,7 +75,7 @@ func spanGranularOperand(n chplan.Node, s schema.Traces) chplan.Node {
 		Input: chplan.CloneNode(agg.Input),
 		Predicate: &chplan.InSubquery{
 			Left:     member,
-			Subquery: &chplan.Project{Input: cohortAggregate(n, agg), Projections: keys},
+			Subquery: &chplan.Project{Input: cohortAggregate(n, agg, map[string]bool{}), Projections: keys},
 		},
 	}
 }
@@ -88,30 +88,19 @@ func nullSafeKey(key chplan.Expr) chplan.Expr {
 
 // cohortAggregate rebuilds the operand's aggregate (and the scalar-filter
 // HAVING Filters above it, when there are any) carrying only the aggregate
-// functions those Filters actually read. The cohort projects the group key
-// alone, so every other function in lowerAggregate's /api/search envelope —
-// span name, resource attributes, trace start/end — would be computed over
-// the whole scan and then thrown away.
-func cohortAggregate(n chplan.Node, agg *chplan.Aggregate) chplan.Node {
-	f, ok := n.(*chplan.Filter)
-	if !ok {
-		// A bare `| count()` operand has no HAVING to satisfy, so the cohort
-		// is every group the aggregate produces and no function is read.
-		return narrowAggFuncs(agg, nil)
-	}
-	return &chplan.Filter{Input: cohortAggregateUnder(f.Input, agg, havingRefs(f.Predicate)), Predicate: f.Predicate}
-}
-
-// cohortAggregateUnder is cohortAggregate below the outermost HAVING Filter:
-// keep accumulates the aggregate functions every Filter on the way down
-// reads.
-func cohortAggregateUnder(n chplan.Node, agg *chplan.Aggregate, keep map[string]bool) chplan.Node {
+// functions those Filters read, which keep accumulates on the way down. The
+// cohort projects the group key alone, so every other function in
+// lowerAggregate's /api/search envelope — span name, resource attributes,
+// trace start/end — would be computed over the whole scan and then thrown
+// away. A bare `| count()` operand has no HAVING to satisfy, so its cohort is
+// every group the aggregate produces and no function is read.
+func cohortAggregate(n chplan.Node, agg *chplan.Aggregate, keep map[string]bool) chplan.Node {
 	f, ok := n.(*chplan.Filter)
 	if !ok {
 		return narrowAggFuncs(agg, keep)
 	}
 	maps.Copy(keep, havingRefs(f.Predicate))
-	return &chplan.Filter{Input: cohortAggregateUnder(f.Input, agg, keep), Predicate: f.Predicate}
+	return &chplan.Filter{Input: cohortAggregate(f.Input, agg, keep), Predicate: f.Predicate}
 }
 
 // narrowAggFuncs returns a copy of agg keeping only the aggregate functions
@@ -141,13 +130,13 @@ func havingRefs(e chplan.Expr) map[string]bool {
 	return refs
 }
 
-// traceGranularAggregate returns the spanset aggregate at the root of n —
+// spansetAggregate returns the spanset aggregate at the root of n —
 // either the bare `| count()` Aggregate or the same node under the
 // `| count() > N` scalar-filter Filter (and the `Value IS NOT NULL` Filter
 // a nullable aggregate carries, dropNullValueRows) — and nil for every
 // other shape. The aggregate groups per trace, or per (trace, group key)
 // after a by() stage (groupPerSpanset).
-func traceGranularAggregate(n chplan.Node, s schema.Traces) *chplan.Aggregate {
+func spansetAggregate(n chplan.Node, s schema.Traces) *chplan.Aggregate {
 	for {
 		f, ok := n.(*chplan.Filter)
 		if !ok {
@@ -170,7 +159,10 @@ var spansetGroupByAliases = []string{aggTraceIDAlias, groupKeyAlias}
 // groupsPerSpanset reports whether agg's GROUP BY is the trace-id column
 // under lowerAggregate's alias, optionally followed by a group key under the
 // GroupKey alias — the only groupings whose cohort a `TraceId IN (…)` or
-// `(TraceId, key) IN (…)` semi-join can reproduce. A coalesce() aggregate
+// `(TraceId, key) IN (…)` semi-join can reproduce. Both a spanset aggregate
+// after by() (groupPerSpanset) and the by() stage's own groupAggregate group
+// that way; the semi-join is right for either, though lowerFollowingStage
+// reads a by() stage's spans directly. A coalesce() aggregate
 // (group_coalesce.go), which groups by span identity, falls through.
 func groupsPerSpanset(agg *chplan.Aggregate, traceIDCol string) bool {
 	n := len(agg.GroupBy)

@@ -25,6 +25,10 @@ func TestStageAfterGroupOrCoalesceReadsSpans(t *testing.T) {
 		{`{ } | by(name) | coalesce() | count() > 1`, `{ } | count() > 1`},
 		{`{ } | by(name) | coalesce() | count() > 1 | rate()`, `{ } | count() > 1 | rate()`},
 		{`{ } | count() > 1 | coalesce()`, `{ } | count() > 1 | coalesce() | coalesce()`},
+		// A spanset-operation operand reads the spans of the spansets its
+		// pipeline returns, as Tempo's && and || combine spans.
+		{`({ } | by(name)) && ({ name = "c" })`, `({ }) && ({ name = "c" })`},
+		{`({ } | coalesce()) || ({ name = "c" })`, `({ }) || ({ name = "c" })`},
 	}
 	for _, p := range pairs {
 		got := lowerPlain(t, p[0], s)
@@ -60,6 +64,12 @@ func TestAggregateAfterGroupEvaluatesPerGroup(t *testing.T) {
 	}{
 		{`{ } | by(name) | count() > 1 | rate()`, name},
 		{`{ } | by(name) | by(kind) | count() > 1 | rate()`, &chplan.FuncCall{Fn: chplan.FnTuple, Args: []chplan.Expr{name, kind}}},
+		// A second aggregate after the first still evaluates per group: the
+		// cohort read here is the second aggregate's.
+		{`{ } | by(name) | count() > 1 | count() > 2 | rate()`, name},
+		// A nullable aggregate carries a `Value IS NOT NULL` Filter under the
+		// scalar filter's; both are unwrapped to reach the aggregate.
+		{`{ } | by(name) | avg(span.x) > 1 | rate()`, name},
 	}
 	for _, tc := range cases {
 		metrics, ok := lowerPlain(t, tc.query, s).(*chplan.MetricsAggregate)
@@ -81,13 +91,34 @@ func TestAggregateAfterGroupEvaluatesPerGroup(t *testing.T) {
 		if !in.Left.Equal(wantMember) {
 			t.Errorf("%q: semi-join member does not key on (TraceId, tuple(%v))", tc.query, tc.key)
 		}
-		agg := traceGranularAggregate(in.Subquery.(*chplan.Project).Input, s)
+		agg := spansetAggregate(in.Subquery.(*chplan.Project).Input, s)
 		if agg == nil {
 			t.Fatalf("%q: cohort holds no spanset aggregate", tc.query)
 		}
-		if len(agg.GroupBy) != 2 || !agg.GroupBy[1].Equal(tc.key) || agg.GroupByAliases[1] != groupKeyAlias {
+		if len(agg.GroupBy) != len(spansetGroupByAliases) || !agg.GroupBy[1].Equal(tc.key) || agg.GroupByAliases[1] != groupKeyAlias {
 			t.Errorf("%q: cohort aggregate groups by %v %v, want [TraceId, %v] [TraceId, %s]",
 				tc.query, agg.GroupBy, agg.GroupByAliases, tc.key, groupKeyAlias)
 		}
+	}
+}
+
+// TestNullableAggregateFilterReadsSpans pins that a nullable aggregate under a
+// scalar filter (`Filter(Value > N, Filter(Value IS NOT NULL, Aggregate))`)
+// un-collapses to the spans of the traces it passes, so a metrics function
+// after it observes spans.
+func TestNullableAggregateFilterReadsSpans(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelTraces()
+	metrics, ok := lowerPlain(t, `{ } | avg(span.x) > 1 | rate()`, s).(*chplan.MetricsAggregate)
+	if !ok {
+		t.Fatal("plan root is not a MetricsAggregate")
+	}
+	f, ok := metrics.Inner.(*chplan.Filter)
+	if !ok {
+		t.Fatalf("metrics input = %T, want the semi-join Filter", metrics.Inner)
+	}
+	in, ok := f.Predicate.(*chplan.InSubquery)
+	if !ok || !in.Left.Equal(&chplan.ColumnRef{Name: s.TraceIDColumn}) {
+		t.Fatalf("metrics input predicate = %v, want TraceId IN (cohort)", f.Predicate)
 	}
 }

@@ -39,9 +39,11 @@ type pipelineStage struct {
 	// node is the stage as the /api/search envelope reads it when the stage
 	// ends the pipeline.
 	node chplan.Node
-	// spans is the span rows of every spanset the stage returns, with every
-	// span column — what a following stage, a metrics function and a
-	// spanset-operation operand read.
+	// spans is the span rows of every spanset the stage returns — what a
+	// following stage, a metrics function and a spanset-operation operand
+	// read. They carry every span column, except after select(), whose rows
+	// carry the span identity, the timestamp and the selected attributes
+	// alone (#4373).
 	spans chplan.Node
 	// groupKeys are the keys of the by() stages that split each trace's spans
 	// into spansets, in pipeline order; empty means one spanset per trace.
@@ -100,7 +102,7 @@ func spansetGroupKey(keys []chplan.Expr) chplan.Expr {
 // built for it alone, so it is regrouped in place. A select() stage holds no
 // aggregate and is left as it is.
 func groupPerSpanset(node chplan.Node, key chplan.Expr, s schema.Traces) {
-	agg := traceGranularAggregate(node, s)
+	agg := spansetAggregate(node, s)
 	if agg == nil {
 		return
 	}
