@@ -77,14 +77,148 @@ func (r *rowLayers) gatherAtScan(maps []string, consumer ...chplan.Expr) {
 		aliases[layer.Projections[0].Alias] = true
 	}
 	scope := scanScope{aliases: aliases, defs: map[string]chplan.Expr{}, expanded: map[string]int{}}
+	g := scanGather{reads: stageMapReads(maps, consumer, items), base: base}
+	for i, item := range items {
+		switch n := item.(type) {
+		case *chplan.Project:
+			g.takeLayer(&scope, i, n)
+		case *chplan.Filter:
+			g.takeFilter(&scope, i, n)
+		}
+	}
+	g.demote(&scope)
+	r.node = rebuildAtScan(g.base, g.layers, g.filtered, g.above, &r.atScan)
+}
 
-	// whole holds the map columns some expression of the stage reads as a
-	// whole.
-	var whole []string
+// scanGather is the state of one [rowLayers.gatherAtScan] walk: what it
+// has moved into the scan's scope and folded into its filter so far, and
+// what it leaves above. The scope's sizes are a [scanScope] each method
+// is passed.
+type scanGather struct {
+	reads stageMaps
+	// base is the stream scan with the conjuncts folded into its filter.
+	base chplan.Node
+	// layers are the moved layers, bottom first, and layerAt each one's
+	// place in the stack; filtered are the moved filter conjuncts.
+	layers   []*chplan.Project
+	layerAt  []int
+	filtered []chplan.Expr
+	above    []scanRest
+}
+
+// scanRest is a layer, or a filter's remaining conjuncts, left above the
+// scan's scope, at its place in the stack.
+type scanRest struct {
+	at        int
+	layer     *chplan.Project
+	conjuncts []chplan.Expr
+}
+
+// movable reports whether e may join scope.
+func (g *scanGather) movable(scope *scanScope, e chplan.Expr) bool {
+	return !g.reads.readsWholeKey(e) && scope.admits(e)
+}
+
+// takeLayer moves the layer n, at place i, into the scope or leaves it
+// above.
+func (g *scanGather) takeLayer(scope *scanScope, i int, n *chplan.Project) {
+	value := n.Projections[0]
+	if !g.movable(scope, value.Expr) {
+		g.above = append(g.above, scanRest{at: i, layer: n})
+		return
+	}
+	scope.add(value.Expr)
+	scope.defs[value.Alias] = value.Expr
+	g.layers = append(g.layers, n)
+	g.layerAt = append(g.layerAt, i)
+}
+
+// takeFilter folds, moves or leaves above each conjunct of the filter n,
+// at place i.
+func (g *scanGather) takeFilter(scope *scanScope, i int, n *chplan.Filter) {
+	var kept []chplan.Expr
+	for _, conjunct := range conjuncts(n.Predicate) {
+		switch {
+		case g.reads.readsWhole(conjunct):
+			kept = append(kept, conjunct)
+		case !scope.readsLayer(conjunct) && len(g.filtered) == 0:
+			g.base = andFilter(g.base, conjunct)
+		case g.movable(scope, conjunct):
+			scope.add(conjunct)
+			g.filtered = append(g.filtered, conjunct)
+		default:
+			kept = append(kept, conjunct)
+		}
+	}
+	if len(kept) > 0 {
+		g.above = append(g.above, scanRest{at: i, conjuncts: kept})
+	}
+}
+
+// demote sends back to its place a moved layer that reads another value
+// when no moved filter reads it: without one, the scope would read an
+// alias where it is defined at no gain.
+func (g *scanGather) demote(scope *scanScope) {
+	needed := map[string]bool{}
+	for _, conjunct := range g.filtered {
+		addColumnsRead(needed, conjunct)
+	}
+	kept := g.layers[:0:0]
+	for i := len(g.layers) - 1; i >= 0; i-- {
+		value := g.layers[i].Projections[0]
+		if needed[value.Alias] || !scope.readsLayer(value.Expr) {
+			addColumnsRead(needed, value.Expr)
+			kept = append(kept, g.layers[i])
+			continue
+		}
+		g.above = append(g.above, scanRest{at: g.layerAt[i], layer: g.layers[i]})
+	}
+	slices.Reverse(kept)
+	g.layers = kept
+	slices.SortFunc(g.above, func(a, b scanRest) int { return a.at - b.at })
+}
+
+// rebuildAtScan stacks layers and the filter of filtered over base, then
+// above in its order, records the nodes of the part over base in atScan,
+// and returns the top of the stack.
+func rebuildAtScan(base chplan.Node, layers []*chplan.Project, filtered []chplan.Expr, above []scanRest, atScan *[]chplan.Node) chplan.Node {
+	node := base
+	*atScan = (*atScan)[:0]
+	for _, layer := range layers {
+		layer.Input = node
+		node = layer
+		*atScan = append(*atScan, layer)
+	}
+	if len(filtered) > 0 {
+		node = &chplan.Filter{Input: node, Predicate: conjunction(filtered)}
+		*atScan = append(*atScan, node)
+	}
+	for _, item := range above {
+		if item.layer != nil {
+			item.layer.Input = node
+			node = item.layer
+			continue
+		}
+		node = &chplan.Filter{Input: node, Predicate: conjunction(item.conjuncts)}
+	}
+	return node
+}
+
+// stageMaps is what a stack reads of the table's map columns: their
+// names, and those some expression of the stage, or of its consumer,
+// reads as a whole in its own text.
+type stageMaps struct {
+	maps, whole []string
+}
+
+// stageMapReads collects the map columns of maps that consumer or an item
+// of the stack reads as a whole.
+func stageMapReads(maps []string, consumer []chplan.Expr, items []chplan.Node) stageMaps {
+	m := stageMaps{maps: maps}
 	note := func(e chplan.Expr) {
 		forEachMapRead(e, maps, func(name string, keyed bool) {
-			if !keyed && !slices.Contains(whole, name) {
-				whole = append(whole, name)
+			if !keyed && !slices.Contains(m.whole, name) {
+				m.whole = append(m.whole, name)
 			}
 		})
 	}
@@ -99,110 +233,26 @@ func (r *rowLayers) gatherAtScan(maps []string, consumer ...chplan.Expr) {
 			note(n.Predicate)
 		}
 	}
-	// readsWhole reports whether e reads a map column as a whole, and
-	// readsWholeKey whether it reads a key of one the stage reads whole.
-	readsWhole := func(e chplan.Expr) bool {
-		found := false
-		forEachMapRead(e, maps, func(_ string, keyed bool) { found = found || !keyed })
-		return found
-	}
-	readsWholeKey := func(e chplan.Expr) bool {
-		found := false
-		if len(whole) > 0 {
-			forEachMapRead(e, maps, func(name string, keyed bool) {
-				found = found || keyed && slices.Contains(whole, name)
-			})
-		}
-		return found
-	}
-	movable := func(e chplan.Expr) bool {
-		return !readsWholeKey(e) && scope.admits(e)
-	}
+	return m
+}
 
-	// rest is a layer, or a filter's remaining conjuncts, left above the
-	// scope, at its place in the stack.
-	type rest struct {
-		at        int
-		layer     *chplan.Project
-		conjuncts []chplan.Expr
-	}
-	var above []rest
-	var layers []*chplan.Project
-	var layerAt []int
-	var filtered []chplan.Expr
-	for i, item := range items {
-		switch n := item.(type) {
-		case *chplan.Project:
-			value := n.Projections[0]
-			if movable(value.Expr) {
-				scope.add(value.Expr)
-				scope.defs[value.Alias] = value.Expr
-				layers = append(layers, n)
-				layerAt = append(layerAt, i)
-				continue
-			}
-			above = append(above, rest{at: i, layer: n})
-		case *chplan.Filter:
-			var kept []chplan.Expr
-			for _, conjunct := range conjuncts(n.Predicate) {
-				switch {
-				case readsWhole(conjunct):
-					kept = append(kept, conjunct)
-				case !scope.readsLayer(conjunct) && len(filtered) == 0:
-					base = andFilter(base, conjunct)
-				case movable(conjunct):
-					scope.add(conjunct)
-					filtered = append(filtered, conjunct)
-				default:
-					kept = append(kept, conjunct)
-				}
-			}
-			if len(kept) > 0 {
-				above = append(above, rest{at: i, conjuncts: kept})
-			}
-		}
-	}
+// readsWhole reports whether e reads a map column as a whole.
+func (m stageMaps) readsWhole(e chplan.Expr) bool {
+	found := false
+	forEachMapRead(e, m.maps, func(_ string, keyed bool) { found = found || !keyed })
+	return found
+}
 
-	// A moved layer that reads another value stays only when a moved
-	// filter reads it: without one, the scope would read an alias where it
-	// is defined at no gain, and the layer goes back to its place.
-	needed := map[string]bool{}
-	for _, conjunct := range filtered {
-		addColumnsRead(needed, conjunct)
+// readsWholeKey reports whether e reads a key of a map column the stage
+// reads as a whole.
+func (m stageMaps) readsWholeKey(e chplan.Expr) bool {
+	found := false
+	if len(m.whole) > 0 {
+		forEachMapRead(e, m.maps, func(name string, keyed bool) {
+			found = found || keyed && slices.Contains(m.whole, name)
+		})
 	}
-	kept := layers[:0:0]
-	for i := len(layers) - 1; i >= 0; i-- {
-		value := layers[i].Projections[0]
-		if needed[value.Alias] || !scope.readsLayer(value.Expr) {
-			addColumnsRead(needed, value.Expr)
-			kept = append(kept, layers[i])
-			continue
-		}
-		above = append(above, rest{at: layerAt[i], layer: layers[i]})
-	}
-	slices.Reverse(kept)
-	slices.SortFunc(above, func(a, b rest) int { return a.at - b.at })
-
-	node := base
-	r.atScan = r.atScan[:0]
-	for _, layer := range kept {
-		layer.Input = node
-		node = layer
-		r.atScan = append(r.atScan, layer)
-	}
-	if len(filtered) > 0 {
-		node = &chplan.Filter{Input: node, Predicate: conjunction(filtered)}
-		r.atScan = append(r.atScan, node)
-	}
-	for _, item := range above {
-		if item.layer != nil {
-			item.layer.Input = node
-			node = item.layer
-			continue
-		}
-		node = &chplan.Filter{Input: node, Predicate: conjunction(item.conjuncts)}
-	}
-	r.node = node
+	return found
 }
 
 // markAtScan marks [chplan.Project.OneScopeRows] on the Project directly
