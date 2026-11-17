@@ -52,7 +52,7 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// summapDiffSeedDDL mirrors classicBucketMergeBoundSeedDDL — this file's
+// summapDiffSeedDDL mirrors classicBucketSeedDDL — this file's
 // own copy since Go test binaries don't share consts across packages.
 const summapDiffSeedDDL = `
 CREATE OR REPLACE TABLE otel_metrics_histogram (
@@ -75,7 +75,7 @@ const summapDiffMetric = "classic_bucket_merge_summap_diff_test_metric"
 // 1-sample floor (unlike rate's 2) lets one seeded sample per series
 // exercise the merge with its raw per-bucket counts surviving the window
 // stage's cumsum-then-diff round trip unchanged — mirroring
-// classic_bucket_merge_bound_chdb_test.go's identical choice.
+// classic_bucket_window_bound_chdb_test.go's identical choice.
 const summapDiffQuery = "histogram_quantile(0.95, sum by(le)(sum_over_time(" +
 	summapDiffMetric + "_bucket[5m])))"
 

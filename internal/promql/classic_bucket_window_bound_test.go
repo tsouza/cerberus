@@ -82,28 +82,38 @@ func TestClassicBucketWindowGuard_EveryInstantWindowShapeReadsTheWindowOnce(t *t
 }
 
 // TestClassicBucketWindowSeriesCeiling_DerivedFromCHQueryMaxMemory pins the
-// per-series window ceiling to the per-query memory cap: half of a quarter
-// of the cap over the fold's per-entry working set on two threads, the
-// one-GiB value for an unset cap, and an explicit ceiling winning over the
-// derivation.
+// per-series window ceiling to the per-query memory cap: the cap over 281
+// bytes per entry, linear in the cap, the one-GiB value for an unset cap, and
+// an explicit ceiling winning over the derivation. At the 1 GiB default it
+// refuses one 50-bucket series of 75,000 samples (3,825,000 entries), the
+// smallest series measured to run out of memory on every run, and admits
+// 74,924 samples.
 func TestClassicBucketWindowSeriesCeiling_DerivedFromCHQueryMaxMemory(t *testing.T) {
 	t.Parallel()
 	// The value docs/operations.md and docs/configuration.md state for the
 	// 1 GiB default cap.
-	const shippedSeriesCeiling int64 = 152_520
+	const shippedSeriesCeiling int64 = 3_821_145
 	const halfGiB = config.DefaultCHQueryMaxMemory / 2
+	// entriesPerSample is one sample of a 50-bucket layout: 50 finite
+	// bounds plus the +Inf rung.
+	const entriesPerSample = 51
 	at := func(capBytes int64) ResourceBounds {
 		return ResourceBounds{CHQueryMaxMemory: capBytes}.withDefaults()
 	}
-	if got := at(config.DefaultCHQueryMaxMemory).ClassicBucketWindowSeriesMaxEntries; got != shippedSeriesCeiling {
-		t.Fatalf("per-series ceiling at the default cap = %d, want %d", got, shippedSeriesCeiling)
+	atDefault := at(config.DefaultCHQueryMaxMemory).ClassicBucketWindowSeriesMaxEntries
+	if atDefault != shippedSeriesCeiling {
+		t.Fatalf("per-series ceiling at the default cap = %d, want %d", atDefault, shippedSeriesCeiling)
+	}
+	if refused, admitted := int64(75_000*entriesPerSample), int64(74_924*entriesPerSample); refused <= atDefault || admitted > atDefault {
+		t.Fatalf("per-series ceiling %d at the default cap; want 75,000 samples (%d entries) past it and 74,924 (%d) within it",
+			atDefault, refused, admitted)
 	}
 	for _, tc := range []struct {
 		capBytes  int64
 		wantEntry int64
 	}{
-		{halfGiB, 76_260},
-		{2 * config.DefaultCHQueryMaxMemory, 305_040},
+		{halfGiB, 1_910_572},
+		{2 * config.DefaultCHQueryMaxMemory, 7_642_290},
 		{0, shippedSeriesCeiling},
 	} {
 		if got := at(tc.capBytes).ClassicBucketWindowSeriesMaxEntries; got != tc.wantEntry {

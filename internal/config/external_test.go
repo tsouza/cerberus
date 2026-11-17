@@ -17,7 +17,7 @@ import (
 func ownedExternalSettings() []string {
 	return []string{
 		promql.EnvHistogramMergeMaxCostUnits,
-		promql.EnvClassicBucketMergeMaxEntries,
+		promql.EnvClassicBucketMergeMaxEntriesRetired,
 		promql.EnvClassicBucketMergeMaxCostUnitsRetired,
 		promql.EnvExpHistogramWindowMaxCostUnits,
 		promql.EnvClassicBucketWindowSeriesMaxEntries,

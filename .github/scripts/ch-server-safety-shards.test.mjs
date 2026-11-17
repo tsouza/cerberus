@@ -311,8 +311,8 @@ test('live tree: every planned shard resolves against test/chserver and the pinn
   );
   assert.deepEqual([...booted].sort(), [...pinned].sort());
   assert.ok(shardImages(selection(SHARD_REST, live), pinned).length < pinned.length, 'rest boots every image');
-  // Every top-level test of a classic_bucket_* source runs in the
-  // classic-histogram shard, never in rest.
+  // Every top-level test of a classic_bucket_* source runs in one of the
+  // classic-histogram family shards, never in rest.
   const classicTests = topLevelTests(
     readdirSync(PACKAGE_DIR)
       .filter((file) => file.startsWith('classic_bucket_') && file.endsWith('_test.go'))
@@ -320,10 +320,17 @@ test('live tree: every planned shard resolves against test/chserver and the pinn
       .filter(builtUnderIntegration),
   );
   assert.ok(classicTests.length > 0, 'test/chserver has no classic_bucket_* test');
-  const classicShard = selection('classic-histogram', live).expect;
+  const classicShards = ['classic-histogram', 'classic-histogram-window'].flatMap(
+    (id) => selection(id, live).expect,
+  );
   assert.deepEqual(
-    classicTests.filter((name) => !classicShard.includes(name)),
+    classicTests.filter((name) => !classicShards.includes(name)),
     [],
-    'a classic_bucket_* test runs outside the classic-histogram shard',
+    'a classic_bucket_* test runs outside the classic-histogram family shards',
+  );
+  assert.deepEqual(
+    classicTests.filter((name) => selection(SHARD_REST, live).expect.includes(name)),
+    [],
+    'a classic_bucket_* test runs in rest',
   );
 });

@@ -992,9 +992,10 @@ fold has since become a linear groupArray merge. Against it the sumMap path is
 within 0.1% at 25,000 x 50 disjoint series on both builds, costs 3-7% less per
 entry on 26.8 and 11-16% more on 26.6 on the larger disjoint layouts, and costs
 far less on a shared one, and whether that earns AutoSelect is
-[#4079](https://github.com/tsouza/cerberus/issues/4079). The
-`ClassicBucketMergeMaxEntries` guard bounds this path too, so no second
-ceiling exists.
+[#4079](https://github.com/tsouza/cerberus/issues/4079). No ceiling bounds
+either merge construction: a merge too large for the per-query cap fails at
+ClickHouse's memory limit and is answered with the classic-histogram
+memory-limit 422 ([`operations.background.md`](operations.background.md)).
 
 `exp_histogram_merge_summap`'s reconstruction step is width-squared in the
 worst case, independent of row count.

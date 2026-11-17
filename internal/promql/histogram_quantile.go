@@ -1349,7 +1349,7 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	shaping := ctx.lowerers.ClassicBucketMerge.LowerClassicBucketMerge(shape.classicFold, shape.classicFoldIsSum, s)
 	agg := &chplan.Aggregate{
 		Roles:              metricRoles(s),
-		Input:              classicBucketMergeInputGate(perSeries, s, ctx.resourceBounds.ClassicBucketMergeMaxEntries),
+		Input:              perSeries,
 		GroupBy:            userGroupBy,
 		GroupByAliases:     userAliases,
 		AggFuncs:           shaping.aggs,
@@ -1358,8 +1358,7 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	// Inner Projects re-shape the aggregate output back into the
 	// histogram-row contract HistogramQuantile expects: an Attributes
 	// column (rebuilt from the gkey aliases) plus the merged
-	// BucketCounts + ExplicitBounds pair. The Aggregate reads the per-series
-	// rows through the bucket-merge guard — see classic_bucket_merge_bound.go.
+	// BucketCounts + ExplicitBounds pair.
 	rebuilt, cumulative := shaping.reshape(agg, []chplan.Projection{
 		{Expr: attrsRebuild, Alias: s.AttributesColumn},
 	}, s)
@@ -1579,10 +1578,6 @@ func classicBucketMergeShaping(fold classicBucketRungFold, s schema.Metrics) cla
 // carrying `passthrough` through every layer it adds. It reports whether
 // the resulting BucketCounts is an already-cumulative ladder, which the
 // caller hands to chplan.HistogramQuantile.BucketCountsCumulative.
-//
-// A layout-merge group must read its rows through
-// classicBucketMergeInputGate (classic_bucket_merge_bound.go), which bounds
-// the merge before the Aggregate runs.
 func (sh classicBucketShaping) reshape(
 	group chplan.Node,
 	passthrough []chplan.Projection,

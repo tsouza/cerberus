@@ -299,17 +299,110 @@ by apportioning route A's own base cap by `DataShardCount` ALONE, in
 formula, sharing its divide-and-floor arithmetic with `executor.go` via
 `chclient.ApportionMemoryBytes` so the two sites cannot independently drift.
 
-## Why the classic-histogram bucket-merge ceiling ignores its old name
+## Why the classic-histogram bucket merge has no ceiling
 
-The classic-histogram bucket-merge ceiling was first named
-`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS` and counted cost units, a
-different unit from the merged bucket entries
-`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` counts. A value set under the
-old name has no meaning as an entry count, so it is not translated: carrying it
-over would bound the merge at an arbitrary entry count. Refusing to start would
-take down a deployment over a variable that only tuned a ceiling, so cerberus
-starts, applies the new variable or the default, and warns once at startup so
-the stale variable is visible.
+The cross-series bucket merge of an aggregated classic-histogram quantile once
+carried a query-wide ceiling on the bucket entries it read,
+`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` (earlier
+`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS`), derived as 75% of the
+per-query cap at 270 bytes per entry: 2,982,616 entries at 1 GiB. It was sized
+from the peak memory of one merge group, and the entry count it checked does
+not tell a merge that fits from one that does not. Measured through the
+production handler on 26.8.36.3 and 26.6.1.1193 under the 1 GiB cap with the
+ceiling lifted:
+
+- one merge group always runs out of memory at about 4.6M entries;
+- the same series split into sixty merge groups answer at 15.3M entries,
+  peaking at 623-770 MiB;
+- the 2.98M ceiling refused every one of those answerable grouped shapes.
+
+Fewer, larger groups sit between the two: six groups of 40,000 disjoint
+series (12.24M entries) answered 2 of 3 runs on 26.8 at 1,000-1,012 MiB and
+ran out of memory on the third, and answered 3 of 3 on 26.6 at 602-746 MiB.
+Through the disjoint-layout merge probe of `test/chserver` at two threads,
+three runs each: one group of 60,000 series (3,060,000 entries) answers at
+654 MiB on 26.8 and 555 MiB on 26.6; 300,000 series in sixty groups
+(15,300,000 entries) answer at 665-702 and 551-579 MiB; one group of 100,000
+series through the sumMap merge (5,100,000 entries) fails at the cap on both.
+
+Within one group the merge's peak follows the entry count alone. With the
+ceiling lifted and a 6 GiB query cap, one sample per series, W bounds per
+series, the groupArray merge peaked at:
+
+| Layout   | Series x W    | Entries    | Peak 26.8  | Peak 26.6  |
+| -------- | ------------- | ---------- | ---------- | ---------- |
+| disjoint | 25,000 x 50   | 1,275,000  | 448.4 MiB  | 379.8 MiB  |
+| disjoint | 50,000 x 50   | 2,550,000  | 624.4 MiB  | 517.5 MiB  |
+| disjoint | 75,000 x 50   | 3,825,000  | 733.3 MiB  | 603.0 MiB  |
+| disjoint | 100,000 x 50  | 5,100,000  | 1246.9 MiB | 1028.8 MiB |
+| disjoint | 150,000 x 50  | 7,650,000  | 1463.1 MiB | 1201.0 MiB |
+| shared   | 50,000 x 50   | 2,550,000  | 624.5 MiB  | 515.8 MiB  |
+| shared   | 100,000 x 50  | 5,100,000  | 1246.9 MiB | 1028.7 MiB |
+| shared   | 200,000 x 50  | 10,200,000 | 2620.9 MiB | 2178.0 MiB |
+| disjoint | 10,000 x 250  | 2,510,000  | 648.8 MiB  | 539.7 MiB  |
+| disjoint | 20,000 x 250  | 5,020,000  | 1291.6 MiB | 1076.1 MiB |
+
+The ratio of peak to entries settled near 270 bytes per entry on 26.8 at the
+largest shapes, the figure the ceiling was derived from. Split over groups,
+the same entries peak far lower (58,000 x 50 in six groups at 283.9 MiB on
+26.8 against 703.9 MiB in one), so a query-wide count overstates a grouped
+merge by the number of groups it spreads over.
+
+A ceiling low enough to refuse every one-group merge that runs out of memory
+refuses grouped merges five times its size that answer, and one high enough to
+admit those refuses nothing that would not fail anyway. Without it, a merge too
+large for the cap fails when ClickHouse reaches `max_memory_usage` (code 241),
+which costs the server no more than the cap, and the Prometheus head answers
+that failure as the classic-histogram quantile's own HTTP 422. No pre-check
+replaces the ceiling: a pre-count that reads the window a second time doubles
+the read cost of every such query to refuse a few that fail at the cap anyway.
+
+Both settings of the removed ceiling stay recognised and do nothing. v1.24.0
+shipped them, and its release notes promised that a deployment still setting
+the older name starts and logs a warning. Rejecting either one would stop a
+deployment whose `cerberus.yaml` carries it on upgrade, and ignoring it with no
+word would leave an operator believing it still bounds the merge, so each one
+set is accepted and logs one startup warning.
+
+## Why the classic-histogram per-series window ceiling sits where it does
+
+The per-series window ceiling refuses a series of many samples only when that
+series runs out of memory on every run without the check. Its earlier derivation sized the
+fold of one series as if each of two threads folded one at a time against a
+share of the cap, which put it at 152,520 entries at 1 GiB and refused series
+that answer.
+
+The fold of one series runs on one thread, so its peak does not depend on the
+server's `max_threads`. One 50-bucket series gives the same outcome at 2 and at
+16 threads on 26.8 and on 26.6, with peaks within 1% of each other, whether it
+sits in one data part or is spread over sixteen that ClickHouse reads on
+several threads. The measurements, with run counts, are recorded next to
+`classicBucketWindowSeriesCapBytesPerEntry` in
+`internal/promql/classic_bucket_window_bound.go`. In outline: 30,000 samples
+answers everywhere; from 45,000, 26.8 runs out of memory on every run while
+26.6 answers up to 60,000; 74,900 and 75,000 run out of memory on every run on
+both builds.
+
+Between 30,000 and 75,000 samples the outcome depends on the build and, near
+60,000, on the run and on how the series is laid out in parts. A ceiling inside
+that band would refuse a series that answers on some build or run, so the
+ceiling sits at its top: the cap over 281 bytes per entry, which refuses 75,000
+samples (3,825,000 entries) and admits 74,924. Every shape inside the band
+reaches the server, which answers it or refuses it at the cap with code 241,
+as it did before the check existed.
+
+The ceiling counts entries and is calibrated at 51 per sample. A series of one
+sample with millions of bounds folds in less memory per entry on 26.6, which
+answers one such row of 3,825,000 entries at 969 MiB; the ceiling refuses it.
+That exception was accepted: 26.8 runs out of memory on every such row, and
+the 2.98M bucket-merge ceiling refused all of them before.
+
+Many series at once are bounded by the cap alone, and their peak does grow
+with the thread count, because each thread folds its own series. No per-query
+thread bound is stamped: bounding the statements to two threads made the
+largest classic-histogram queries up to about 30% slower (20,000 x 20 on a
+six-CPU 26.8 server: 6.5-6.8 s on six threads, 8.3-9.0 s on two), and the
+cap's 422 already answers the shapes that do not fit.
 
 ## The Distributed error taxonomy's third named code
 

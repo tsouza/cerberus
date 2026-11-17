@@ -503,59 +503,30 @@ requirements check instead **warns** when it
 sees a 26.5 server (it does not refuse to start — the rest of the gateway is
 healthy), and the k3d e2e substrate is pinned to the bundled 26.8 build.
 
-### Classic-histogram bucket-merge ceiling
+### Classic-histogram quantile memory
 
-`histogram_quantile` over an aggregated classic histogram (`sum by (le)`,
-`avg by (le)`, and the other aggregations) merges every series' bucket layout
-into one. A ceiling caps the bucket entries one query may merge on every path
-that runs that merge: every series' finite bounds plus its `+Inf` bucket, counted
-once per evaluated step and summed across every output group. Unset, the ceiling
-is derived from `CERBERUS_CH_QUERY_MAX_MEMORY`: 75% of the per-query memory cap at
-270 bytes per entry, which is `2982616` at the 1 GiB default and scales linearly
-with the cap (`1491308` at `512Mi`, `5965232` at `2Gi`). With the memory cap set
-to `0`, the ceiling is the 1 GiB one. Setting
-`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` to a positive entry count pins
-the ceiling regardless of the memory cap.
+`histogram_quantile` over a classic histogram reduces each series' in-window
+samples to one bucket ladder and, under an aggregation (`sum by (le)`,
+`avg by (le)`, and the other aggregations), merges the ladders of every
+series into one layout. On the instant path — over `rate`, `increase`,
+`sum_over_time`, `avg_over_time`, `max_over_time`, `min_over_time` or
+`last_over_time` of a bucket selector, or over the bare selector, with or
+without an aggregation around it — a per-series window ceiling bounds that
+work. It is checked once the window stage has collected each series and
+before it folds it. A series whose window holds more bucket entries (every
+in-window sample's finite bounds plus its `+Inf` bucket) than the ceiling
+refuses the query with HTTP 422 and the message `classic-histogram window
+exceeds the bucket-entries-per-series resource bound`. Unset, the ceiling is
+derived from `CERBERUS_CH_QUERY_MAX_MEMORY` as the cap over 281 bytes per
+entry: `3821145` at the 1 GiB default, which is 74,924 samples of a 50-bucket
+layout, linear in the cap (`1910572` at `512Mi`, `7642290` at `2Gi`), and the
+1 GiB value when the cap is `0`. It does not depend on `max_threads`. Setting
+`CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_SERIES_MAX_ENTRIES` to a positive entry
+count pins it.
 
-The ceiling does not apply when the aggregated input is a `rate` that ClickHouse's
-native time-series grid functions evaluate: `ts_grid_range` for a range query,
-`ts_grid_instant` for an instant query, each selected at boot on a server that
-supports it. That path takes the quantile over per-bucket rates and runs no
-layout merge. A query past the ceiling is refused with HTTP 422 and the
-message `classic-histogram bucket merge exceeds the merged-bucket-entry resource
-bound` before ClickHouse runs the merge. Small merges carry a fixed memory
-overhead on top of the per-entry cost, so under a memory cap well below 1 GiB a
-merge within the derived ceiling can still exceed the cap; ClickHouse then
-refuses it with the memory-limit error (HTTP 422).
-
-`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS` is ignored: a deployment
-that sets it starts and logs one startup warning naming
-`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES`. Remove it, and set
-`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` to an entry count when the
-default does not fit; a value of the ignored variable is not an entry count.
-
-### Classic-histogram window ceiling
-
-An instant `histogram_quantile` over a classic histogram — over `rate`,
-`increase`, `sum_over_time`, `avg_over_time`, `max_over_time`,
-`min_over_time` or `last_over_time` of a bucket selector, or over the bare
-selector, with or without an aggregation around it — first reduces each series'
-in-window samples to one bucket ladder, then merges the ladders under the
-bucket-merge ceiling above. One ceiling bounds each series of that window
-stage:
-
-- **The per-series ceiling**, checked once the stage has collected each
-  series and before it folds it. A series whose window holds more bucket
-  entries than the ceiling refuses the query with HTTP 422 and the message
-  `classic-histogram window exceeds the bucket-entries-per-series resource
-  bound`. Unset, it is derived from `CERBERUS_CH_QUERY_MAX_MEMORY` as half of
-  a quarter of the cap, at 880 bytes per entry: `152520` at the 1 GiB default,
-  which is 2,990 samples of a 50-bucket layout. Setting
-  `CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_SERIES_MAX_ENTRIES` to a positive
-  entry count pins it.
-
-The stage as a whole has no ceiling of its own: a classic-histogram quantile
-that needs more memory than the cap runs until ClickHouse aborts it at
+Nothing else bounds the quantile: neither the window stage as a whole nor the
+cross-series merge, instant or range. A classic-histogram quantile that needs
+more memory than the cap runs until ClickHouse aborts it at
 `CERBERUS_CH_QUERY_MAX_MEMORY` (code 241). For any query carrying a
 classic-histogram quantile, instant or range, the Prometheus head answers that
 abort with HTTP 422, errorType `execution`, and
@@ -566,10 +537,14 @@ the cap answers the generic memory-limit message (`query processing would use
 too much memory in query execution (ClickHouse memory limit exceeded; per-query
 cap <bytes> bytes)`).
 
-The calibration and its measurements are recorded with the constants in
-`internal/promql/classic_bucket_window_bound.go`. The per-series ceiling is
-calibrated against ClickHouse running each query on two threads; a server that
-folds more series at once uses more memory per admitted query (#4128).
+`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` and
+`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS` are accepted, in
+`cerberus.yaml` and in the environment, and ignored: whatever their value, the
+quantile runs as it does without them. Each one set logs one startup warning
+naming it. Remove them from the deployment's configuration.
+
+The calibration and its measurements are recorded with the constant in
+`internal/promql/classic_bucket_window_bound.go`.
 
 ### Prometheus resource-attribute labels
 
