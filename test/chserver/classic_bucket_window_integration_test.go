@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -85,14 +86,26 @@ FROM numbers(%d, %d)`,
 // classicWindowRange is the range every probe's range function reads.
 const classicWindowRange = 5 * time.Minute
 
-// classicWindowShortSeries are many short series that answer under the
-// 1 GiB cap on both builds: 58,000 series of 28 and 30 samples at a 10-second
-// scrape, and of 56 samples at a 5-second scrape. Their peaks are in the
-// many-short-series table of internal/promql/classic_bucket_window_bound.go.
-var classicWindowShortSeries = []classicWindowShape{
-	{series: 58_000, samples: 28, spacing: 10 * time.Second},
-	{series: 58_000, samples: 30, spacing: 10 * time.Second},
-	{series: 58_000, samples: 56, spacing: 5 * time.Second},
+// classicWindowShortSeriesProbes are many short series under the 1 GiB cap,
+// with their peaks in the many-short-series table of
+// internal/promql/classic_bucket_window_bound.go. 58,000 series of 28 and 30
+// samples at a 10-second scrape answer on both builds.
+var classicWindowShortSeriesProbes = []classicWindowProbe{
+	{
+		name: "short-series-28", shape: classicWindowShape{series: 58_000, samples: 28, spacing: 10 * time.Second}, fn: "rate",
+		want: classicWindowOnBoth(classicWindowAnswered),
+	},
+	{
+		name: "short-series-30", shape: classicWindowShape{series: 58_000, samples: 30, spacing: 10 * time.Second}, fn: "rate",
+		want: classicWindowOnBoth(classicWindowAnswered),
+	},
+	// 58,000 series of 56 samples at a 5-second scrape answer on 26.8. On
+	// 26.6 they sit in the band: 2 of 24 runs ended in code 241 at the cap,
+	// as v1.24.0 did on 1 of 16 (#4340).
+	{
+		name: "short-series-56", shape: classicWindowShape{series: 58_000, samples: 56, spacing: 5 * time.Second}, fn: "rate",
+		want: map[string]classicWindowOutcome{classicBuild268: classicWindowAnswered, classicBuild266: classicWindowInBand},
+	},
 }
 
 // classicWindowRefusal is how the handler answers a shape it cannot answer
@@ -164,11 +177,11 @@ type classicWindowProbe struct {
 // parts so the server reads it on several threads. Their outcomes are the
 // per-series tables of
 // internal/promql/classic_bucket_window_bound.go, and they are the same at
-// two and at sixteen threads. Here and in classicMergeShapes a shape is
-// pinned answered only where every measured run answered below 90% of the
-// cap; one that failed on some run, or peaked above that, is pinned in the
-// band, where answering and the cap's 422 both pass and the per-series
-// refusal fails.
+// two and at sixteen threads. Here, in classicWindowManySeriesProbes and
+// classicWindowShortSeriesProbes, and in classicMergeShapes a shape is pinned
+// answered only where every measured run answered below 90% of the cap; one
+// that failed on some run, or peaked above that, is pinned in the band, where
+// answering and the cap's 422 both pass and the per-series refusal fails.
 var classicWindowSeriesProbes = []classicWindowProbe{
 	// 30,000 x 51 = 1,530,000 entries.
 	{
@@ -231,10 +244,10 @@ var classicWindowManySeriesProbes = []classicWindowProbe{
 // classicWindowNearestRefusedShortSeries is the smallest many-short-series
 // shape measured to run out of memory on every run on both builds: 58,000
 // series of 96 samples, 3.1 seconds apart so all 96 fall in the range. Of the
-// smaller shapes measured, 58,000 x 72 answers on both builds and
-// 58,000 x 84 answers on 26.6 (the many-short-series table of
-// internal/promql/classic_bucket_window_bound.go); nothing between 84 and 96
-// samples was measured.
+// smaller shapes measured, 58,000 x 72 answered on both builds and
+// 58,000 x 84 answered on 26.6 in the runs measured (the many-short-series
+// table of internal/promql/classic_bucket_window_bound.go); nothing between 84
+// and 96 samples was measured.
 var classicWindowNearestRefusedShortSeries = classicWindowShape{series: 58_000, samples: 96, spacing: 3100 * time.Millisecond}
 
 // checkClassicWindowProbes fails t unless every probe's shape fits its range
@@ -365,22 +378,17 @@ const classicServerTwoThreads = "auto(2)"
 // TestClassicWindow_OutcomesAcrossBuilds serves the instant
 // classic-histogram quantile through the production handler under the 1 GiB
 // query memory cap and the default resource bounds, on each build, on a
-// server running a statement on two threads. Many short series answer with
-// the quantile their seed implies. Each probe of classicWindowSeriesProbes
-// and classicWindowManySeriesProbes gets the outcome it pins for the build:
-// the answer, HTTP 422 with the classic-histogram memory-limit message and
-// ClickHouse's code 241 in query_log, or, for one series past the per-series
-// ceiling alone, HTTP 422 with the per-series check's message below half the
-// cap. Each single-series statement that reads its whole series uses at most
-// classicTwoThreadPeakThreads threads.
+// server running a statement on two threads. Each probe of
+// classicWindowSeriesProbes, classicWindowManySeriesProbes and
+// classicWindowShortSeriesProbes gets the outcome it pins for the build: the
+// answer with the quantile its seed implies, HTTP 422 with the
+// classic-histogram memory-limit message and ClickHouse's code 241 in
+// query_log, either of those two in the band, or, for one series past the
+// per-series ceiling alone, HTTP 422 with the per-series check's message below
+// half the cap. Each single-series statement that reads its whole series uses
+// at most classicTwoThreadPeakThreads threads.
 func TestClassicWindow_OutcomesAcrossBuilds(t *testing.T) {
-	probes := append(append([]classicWindowProbe{}, classicWindowSeriesProbes...), classicWindowManySeriesProbes...)
-	for _, sh := range classicWindowShortSeries {
-		probes = append(probes, classicWindowProbe{
-			name: fmt.Sprintf("short-series-%d", sh.samples), shape: sh, fn: "rate",
-			want: classicWindowOnBoth(classicWindowAnswered),
-		})
-	}
+	probes := slices.Concat(classicWindowSeriesProbes, classicWindowManySeriesProbes, classicWindowShortSeriesProbes)
 	checkClassicWindowProbes(t, probes)
 	for _, image := range classicMergeBuilds {
 		t.Run(image, func(t *testing.T) {

@@ -62,13 +62,18 @@ import (
 //
 // Many short series under the shipped constants, measured at max_threads 2
 // (the thread count of the 2-CPU containers) with every sample of a series
-// inside the [5m] range: the peak range over the runs in parentheses, or OOM
-// where every run ended in code 241.
+// inside the [5m] range: the peak range over the runs in parentheses, OOM
+// where every run ended in code 241, or band where some runs answered and the
+// others ended in code 241 at the cap.
 //
 //	series × samples   E        26.8                 26.6
 //	58,000 × 28        82.8M    683-822 (4 runs)     638-642 (4 runs)
 //	58,000 × 30        88.7M    684-798 (4 runs)     638-643 (4 runs)
-//	58,000 × 56        165.6M   823-828 (2 runs)     723-744 (2 runs)
+//	58,000 × 56        165.6M   765-836 (6 runs)     band (24 runs)
+//	  (26.6: answered 22 of 24 runs at 709-986 MiB, and 2 ended in code 241
+//	   at the cap; 22 of these runs and 4 of the 26.8 ones in the 8 GiB
+//	   containers of test/chserver. The peak is in the window fold after
+//	   the GROUP BY spills; #4340)
 //	58,000 × 72        213.0M   961-1,011 (2 runs)   839-853 (2 runs)
 //	58,000 × 84        248.5M   OOM (2 runs)         922-952 (2 runs)
 //	58,000 × 96        284.0M   OOM (8 runs)         OOM (8 runs)
