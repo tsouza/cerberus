@@ -21,8 +21,8 @@ require (
 	github.com/grafana/loki/pkg/push v0.0.0-20250630054201-94c0ba7b0952
 	github.com/grafana/loki/v3 v3.7.1
 	github.com/grafana/tempo v1.5.1-0.20260508211128-2f74ea818de1
-	github.com/moby/moby/api v1.56.1
-	github.com/moby/moby/client v0.6.2
+	github.com/moby/moby/api v1.57.0
+	github.com/moby/moby/client v0.6.3
 	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter v0.152.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/common v0.74.0
