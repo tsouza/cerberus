@@ -1,0 +1,14 @@
+diff --git a/internal/chplan/per_trace_window.go b/internal/chplan/per_trace_window.go
+index 98ccb6bf7..1448b47bd 100644
+--- a/internal/chplan/per_trace_window.go
++++ b/internal/chplan/per_trace_window.go
+@@ -233,9 +233,6 @@ func windowPerTrace(n Node, rows, perTrace Expr) Node {
+ 	switch v := n.(type) {
+ 	case *TraceLookupFilter:
+ 		PushLeafPredicateIntoCohort(v.Predicate, perTrace)
+-		for i, lookup := range v.Lookups {
+-			v.Lookups[i] = PushLeafPredicate(lookup, perTrace)
+-		}
+ 		v.Input = windowPlainRowSource(windowPerTrace(v.Input, rows, perTrace), rows)
+ 		return v
+ 	case *Filter:
