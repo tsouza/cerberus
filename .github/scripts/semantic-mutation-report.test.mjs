@@ -277,7 +277,7 @@ test("buildMutationCohortReport: the semantic cohort's kill rate is reported per
   assert.match(markdown, /By detector evidence kind/);
 });
 
-test("real corpus: the two TestLower-detector LogQL mutants are golden-text and the property/grpc-detector mutants are execution", () => {
+test("real corpus: the two TestLower-detector LogQL mutants are golden-text and the property/chDB-detector mutants are execution", () => {
   const records = loadMutants();
   const model = loadSemanticModel(DEFAULT_SEMANTIC_MODEL_DIR);
   const report = buildMutationCohortReport(records, { contracts: model.contracts });
@@ -289,6 +289,7 @@ test("real corpus: the two TestLower-detector LogQL mutants are golden-text and 
   assert.deepEqual(byKind.execution.record_ids, [
     "MUTANT-PROMQL-COUNTER-RESET-COMPENSATION",
     "MUTANT-PROMQL-RANGE-WINDOW-BOUNDARY-CLOSED-LEFT",
+    "MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION",
     "MUTANT-TRACEQL-DESCENDANT-AS-CHILD",
     "MUTANT-TRACEQL-SCOPE-SWAP",
   ]);
@@ -299,22 +300,27 @@ test("real corpus: every canonical head has real, non-empty membership, includin
   const records = loadMutants();
   const model = loadSemanticModel(DEFAULT_SEMANTIC_MODEL_DIR);
   const report = buildMutationCohortReport(records, { contracts: model.contracts });
-  assert.equal(report.records.length, 13);
+  assert.equal(report.records.length, 14);
 
   // Real membership, not just "the key exists" — each canonical head must
-  // actually have at least one real record attributed to it, and the one
-  // mutation whose violated_contracts span two heads (the LogQL anchoring
-  // mutant, which also violates a PromQL contract via the shared
-  // anchoredRegexPattern emission site) must appear under BOTH.
+  // actually have at least one real record attributed to it, and the two
+  // mutations whose violated_contracts span two heads (the anchoring
+  // mutant and the literal-set mutant, both in the label-matcher emitter
+  // every head shares) must appear under BOTH.
   for (const headId of CANONICAL_HEADS) {
     assert.ok(report.by_head[headId].record_ids.length > 0, `${headId} has no real record attributed to it`);
   }
-  assert.ok(report.by_head["HEAD-LOGQL"].record_ids.includes("MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741"));
-  assert.ok(report.by_head["HEAD-PROMQL"].record_ids.includes("MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741"));
-  assert.deepEqual(report.cross_head_record_ids, ["MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741"]);
+  for (const id of ["MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741", "MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION"]) {
+    assert.ok(report.by_head["HEAD-LOGQL"].record_ids.includes(id), `${id} is missing from HEAD-LOGQL`);
+    assert.ok(report.by_head["HEAD-PROMQL"].record_ids.includes(id), `${id} is missing from HEAD-PROMQL`);
+  }
+  assert.deepEqual(report.cross_head_record_ids, [
+    "MUTANT-LOGQL-LABEL-MATCHER-UNANCHORED-1741",
+    "MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION",
+  ]);
 
   assert.equal(report.synthetic_cohort.rates.total, 7);
-  assert.equal(report.semantic_cohort.rates.total, 6);
+  assert.equal(report.semantic_cohort.rates.total, 7);
 });
 
 test("real corpus: the synthetic cohort's seven records exercise every one of the seven CLASSIFICATIONS at least once", () => {
