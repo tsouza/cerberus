@@ -1,0 +1,38 @@
+{
+  "schema_version": 2,
+  "id": "MUTANT-SIGNAL-REGEX-LITERAL-SET-ACCEPTS-REPETITION",
+  "title": "literalSet reads x+ as x, so a regex matcher with an unbounded repetition is rewritten to a finite IN set",
+  "synthetic": false,
+  "synthetic_rationale": null,
+  "violated_contracts": [
+    "PROMQL-LABEL-MATCHER-REGEX-ANCHORING",
+    "LOGQL-LABEL-MATCHER-REGEX-ANCHORING",
+    "SIGNAL-LABEL-MATCHER-CONSISTENCY"
+  ],
+  "transformation": {
+    "target_path": "internal/chsql/regex_literal_set.go",
+    "patch_path": "test/semantic/mutants/patches/regex-literal-set-accepts-plus.patch",
+    "pre_image_fingerprint": "9799fd9965d3abc688b0b08a18e5af5939989cce9bb2ea4108f5faf2b3505b56",
+    "post_image_fingerprint": "3a10fbb6e20ee57f8124a344938af934a6b5f8a842b320be7e64e29e78597a16"
+  },
+  "detectors": [
+    {
+      "id": "regex-literal-set-answers-as-anchored-match",
+      "package": "./internal/chsql",
+      "test_run": "^TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB$",
+      "build_tags": [
+        "chdb"
+      ],
+      "timeout_seconds": 90,
+      "evidence_kind": "execution"
+    }
+  ],
+  "expected_detection": "killed",
+  "equivalence_review": null,
+  "isolation": {
+    "requires_chdb": true,
+    "memory_max": "2GiB",
+    "memory_hold": "2s"
+  },
+  "notes": "Adds syntax.OpPlus to the OpCapture arm of literalSet (internal/chsql/regex_literal_set.go), so `x+` is read as the language of `x` alone. anchoredRegexLiteralSet then accepts a pattern whose language is infinite: job=~\"a+\" is rewritten to job = 'a', and job=~\"\\\\d+\" to job IN ('0', …, '9'). The rewritten matcher no longer answers what match() over the anchored pattern ^(?:a+)$ answers: it rejects \"aa\" where match() accepts it, and the negated matcher keeps \"aa\" where NOT match() drops it. The rewrite is the second of the two SQL forms a chplan.OpMatch/OpNotMatch label matcher renders through (Builder.regexMatcher in internal/chsql/builder.go), and it is shared by every head, so the mutation breaks PromQL and LogQL matchers alike. The detector, TestRegexLiteralSet_AnswersAsAnchoredMatch_ChDB, renders each pattern of its corpus both ways — through the production Builder path and through anchoredRegexMatch, the match() form the rewrite replaces — executes both for =~ and !~ against one chDB table, and fails on every row where they differ. The table holds the absent label, the empty value, invalid UTF-8 and the near misses of every member, both of the hand-written member lists the test carries and of the sets the rewrite returns; the near misses include the member repeated, which is the value this mutation gets wrong. The kill is an answer divergence on chDB, not a shape assertion: the detector asserts only that the patterns it marks rewritten are rewritten, never that the others are not. It needs the chdb build tag and libchdb.so."
+}
