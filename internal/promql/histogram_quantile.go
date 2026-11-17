@@ -335,23 +335,7 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		// sort_by_label(h or f, l))`) is not such a pipeline: its
 		// histogram partition is interpolated exactly as the direct mixed
 		// `or`'s is above.
-		inner, err := lower(c.Args[1], s, ctx)
-		if err != nil {
-			return nil, err
-		}
-		if err := requireMixedPlanPolicy(inner, mixedHistogramValueFamily, mixedBespoke); err != nil {
-			return nil, err
-		}
-		if mixedRowsNeedPreparation(inner) {
-			return lowerHistogramQuantileNativeOverProjection(wrapMixedHistogramPartition(inner, s), phi, s), nil
-		}
-		if !mayCarryBucketBound(c.Args[1]) || planProvablyEmpty(inner) {
-			return &chplan.Filter{
-				Input:     inner,
-				Predicate: &chplan.LitBool{V: false},
-			}, nil
-		}
-		return lowerHistogramQuantileClassicFloatOverPlan(inner, phi, s, ctx), nil
+		return lowerHistogramQuantileUnrecognisedArg(c.Args[1], phi, s, ctx)
 	}
 
 	if s.IsExpHistogramMetric(vs.Name) {
@@ -396,6 +380,28 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		return broadcastHistogramAtPin(inner, s, ctx), nil
 	}
 	return lowerHistogramQuantileClassicBare(vs, phi, s, ctx)
+}
+
+// lowerHistogramQuantileUnrecognisedArg is lowerHistogramQuantile's
+// unrecognised-inner-shape fallback: see the comment at its call site.
+func lowerHistogramQuantileUnrecognisedArg(arg parser.Expr, phi phiArg, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	inner, err := lower(arg, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireMixedPlanPolicy(inner, mixedHistogramValueFamily, mixedBespoke); err != nil {
+		return nil, err
+	}
+	if mixedRowsNeedPreparation(inner) {
+		return lowerHistogramQuantileNativeOverProjection(wrapMixedHistogramPartition(inner, s), phi, s), nil
+	}
+	if !mayCarryBucketBound(arg) || planProvablyEmpty(inner) {
+		return &chplan.Filter{
+			Input:     inner,
+			Predicate: &chplan.LitBool{V: false},
+		}, nil
+	}
+	return lowerHistogramQuantileClassicFloatOverPlan(inner, phi, s, ctx), nil
 }
 
 // histogramScalarArgCtx returns the context a computed scalar argument of
