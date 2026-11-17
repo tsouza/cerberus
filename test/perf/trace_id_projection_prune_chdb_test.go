@@ -42,7 +42,9 @@
 // wall-clock latency improvement (row-level CPU filtering, not I/O), which
 // this test reports and guards against REGRESSING — it does not assert a
 // specific multiplier, because asserting one would misstate what actually
-// moves for this shape.
+// moves for this shape. The two variants are timed as interleaved pairs
+// (comparePairedLatency), so a host slowdown that overlaps one variant's
+// stretch of the run cannot pass for a plan difference.
 //
 // Both are real, both are cerberus issue #2767's actual production shapes,
 // and reporting only the flattering one would misrepresent the feature.
@@ -58,7 +60,6 @@ package perf
 import (
 	"database/sql"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -93,17 +94,19 @@ const (
 	// best case for either variant.
 	tpLookupTraceStride = 997
 
-	// tpLatencyReps / tpLatencyWarmup: repeated timed runs (after warmup,
-	// which primes chDB's own part/mark metadata caches so the FIRST timed
-	// rep is not penalized for one-time setup cost neither variant pays in
-	// steady state) — the median, not the mean, is reported since chDB's
+	// tpLatencyReps / tpLatencyWarmup: BEFORE/AFTER pairs timed by
+	// comparePairedLatency, the first tpLatencyWarmup of them discarded
+	// (warmup primes chDB's own part/mark metadata caches so the FIRST
+	// timed pair is not penalized for one-time setup cost neither variant
+	// pays in steady state) — medians, not means, are reported since chDB's
 	// in-process runtime under CI-shared cores has occasional long-tail
 	// scheduling stalls unrelated to the query plan itself.
 	tpLatencyReps   = 15
 	tpLatencyWarmup = 3
 
 	// tpFullRowRegressionTolerance bounds how much SLOWER the AFTER variant
-	// (projection installed + setting stamped) may be than BEFORE before
+	// (projection installed + setting stamped) may be than BEFORE — as the
+	// median of the per-pair AFTER/BEFORE ratios — before
 	// TestTraceIDProjectionPrune_FullRow fails — the "watch out for
 	// performance regressions" guard for the shape whose win is modest by
 	// measurement (row-level CPU filtering, not granule-level I/O — see the
@@ -254,14 +257,13 @@ func tpProjectionUsed(t *testing.T, db *sql.DB, query string) bool {
 	return false
 }
 
-// tpMedianLatency runs query tpLatencyReps times (discarding the first
-// tpLatencyWarmup as cache warmup) and returns the median wall-clock
-// duration — the headline "measured, not assumed" number cerberus issue
-// #2767's performance-verification directive asks for.
-func tpMedianLatency(t *testing.T, db *sql.DB, query string) time.Duration {
-	t.Helper()
-	var samples []time.Duration
-	for i := range tpLatencyReps {
+// tpQueryTimer returns a comparePairedLatency runner that executes query on
+// db, drains every row, and returns the wall-clock duration — the headline
+// "measured, not assumed" number cerberus issue #2767's
+// performance-verification directive asks for.
+func tpQueryTimer(t *testing.T, db *sql.DB) func(query string) time.Duration {
+	return func(query string) time.Duration {
+		t.Helper()
 		start := time.Now()
 		rows, err := db.Query(query)
 		if err != nil {
@@ -282,30 +284,20 @@ func tpMedianLatency(t *testing.T, db *sql.DB, query string) time.Duration {
 			t.Fatalf("rows: %v", err)
 		}
 		rows.Close()
-		elapsed := time.Since(start)
-		if i >= tpLatencyWarmup {
-			samples = append(samples, elapsed)
-		}
+		return time.Since(start)
 	}
-	slices.Sort(samples)
-	return samples[len(samples)/2]
 }
 
-// tpLogResult prints the shared before/after summary line both probes below
-// use, and returns the measured latency ratio (before/after; >1 = AFTER
-// faster).
-func tpLogResult(t *testing.T, label string, beforeGranules, afterGranules int, beforeLatency, afterLatency time.Duration) float64 {
+// tpLogResult prints the shared before/after summary both probes below use.
+func tpLogResult(t *testing.T, label string, beforeGranules, afterGranules int, latency latencyComparison) {
 	t.Helper()
-	ratio := float64(beforeLatency) / float64(maxInt1Duration(afterLatency))
 	t.Logf("=== %s: %d spans, %d spans/trace, %d dense day-partitions, %d IDs looked up ===",
 		label, tpTotalSpans, tpSpansPerTrace, tpNumDays, tpLookupTraceCount)
 	t.Logf("%-8s | %-16s | %s", "variant", "data granules", "median latency")
-	t.Logf("%-8s | %-16d | %s", "BEFORE", beforeGranules, beforeLatency)
-	t.Logf("%-8s | %-16d | %s", "AFTER", afterGranules, afterLatency)
-	t.Logf("granule reduction: %.1fx (before=%d after=%d) | latency: %.2fx (before=%s after=%s)",
-		float64(beforeGranules)/float64(maxInt1(afterGranules)), beforeGranules, afterGranules,
-		ratio, beforeLatency, afterLatency)
-	return ratio
+	t.Logf("%-8s | %-16d | %s", "BEFORE", beforeGranules, latency.Before)
+	t.Logf("%-8s | %-16d | %s", "AFTER", afterGranules, latency.After)
+	t.Logf("granule reduction: %.1fx (before=%d after=%d) | median paired AFTER/BEFORE latency: %.2fx (<1 = AFTER faster)",
+		float64(beforeGranules)/float64(maxInt1(afterGranules)), beforeGranules, afterGranules, latency.Ratio)
 }
 
 // TestTraceIDProjectionPrune_CoveringOnly probes an existence-check shape —
@@ -359,9 +351,8 @@ func TestTraceIDProjectionPrune_CoveringOnly(t *testing.T) {
 
 	beforeGranules := tpDataGranules(t, db, beforeQuery)
 	afterGranules := tpDataGranules(t, db, afterQuery)
-	beforeLatency := tpMedianLatency(t, db, beforeQuery)
-	afterLatency := tpMedianLatency(t, db, afterQuery)
-	tpLogResult(t, "proj_trace_id covering-only (existence check)", beforeGranules, afterGranules, beforeLatency, afterLatency)
+	latency := comparePairedLatency(tpLatencyReps, tpLatencyWarmup, tpQueryTimer(t, db), beforeQuery, afterQuery)
+	tpLogResult(t, "proj_trace_id covering-only (existence check)", beforeGranules, afterGranules, latency)
 
 	if afterGranules >= beforeGranules {
 		t.Fatalf("proj_trace_id did NOT reduce data granules read for the covering-only shape: BEFORE=%d AFTER=%d",
@@ -437,15 +428,15 @@ func TestTraceIDProjectionPrune_FullRow(t *testing.T) {
 
 	beforeGranules := tpDataGranules(t, db, beforeQuery)
 	afterGranules := tpDataGranules(t, db, afterQuery)
-	beforeLatency := tpMedianLatency(t, db, beforeQuery)
-	afterLatency := tpMedianLatency(t, db, afterQuery)
-	tpLogResult(t, "proj_trace_id full-row (root_lookup.go shape)", beforeGranules, afterGranules, beforeLatency, afterLatency)
+	latency := comparePairedLatency(tpLatencyReps, tpLatencyWarmup, tpQueryTimer(t, db), beforeQuery, afterQuery)
+	tpLogResult(t, "proj_trace_id full-row (root_lookup.go shape)", beforeGranules, afterGranules, latency)
 
 	// --- REGRESSION GUARD (not a win assertion — see the doc comment) ----
-	if float64(afterLatency) > float64(beforeLatency)*tpFullRowRegressionTolerance {
-		t.Fatalf("AFTER (%s) is more than %.1fx slower than BEFORE (%s) for the full-row shape — "+
-			"the projection's write-path/read-path cost is regressing this query, not merely failing to help it",
-			afterLatency, tpFullRowRegressionTolerance, beforeLatency)
+	if latency.Ratio > tpFullRowRegressionTolerance {
+		t.Fatalf("AFTER is %.2fx slower than BEFORE (median of interleaved pairs; bound %.1fx) for the full-row shape — "+
+			"the projection's write-path/read-path cost is regressing this query, not merely failing to help it "+
+			"(medians BEFORE=%s AFTER=%s; per-pair AFTER/BEFORE ratios %.2f)",
+			latency.Ratio, tpFullRowRegressionTolerance, latency.Before, latency.After, latency.PairRatios)
 	}
 }
 
@@ -468,13 +459,4 @@ func tpSpanIDs(t *testing.T, db *sql.DB, query string) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// maxInt1Duration floors d at 1ns so a latency ratio never divides by zero
-// on an implausibly-fast AFTER sample.
-func maxInt1Duration(d time.Duration) time.Duration {
-	if d < 1 {
-		return 1
-	}
-	return d
 }
