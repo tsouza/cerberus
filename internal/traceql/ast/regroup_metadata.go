@@ -58,8 +58,11 @@ func (r *RootExpr) RegroupLeavesTraceFieldUnset(in Intrinsic) bool {
 	return false
 }
 
-// pipelineRegroups reports whether a stage of p builds new spansets —
-// `by(...)` or `coalesce()` — at any depth.
+// pipelineRegroups reports whether a stage of p returns new spansets — a
+// `by(...)` or `coalesce()` stage, directly or in a nested pipeline. A
+// regrouping operand of a spanset operation does not count: the operation
+// answers a clone of its input spanset (Tempo's addSpanset), which keeps the
+// input's trace-level fields.
 func pipelineRegroups(p Pipeline) bool {
 	for _, elem := range p.Elements {
 		if elemRegroups(elem) {
@@ -75,8 +78,6 @@ func elemRegroups(elem any) bool {
 		return true
 	case Pipeline:
 		return pipelineRegroups(e)
-	case SpansetOperation:
-		return elemRegroups(e.LHS) || elemRegroups(e.RHS)
 	}
 	return false
 }
@@ -201,16 +202,15 @@ func (c *fetchConditions) field(fe FieldExpression) {
 }
 
 // binary mirrors (*BinaryOperation).extractConditions: an attribute
-// compared with a literal carries the operator, unless the fetch layer
-// cannot build a predicate from it (a non-boolean operator, `!= nil`, or a
-// boolean literal under && / ||); any other attribute operand is read with
-// no predicate.
+// compared with a literal carries the operator, unless the operator builds no
+// predicate (literalConditionOp); any other attribute operand is read with no
+// predicate.
 func (c *fetchConditions) binary(o *BinaryOperation) {
 	switch l := o.LHS.(type) {
 	case Attribute:
 		switch r := o.RHS.(type) {
 		case Static:
-			c.add(l, literalConditionOp(o.Op, r))
+			c.add(l, literalConditionOp(o.Op))
 		case Attribute:
 			c.add(l, OpNone)
 			c.add(r, OpNone)
@@ -222,7 +222,7 @@ func (c *fetchConditions) binary(o *BinaryOperation) {
 		switch r := o.RHS.(type) {
 		case Static:
 		case Attribute:
-			c.add(r, literalConditionOp(o.Op, l))
+			c.add(r, literalConditionOp(o.Op))
 		default:
 			c.field(o.RHS)
 		}
@@ -234,21 +234,25 @@ func (c *fetchConditions) binary(o *BinaryOperation) {
 }
 
 // literalConditionOp is the operator an attribute-vs-literal comparison
-// hands the fetch layer.
-func literalConditionOp(op Operator, lit Static) Operator {
-	switch {
-	case (lit.Type == TypeNil && op == OpNotEqual) || !op.isBoolean():
-		return OpNone
-	case lit.Type == TypeBoolean && (op == OpOr || op == OpAnd):
+// hands the fetch layer: none for a non-boolean operator, which is no
+// predicate. Tempo also drops the operator of a `!= nil` comparison and of a
+// boolean literal under && / ||; neither reaches a trace-level intrinsic,
+// the only reads this walk reports, because the parser folds every nil
+// comparison into an existence test and validation rejects a boolean
+// literal against a string or duration operand.
+func literalConditionOp(op Operator) Operator {
+	if !op.isBoolean() {
 		return OpNone
 	}
 	return op
 }
 
 // unary mirrors UnaryOperation.extractConditions: an existence test on an
-// attribute carries its operator; anything else reads its operand.
+// attribute carries its operator; anything else reads its operand. Only
+// `!= nil` applies to a trace-level intrinsic, since validation rejects
+// `= nil` on any intrinsic.
 func (c *fetchConditions) unary(o UnaryOperation) {
-	if a, ok := o.Expression.(Attribute); ok && (o.Op == OpExists || o.Op == OpNotExists) {
+	if a, ok := o.Expression.(Attribute); ok && o.Op == OpExists {
 		c.add(a, o.Op)
 		return
 	}

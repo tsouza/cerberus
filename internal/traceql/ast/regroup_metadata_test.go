@@ -41,6 +41,9 @@ func TestRegroupLeavesTraceFieldUnset(t *testing.T) {
 		{`{ rootName =~ "GET.*" } | by(name)`, rootName, false, "a literal comparison carries a predicate"},
 		{`{ rootName != nil } | by(name)`, rootName, false, "!= nil is an existence test, which carries its operator"},
 		{`{ traceDuration > 1ms } | by(name)`, traceDur, false, "a literal comparison carries a predicate"},
+		{`{ rootName != "x" } | by(name)`, rootName, false, "a literal inequality carries a predicate"},
+		{`{ traceDuration + 1ms > 2ms } | by(name)`, traceDur, true, "arithmetic with a literal is no predicate"},
+		{`{ (traceDuration + 1ms) != nil } | by(name)`, traceDur, true, "an existence test on an expression reads its operand with no predicate"},
 		{`{ } | by(name) | select(rootName)`, rootName, false, "select() reads in the second pass"},
 		{`{ } | select(name) | by(rootName)`, rootName, false, "every stage after select() reads in the second pass"},
 		{`{ } | by(rootName) | coalesce()`, rootName, true, "a later coalesce() regroups again"},
@@ -55,6 +58,12 @@ func TestRegroupLeavesTraceFieldUnset(t *testing.T) {
 		{`{ rootName = name || kind = server } | coalesce()`, rootName, true, "|| clears AllConditions but the read has no predicate"},
 		{`{ rootName =~ "GET.*" } | count() > 0 | coalesce()`, rootName, false, "an aggregate clears AllConditions"},
 		{`{ rootName =~ "GET.*" } && { } | coalesce()`, rootName, false, "a spanset operation clears AllConditions"},
+		{`{ } | coalesce() | avg(traceDuration) > 1ms`, traceDur, true, "the aggregate reads its argument with no predicate"},
+
+		// A spanset operation answers a clone of its input spanset, so a
+		// regrouping operand leaves the trace-level fields in place.
+		{`({ } | by(rootName)) && ({ })`, rootName, false, "the operation keeps its input spanset's fields"},
+		{`({ } | coalesce()) || ({ kind = server })`, rootName, false, "the operation keeps its input spanset's fields"},
 
 		// A second-pass read refills the field: select() reads its attributes
 		// there, and so does every later stage whose attribute the first pass
