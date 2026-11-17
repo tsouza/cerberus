@@ -60,6 +60,7 @@ func TestDropGroupByBeforeMetrics(t *testing.T) {
 		{`{} | by(name) | count_over_time() by (kind)`, `{} | count_over_time() by (kind)`},
 		{`{} | by(name) | by(kind) | rate()`, `{} | rate()`},
 		{`{} | by(span.a + 1) | rate()`, `{} | rate()`},
+		{`{} | by(name) | compare({ status = error })`, `{} | compare({ status = error })`},
 	}
 	for _, p := range pairs {
 		got := lowerPlain(t, p[0], s)

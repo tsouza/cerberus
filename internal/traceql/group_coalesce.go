@@ -140,8 +140,9 @@ func annotateNestedSet(n chplan.Node, s schema.Traces) chplan.Node {
 // as a stage instead, by() collapses the spans to one row per group, which
 // leaves the metric no span timestamps to bucket.
 //
-// A by() stage with another stage after it (`{ } | by(name) | count() > 1 |
-// rate()`) decides which spans that stage passes, so it is kept.
+// Only by() stages with nothing between them and the metrics function are
+// dropped. One followed by another stage (`{ } | by(name) | count() > 1 |
+// rate()`, where it decides which spans the scalar filter passes) is kept.
 func dropGroupByBeforeMetrics(pipeline traceql.Pipeline) traceql.Pipeline {
 	els := pipeline.Elements
 	keep := len(els)

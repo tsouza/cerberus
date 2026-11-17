@@ -1,7 +1,8 @@
 # A pipeline may open with `by(...)`. Reference Tempo hands it every span of
 # every trace, as `{ }` would, so `by(resource.service.name)` answers what
 # `{ } | by(resource.service.name)` answers: one group per (trace, service)
-# — frontend and backend on trace ...01, checkout on ...02, orders on ...03.
+# — frontend and backend on trace ...01, checkout on ...02, orders on ...03 —
+# which the search summary folds into one row per trace, counting its spans.
 -- query.traceql --
 by(resource.service.name)
 -- seed --

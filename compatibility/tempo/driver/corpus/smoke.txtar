@@ -485,7 +485,7 @@ search
 -- expected_max_traces --
 500
 
-# --- Metrics pipeline: /api/metrics/query_range (4) ---
+# --- Metrics pipeline: /api/metrics/query_range (8) ---
 # These hit cerberus's /api/metrics/query_range (implemented today —
 # see internal/api/tempo/metrics_query_range.go) and Tempo's native
 # /api/metrics/query_range. The wire shape is `{series:[{labels,

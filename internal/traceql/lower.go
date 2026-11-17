@@ -453,9 +453,9 @@ func lowerScalarExpr(prev chplan.Node, e traceql.ScalarExpression, s schema.Trac
 
 // lowerPipelineElement dispatches the first TraceQL pipeline element to
 // its corresponding lowering routine: SpansetFilter or SpansetOperation.
-// Aggregates, select, group and scalar filters are dispatched by
-// lowerFollowingElement: a pipeline that opens with one of them has had a
-// `{ }` placed before it by withImplicitSpansetFilter.
+// Select, group and scalar filters are dispatched by lowerFollowingElement:
+// a pipeline that opens with one of them has had a `{ }` placed before it by
+// withImplicitSpansetFilter.
 func lowerPipelineElement(elem traceql.PipelineElement, s schema.Traces) (chplan.Node, error) {
 	switch v := elem.(type) {
 	case *traceql.SpansetFilter:
