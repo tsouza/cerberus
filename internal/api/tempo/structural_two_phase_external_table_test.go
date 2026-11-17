@@ -35,7 +35,7 @@ func TestUseExternalTraceIDTable_Threshold(t *testing.T) {
 }
 
 // TestUseExternalTraceIDTable_EmptyIsLiteral pins the vacuous case: zero ids
-// never trips the external-table path (runStructuralTwoPhase already returns
+// never trips the external-table path (runTwoPhase already returns
 // early on an empty phase-A result before restrictStructural is even called,
 // but the pure function itself must not be the one relying on that).
 func TestUseExternalTraceIDTable_EmptyIsLiteral(t *testing.T) {
@@ -82,7 +82,7 @@ func TestRestrictStructural_LiteralWhenIneligible(t *testing.T) {
 // TestRestrictStructural_ExternalWhenEligibleAndWide pins the positive case:
 // externalEligible=true plus a wide closure switches every structural join in
 // the plan to the external-table form, and the returned ids are the padded
-// values runStructuralTwoPhase threads to chclient.WithExternalTraceIDs.
+// values runTwoPhase threads to chclient.WithExternalTraceIDs.
 func TestRestrictStructural_ExternalWhenEligibleAndWide(t *testing.T) {
 	wide := make([]string, 2000)
 	for i := range wide {

@@ -2420,6 +2420,28 @@ func TestSearchTraceLimit_Equal_Negative_Input(t *testing.T) {
 	}
 }
 
+func TestSearchTraceLimit_Equal_Rank(t *testing.T) {
+	t.Parallel()
+	build := func(rank chplan.Node) *chplan.SearchTraceLimit {
+		return &chplan.SearchTraceLimit{Input: &chplan.Scan{Table: "drain"}, Rank: rank, TraceLimit: 5}
+	}
+	if !build(&chplan.Scan{Table: "rank"}).Equal(build(&chplan.Scan{Table: "rank"})) {
+		t.Errorf("identical Rank should be Equal")
+	}
+	for _, tc := range []struct {
+		name string
+		a, b chplan.Node
+	}{
+		{"Rank set vs unset", &chplan.Scan{Table: "rank"}, nil},
+		{"Rank unset vs set", nil, &chplan.Scan{Table: "rank"}},
+		{"different Rank", &chplan.Scan{Table: "rank"}, &chplan.Scan{Table: "other"}},
+	} {
+		if build(tc.a).Equal(build(tc.b)) {
+			t.Errorf("%s should not be Equal", tc.name)
+		}
+	}
+}
+
 func TestSearchTraceLimit_Equal_Negative_OtherType(t *testing.T) {
 	t.Parallel()
 	a := &chplan.SearchTraceLimit{Input: &chplan.Scan{Table: "t"}, TraceLimit: 5}

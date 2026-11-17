@@ -98,8 +98,16 @@ func TestSearchWindow_MetricsGuard(t *testing.T) {
 func TestSearchWindow_PlainNotDoubleFolded(t *testing.T) {
 	t.Parallel()
 	plan := lowerSearchWindowed(t, `{ resource.service.name = "a" }`, 20, winStart, winEnd)
-	if got := countWindowBounds(plan); got != 2 {
-		t.Fatalf("plain search window bounds = %d, want 2 (stampSearchTraceLimit fold only, no double-fold)", got)
+	limited, ok := plan.(*chplan.SearchTraceLimit)
+	if !ok || limited.Rank == nil {
+		t.Fatalf("lowered plan = %T, want a *chplan.SearchTraceLimit with a Rank", plan)
+	}
+	// The drain and the rank each carry the one fold stampSearchTraceLimit
+	// gave them: their own window's two bounds, never a second fold.
+	for name, source := range map[string]chplan.Node{"Input": limited.Input, "Rank": limited.Rank} {
+		if got := countWindowBounds(source); got != 2 {
+			t.Fatalf("plain search %s window bounds = %d, want 2 (stampSearchTraceLimit fold only, no double-fold)", name, got)
+		}
 	}
 }
 
@@ -345,7 +353,9 @@ func TestSearchWindow_GroupByAggregateWindowed(t *testing.T) {
 // (`traceDuration`) carries its per-trace aggregate inside an InSubquery of
 // the plain-search predicate. stampSearchTraceLimit must fold the request
 // window into that cohort as well as onto the outer scan, or the inner
-// GROUP BY TraceId scans full retention.
+// GROUP BY TraceId scans full retention. The drain carries no cohort: the
+// ranking already kept only traces whose duration matches, so the drain reads
+// those traces' span rows without evaluating the per-trace aggregate again.
 func TestSearchWindow_TraceScopedCohortWindowed(t *testing.T) {
 	t.Parallel()
 	plan := lowerSearchWindowed(t, `{ traceDuration > 1s }`, 200, winStart, winEnd)
@@ -353,9 +363,9 @@ func TestSearchWindow_TraceScopedCohortWindowed(t *testing.T) {
 	if !ok {
 		t.Fatalf("plan = %T, want *chplan.SearchTraceLimit", plan)
 	}
-	f, ok := stl.Input.(*chplan.Filter)
+	f, ok := stl.RankSource().(*chplan.Filter)
 	if !ok {
-		t.Fatalf("SearchTraceLimit input = %T, want *chplan.Filter", stl.Input)
+		t.Fatalf("SearchTraceLimit rank source = %T, want *chplan.Filter", stl.RankSource())
 	}
 	cohorts := chplan.CohortSubqueries(f.Predicate)
 	if len(cohorts) != 1 {
@@ -363,6 +373,56 @@ func TestSearchWindow_TraceScopedCohortWindowed(t *testing.T) {
 	}
 	if got := countWindowBounds(cohorts[0].Subquery); got != 2 {
 		t.Fatalf("cohort window bounds = %d, want 2 (start and end folded into the per-trace aggregate)", got)
+	}
+	drain, ok := stl.Input.(*chplan.Filter)
+	if !ok || stl.Rank == nil {
+		t.Fatalf("SearchTraceLimit input = %T with rank %v, want a drain *chplan.Filter beside a Rank", stl.Input, stl.Rank)
+	}
+	if got := chplan.CohortSubqueries(drain.Predicate); len(got) != 0 {
+		t.Fatalf("drain carries %d cohort subqueries, want 0", len(got))
+	}
+	if got := countWindowBounds(drain); got != 2 {
+		t.Fatalf("drain window bounds = %d, want 2", got)
+	}
+}
+
+// TestDropTraceScopedConjuncts pins which conjuncts of a plain-search span
+// predicate the drain drops: a TraceId membership and an AND / OR of
+// memberships go; a span conjunct, a membership OR'd with a span comparison,
+// and a membership over another column stay.
+func TestDropTraceScopedConjuncts(t *testing.T) {
+	t.Parallel()
+	member := func(col string) chplan.Expr {
+		return &chplan.InSubquery{Left: &chplan.ColumnRef{Name: col}, Subquery: &chplan.Scan{Table: "otel_traces"}}
+	}
+	span := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "SpanName"}, Right: &chplan.LitString{V: "a"}}
+	or := func(l, r chplan.Expr) chplan.Expr { return &chplan.Binary{Op: chplan.OpOr, Left: l, Right: r} }
+	for _, tc := range []struct {
+		name string
+		pred chplan.Expr
+		want chplan.Expr // nil: the Filter is dropped, leaving its Scan
+	}{
+		{"membership alone", member("TraceId"), nil},
+		{"membership and span", conjoin(member("TraceId"), span), span},
+		{"or of memberships", conjoin(span, or(member("TraceId"), member("TraceId"))), span},
+		{"membership or span", or(member("TraceId"), span), or(member("TraceId"), span)},
+		{"other column", conjoin(member("SpanId"), span), conjoin(member("SpanId"), span)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			scan := &chplan.Scan{Table: "otel_traces"}
+			got := dropTraceScopedConjuncts(&chplan.Filter{Input: scan, Predicate: tc.pred}, "TraceId")
+			if tc.want == nil {
+				if got != chplan.Node(scan) {
+					t.Fatalf("got %T, want the bare Scan", got)
+				}
+				return
+			}
+			f, ok := got.(*chplan.Filter)
+			if !ok || !f.Predicate.Equal(tc.want) {
+				t.Fatalf("got %#v, want a Filter over %#v", got, tc.want)
+			}
+		})
 	}
 }
 

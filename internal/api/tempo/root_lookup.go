@@ -93,7 +93,7 @@ func (h *Handler) resolveTraceRoots(ctx context.Context, traceIDs []string) (map
 	// buildRootLookupPlan's aggSvc, a bare chplan.MapAccess against
 	// ResourceAttributesColumn) — without this line a JSON-typed
 	// ResourceAttributes column would fail this query with
-	// ILLEGAL_TYPE_OF_ARGUMENT exactly like runStructuralPhaseA's own
+	// ILLEGAL_TYPE_OF_ARGUMENT exactly like runPhaseA's own
 	// bypass did before it was fixed. Unlike that one, a failure here
 	// WARN-degrades (handleSearch drops root enrichment on error) rather
 	// than 502ing the whole search — but degrading a working feature by

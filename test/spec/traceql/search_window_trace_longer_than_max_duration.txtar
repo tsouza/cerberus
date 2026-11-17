@@ -54,8 +54,8 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, Spa
 reason: trace-longer-than-lookback
 detail: `{ rootName != name }` reads a trace whose root span starts 2h before `search_window:`, beyond the 1h maximum trace duration cerberus widens each per-trace lookup by; cerberus clips the trace and reads an empty rootName where the reference, reading the whole stored trace, resolves `checkout`
 -- args --
-[0] int64 = 1767225600000000000
-[1] int64 = 1767226200000000000
+[0] int64 = 1767222000000000000
+[1] int64 = 1767229800000000000
 [2] string = ""
 [3] int64 = 1767222000000000000
 [4] int64 = 1767229800000000000
@@ -70,8 +70,8 @@ detail: `{ rootName != name }` reads a trace whose root span starts 2h before `s
 [0] string = "__cerberus_traceID"
 [1] string = "__cerberus_parentSpanID"
 [2] string = "__cerberus_spanID"
-[3] int64 = 1767225600000000000
-[4] int64 = 1767226200000000000
+[3] int64 = 1767222000000000000
+[4] int64 = 1767229800000000000
 [5] int64 = 1767222000000000000
 [6] int64 = 1767229800000000000
 [7] string = ""
@@ -83,7 +83,13 @@ detail: `{ rootName != name }` reads a trace whose root span starts 2h before `s
 [13] string = ""
 [14] string = ""
 -- chplan --
-SearchTraceLimit traceLimit=20
+SearchTraceLimit traceLimit=20 rank=second-child
+  TraceLookupFilter lookups=1 predicate=(FnIfNull(_cerb_root_name, "") != SpanName)
+    Filter predicate=((Timestamp >= FnFromUnixNanos(1767222000000000000)) AND (Timestamp <= FnFromUnixNanos(1767229800000000000)))
+      Scan(otel_traces, columns=[Duration, ParentSpanId, ResourceAttributes, SpanId, SpanName, Timestamp, TraceId])
+    Aggregate groupBy=[TraceId AS _cerb_lookup_trace_id] funcs=[FnArgMin(SpanName, Timestamp) AS _cerb_root_name]
+      Filter predicate=((ParentSpanId = "") AND ((Timestamp >= FnFromUnixNanos(1767222000000000000)) AND (Timestamp <= FnFromUnixNanos(1767229800000000000))))
+        Scan(otel_traces)
   TraceLookupFilter lookups=1 predicate=(FnIfNull(_cerb_root_name, "") != SpanName)
     Filter predicate=((Timestamp >= FnFromUnixNanos(1767225600000000000)) AND (Timestamp <= FnFromUnixNanos(1767226200000000000)))
       Scan(otel_traces, columns=[Duration, ParentSpanId, ResourceAttributes, SpanId, SpanName, Timestamp, TraceId])

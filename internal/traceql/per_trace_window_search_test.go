@@ -12,21 +12,32 @@ import (
 
 // leafWindow is the request-window bound one leaf Filter(Scan) of a lowered
 // search plan carries — the nanosecond instants of its Timestamp bounds, in
-// the order they render — and whether the leaf reads for a per-trace subquery
+// the order they render — whether the leaf reads for a per-trace subquery
 // (a TraceLookupFilter lookup or a trace-cohort membership subquery) rather
-// than for the span rows the search matches.
+// than for the span rows the search matches, and whether it reads the span
+// rows a SearchTraceLimit drains for its ranked traces (its Input, when it
+// ranks over a separate Rank).
 type leafWindow struct {
 	instants []int64
 	perTrace bool
+	drain    bool
 }
 
 // collectLeafWindows records a leafWindow for every Filter(Scan) leaf of n,
 // descending the trace-cohort subqueries behind Expr slots and the lookup
-// relations of a TraceLookupFilter, which read for a per-trace subquery.
+// relations of a TraceLookupFilter, which read for a per-trace subquery, and
+// both row sources of a SearchTraceLimit.
 func collectLeafWindows(n chplan.Node, perTrace bool, tsCol string, out *[]leafWindow) {
+	collectLeafWindowsAs(n, leafWindow{perTrace: perTrace}, tsCol, out)
+}
+
+// collectLeafWindowsAs is collectLeafWindows with the leaf kind carried as a
+// leafWindow template.
+func collectLeafWindowsAs(n chplan.Node, kind leafWindow, tsCol string, out *[]leafWindow) {
+	perTraceKind := leafWindow{perTrace: true}
 	cohorts := func(e chplan.Expr) {
 		for _, in := range chplan.CohortSubqueries(e) {
-			collectLeafWindows(in.Subquery, true, tsCol, out)
+			collectLeafWindowsAs(in.Subquery, perTraceKind, tsCol, out)
 		}
 	}
 	switch v := n.(type) {
@@ -35,21 +46,31 @@ func collectLeafWindows(n chplan.Node, perTrace bool, tsCol string, out *[]leafW
 	case *chplan.Filter:
 		cohorts(v.Predicate)
 		if _, ok := v.Input.(*chplan.Scan); ok {
-			*out = append(*out, leafWindow{instants: windowInstants(v.Predicate, tsCol), perTrace: perTrace})
+			leaf := kind
+			leaf.instants = windowInstants(v.Predicate, tsCol)
+			*out = append(*out, leaf)
 			return
 		}
-		collectLeafWindows(v.Input, perTrace, tsCol, out)
+		collectLeafWindowsAs(v.Input, kind, tsCol, out)
 		return
 	case *chplan.TraceLookupFilter:
 		cohorts(v.Predicate)
 		for _, lookup := range v.Lookups {
-			collectLeafWindows(lookup, true, tsCol, out)
+			collectLeafWindowsAs(lookup, perTraceKind, tsCol, out)
 		}
-		collectLeafWindows(v.Input, perTrace, tsCol, out)
+		collectLeafWindowsAs(v.Input, kind, tsCol, out)
 		return
+	case *chplan.SearchTraceLimit:
+		if v.Rank != nil {
+			drain := kind
+			drain.drain = true
+			collectLeafWindowsAs(v.Input, drain, tsCol, out)
+			collectLeafWindowsAs(v.Rank, kind, tsCol, out)
+			return
+		}
 	}
 	for _, c := range n.Children() {
-		collectLeafWindows(c, perTrace, tsCol, out)
+		collectLeafWindowsAs(c, kind, tsCol, out)
 	}
 }
 
@@ -88,8 +109,9 @@ func windowInstants(pred chplan.Expr, tsCol string) []int64 {
 // membership subquery behind a literal comparison, a spanset-aggregate
 // operand's cohort — reads its traces' spans inside the request window widened
 // by the maximum trace duration on both sides, [start - L, end + L], on the
-// plain top-N shape and nested under a spanset operation; and every span row
-// the search matches stays inside [start, end].
+// plain top-N shape and nested under a spanset operation. The span rows a
+// search chooses its traces from stay inside [start, end], and the plain
+// shape drains its chosen traces' matching spans over [start - L, end + L].
 func TestSearchPerTraceSubqueriesReadWidenedWindow(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelTraces()
@@ -119,21 +141,31 @@ func TestSearchPerTraceSubqueriesReadWidenedWindow(t *testing.T) {
 			plan := lowerSearchWindowed(t, q, searchLimit, winStart, winEnd)
 			var leaves []leafWindow
 			collectLeafWindows(plan, false, s.TimestampColumn, &leaves)
-			var perTraceLeaves, rowLeaves int
+			var perTraceLeaves, rowLeaves, drainLeaves int
 			for i, leaf := range leaves {
 				want := rows
-				if leaf.perTrace {
+				switch {
+				case leaf.perTrace:
 					want = perTrace
 					perTraceLeaves++
-				} else {
+				case leaf.drain:
+					want = perTrace
+					drainLeaves++
+				default:
 					rowLeaves++
 				}
 				if !slices.Equal(leaf.instants, want) {
-					t.Errorf("leaf %d (per-trace %v) window instants %v, want %v", i, leaf.perTrace, leaf.instants, want)
+					t.Errorf("leaf %d (per-trace %v, drain %v) window instants %v, want %v", i, leaf.perTrace, leaf.drain, leaf.instants, want)
 				}
 			}
 			if perTraceLeaves == 0 || rowLeaves == 0 {
 				t.Fatalf("%d per-trace and %d row leaves; the query must exercise both", perTraceLeaves, rowLeaves)
+			}
+			// The plain shape drains in its own plan; a spanset operation
+			// drains in the search handler's phase B.
+			_, plain := plan.(*chplan.SearchTraceLimit)
+			if plain != (drainLeaves > 0) {
+				t.Fatalf("plain shape %v with %d drain leaves", plain, drainLeaves)
 			}
 		})
 	}

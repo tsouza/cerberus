@@ -55,8 +55,12 @@ import (
 // physical table scan (its own doc), the rule this shape was the first
 // proven instance of and every other self-referencing emitter shares.
 //
-// The input subquery is emitted twice (outer drain + inner ranking) by
-// design. The window predicate keeps each scan cheap, and a `WITH src AS
+// With a Rank set, the inner ranking reads Rank instead of Input: the request
+// window chooses the traces, and the outer drain returns each chosen trace's
+// matching spans over Input's wider window.
+//
+// Without a Rank the input subquery is emitted twice (outer drain + inner
+// ranking) by design. The window predicate keeps each scan cheap, and a `WITH src AS
 // (...)` CTE would not remove the second scan: ClickHouse inlines a CTE at
 // every reference rather than materialising it, so there is nothing to lift.
 func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
@@ -86,7 +90,10 @@ func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
 	if err != nil {
 		return err
 	}
-	innerSub, err := e.subqueryFrag(n.Input)
+	if err := sameRankDrivers(owner, n, traceID, timestamp); err != nil {
+		return err
+	}
+	innerSub, err := e.subqueryFrag(n.RankSource())
 	if err != nil {
 		return err
 	}
@@ -105,4 +112,30 @@ func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
 		From(aliasedFrag(outerSub, "s")).
 		Where(InSubquery(Col(traceID), topN))
 	return e.emitSelect(sb)
+}
+
+// sameRankDrivers checks that a SearchTraceLimit's Rank, when set, names its
+// trace-id and timestamp drivers as Input does: the ranking subquery selects
+// and orders by Input's driver names.
+func sameRankDrivers(owner string, n *chplan.SearchTraceLimit, traceID, timestamp string) error {
+	if n.Rank == nil {
+		return nil
+	}
+	rankSchema, err := closedChildSchema(owner, n.Rank)
+	if err != nil {
+		return err
+	}
+	rankTraceID, err := roleColumnName(owner, rankSchema, chplan.RoleTraceID)
+	if err != nil {
+		return err
+	}
+	rankTimestamp, err := roleColumnName(owner, rankSchema, chplan.RoleTimestamp)
+	if err != nil {
+		return err
+	}
+	if rankTraceID != traceID || rankTimestamp != timestamp {
+		return fmt.Errorf("%w: %s Rank drivers (%s, %s) differ from Input's (%s, %s)",
+			ErrUnsupported, owner, rankTraceID, rankTimestamp, traceID, timestamp)
+	}
+	return nil
 }

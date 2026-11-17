@@ -59,13 +59,15 @@ INSERT INTO otel_traces VALUES
 ]
 -- args --
 [0] string = "checkout"
-[1] int64 = 1767225600000000000
-[2] int64 = 1767225660000000000
+[1] int64 = 1767222000000000000
+[2] int64 = 1767229260000000000
 [3] string = "checkout"
 [4] int64 = 1767225600000000000
 [5] int64 = 1767225660000000000
 -- chplan --
-SearchTraceLimit traceLimit=2
+SearchTraceLimit traceLimit=2 rank=second-child
+  Filter predicate=(((SpanName = "checkout") AND (Timestamp >= FnFromUnixNanos(1767222000000000000))) AND (Timestamp <= FnFromUnixNanos(1767229260000000000)))
+    Scan(otel_traces, columns=[Duration, ParentSpanId, ResourceAttributes, SpanId, SpanName, Timestamp, TraceId])
   Filter predicate=(((SpanName = "checkout") AND (Timestamp >= FnFromUnixNanos(1767225600000000000))) AND (Timestamp <= FnFromUnixNanos(1767225660000000000)))
     Scan(otel_traces, columns=[Duration, ParentSpanId, ResourceAttributes, SpanId, SpanName, Timestamp, TraceId])
 -- sql --
@@ -78,8 +80,8 @@ detail: `{ name = "checkout" }` carries a `search_limit:` of 2 that binds on the
 [1] string = "__cerberus_parentSpanID"
 [2] string = "__cerberus_spanID"
 [3] string = "checkout"
-[4] int64 = 1767225600000000000
-[5] int64 = 1767225660000000000
+[4] int64 = 1767222000000000000
+[5] int64 = 1767229260000000000
 [6] string = "checkout"
 [7] int64 = 1767225600000000000
 [8] int64 = 1767225660000000000
