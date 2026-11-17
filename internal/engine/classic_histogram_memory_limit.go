@@ -11,8 +11,9 @@ import (
 // ClassicHistogramMemoryLimitError is a ClickHouse memory-limit abort (code
 // 241, *chclient.MemoryLimitError) of a statement that carries a
 // classic-histogram quantile (planShapeFacts.classicHistogramQuantile). The
-// quantile's stages are bounded per series and per merge, not as a whole, so
-// the server's cap is what refuses one too large for it; this type lets a
+// quantile's stages are not bounded as a whole (the instant window stage is
+// bounded per series only), so the server's cap is what refuses one too
+// large for it; this type lets a
 // head answer that refusal as the quantile's own rather than as a generic
 // memory-limit failure.
 //

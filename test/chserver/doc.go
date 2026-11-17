@@ -9,9 +9,10 @@
 // floor-known stamp class on every supported release, and the client's
 // answer to a node too old for a setting or function it sends, the external
 // DISTINCT a structural TraceQL query spills through once the distinct_spill
-// threshold is stamped, and the classic-histogram bucket merge's and
-// per-series window stage's admission ceilings against the 1 GiB query memory
-// cap. Every test boots pinned clickhouse/clickhouse-server builds — the
+// threshold is stamped, and the classic-histogram quantile's answers and
+// refusals against the 1 GiB query memory cap: its per-series window ceiling
+// and the cap's own refusal of a window stage or bucket merge too large for
+// it. Every test boots pinned clickhouse/clickhouse-server builds — the
 // supported floor, builds a known upstream defect affects, and builds
 // carrying its fix — under container CPU and memory limits, drives
 // cerberus-emitted shapes through the production handlers and client, and

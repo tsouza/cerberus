@@ -510,27 +510,20 @@ instead (`internal/engine/resource_bound_env.go`,
   `60000000`) - the native-histogram across-series merge cost ceiling that
   closed issue #2385 after 19 real production OOMs
   (`internal/promql/histogram_merge_bound.go`, `maxHistogramMergeCostUnits`).
-- **`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES`** (int64, no
-  fixed default) - the classic-histogram across-series bucket-merge ceiling: the
-  most bucket entries one query may merge (every per-series row's finite bounds
-  plus its +Inf rung, summed across every group and step)
-  (`internal/promql/classic_bucket_merge_bound.go`,
-  `ClassicBucketMergeEntriesForMemory`). Unset, the ceiling is derived from
-  `CERBERUS_CH_QUERY_MAX_MEMORY` as 75% of the cap at 270 bytes per entry
-  (so `2982616` at the 1 GiB default, and the 1 GiB value when the cap is
-  `0`). Setting a positive value pins it and opts out of the derivation. It replaces
-  `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS`, which counted a
-  different unit; the old name is ignored, and setting it logs a startup warning
-  naming this one.
 - **`CERBERUS_PROMQL_CLASSIC_BUCKET_WINDOW_SERIES_MAX_ENTRIES`** (int64, no
   fixed default) - the most bucket entries one series' window may collect in an
   instant classic-histogram query (every in-window sample's finite bounds plus
   its +Inf rung) (`internal/promql/classic_bucket_window_bound.go`,
   `ClassicBucketWindowSeriesEntriesForMemory`). Unset, the ceiling is
-  derived from `CERBERUS_CH_QUERY_MAX_MEMORY` as half of a quarter of the
-  cap, at 880 bytes per entry (so
-  `152520` at the 1 GiB default, and the 1 GiB value when the cap is
-  `0`). Setting a positive value pins it and opts out of the derivation.
+  derived from `CERBERUS_CH_QUERY_MAX_MEMORY` as the cap over 281 bytes
+  per entry (so `3821145` at the 1 GiB default, and the 1 GiB value when
+  the cap is `0`). Setting a positive value pins it and opts out of the
+  derivation.
+- **`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES`** and
+  **`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS`** (retired) -
+  accepted in `cerberus.yaml` and in the environment, and ignored: no
+  ceiling bounds the classic-histogram bucket merge. Each one set logs one
+  startup warning naming it.
 - **`CERBERUS_CH_MAX_EMITTED_SQL_BYTES`** (int64, default `262144`) -
   the bytes of SQL cerberus will emit for one statement
   (`internal/chsql/emit_size_bound.go`, `maxEmittedSQLBytes`).
@@ -545,8 +538,8 @@ instead (`internal/engine/resource_bound_env.go`,
   `S` is how many samples one series contributes to one window and
   `W` its widest stored bucket array
   (`internal/promql/exp_histogram_window_sample_bound.go`).
-  Like the fan-out fold-cost and classic bucket-merge ceilings above it has
-  **no fixed default**: unset, the ceiling is
+  Like the fan-out fold-cost and classic per-series window ceilings above it,
+  it has **no fixed default**: unset, the ceiling is
   derived from `CERBERUS_CH_QUERY_MAX_MEMORY`, because the units it
   counts are a proxy for bytes and the byte budget is itself configurable -
   the same reasoning
