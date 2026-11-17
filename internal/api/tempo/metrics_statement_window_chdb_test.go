@@ -36,7 +36,7 @@ const (
 	statementWindowStep  = time.Minute
 )
 
-// statementWindowSeed holds five traces around the window. Every span lasts
+// statementWindowSeed holds eight traces around the window. Every span lasts
 // 100ms, so a trace read as one span alone lasts 0.1s.
 //
 //	trace 01  both spans in (start - step, start)
@@ -54,9 +54,21 @@ const (
 //	trace 05  root before the per-trace lookback
 //	  e1 root 'z' 08:00:00   read by no subquery
 //	  e2 ⤷ e1 'z' 10:00:45
+//	trace 06  child after end, inside the per-trace lookback
+//	  f1 root 'u' 10:01:40
+//	  f2 ⤷ f1 'u' 10:30:00   read by the per-trace subqueries only
+//	trace 07  child after the per-trace lookback
+//	  71 root 'v' 10:01:50
+//	  72 ⤷ 71 'v' 13:00:00   read by no subquery
+//	trace 08  a grandchild reached through a parent outside the statement's span
+//	  81 root 'r' 10:00:05
+//	  82 ⤷ 81 'c' 09:59:30   read by the per-trace subqueries only
+//	  83 ⤷ 82 'c' 10:00:15
 //
-// The span rows are a1, a2, b1, c2, d2 and e2 in the first bucket,
-// (10:00:00, 10:01:00], and b2 in the second, (10:01:00, 10:02:00].
+// The span rows are a1, a2, b1, c2, d2, e2, 81 and 83 in the first bucket,
+// (10:00:00, 10:01:00], and b2, f1 and 71 in the second, (10:01:00, 10:02:00].
+// Measured over the per-trace window, traces 05 and 07 last 0.1s and every
+// other trace lasts more than 1s.
 const statementWindowSeed = `INSERT INTO otel_traces VALUES
     ('f0000000000000000000000000000001', '00000000000000a1', '',                 'r', 'Server',   100000000, toDateTime64('2026-05-12 10:00:20', 9), 'Unset', '', '', '', map(), map('service.name', 'svc')),
     ('f0000000000000000000000000000001', '00000000000000a2', '00000000000000a1', 'c', 'Internal', 100000000, toDateTime64('2026-05-12 10:00:30', 9), 'Unset', '', '', '', map(), map('service.name', 'svc')),
@@ -67,7 +79,14 @@ const statementWindowSeed = `INSERT INTO otel_traces VALUES
     ('f0000000000000000000000000000004', '00000000000000d1', '',                 'k', 'Server',   100000000, toDateTime64('2026-05-12 09:30:00', 9), 'Unset', '', '', '', map(), map('service.name', 'svc')),
     ('f0000000000000000000000000000004', '00000000000000d2', '00000000000000d1', 'k', 'Internal', 100000000, toDateTime64('2026-05-12 10:00:40', 9), 'Unset', '', '', '', map(), map('service.name', 'svc')),
     ('f0000000000000000000000000000005', '00000000000000e1', '',                 'z', 'Server',   100000000, toDateTime64('2026-05-12 08:00:00', 9), 'Unset', '', '', '', map(), map('service.name', 'svc')),
-    ('f0000000000000000000000000000005', '00000000000000e2', '00000000000000e1', 'z', 'Internal', 100000000, toDateTime64('2026-05-12 10:00:45', 9), 'Unset', '', '', '', map(), map('service.name', 'svc'));`
+    ('f0000000000000000000000000000005', '00000000000000e2', '00000000000000e1', 'z', 'Internal', 100000000, toDateTime64('2026-05-12 10:00:45', 9), 'Unset', '', '', '', map(), map('service.name', 'svc')),
+    ('f0000000000000000000000000000006', '00000000000000f1', '',                 'u', 'Server',   100000000, toDateTime64('2026-05-12 10:01:40', 9), 'Unset', '', '', '', map(), map('service.name', 'svc')),
+    ('f0000000000000000000000000000006', '00000000000000f2', '00000000000000f1', 'u', 'Internal', 100000000, toDateTime64('2026-05-12 10:30:00', 9), 'Unset', '', '', '', map(), map('service.name', 'svc')),
+    ('f0000000000000000000000000000007', '00000000000000g1', '',                 'v', 'Server',   100000000, toDateTime64('2026-05-12 10:01:50', 9), 'Unset', '', '', '', map(), map('service.name', 'svc')),
+    ('f0000000000000000000000000000007', '00000000000000g2', '00000000000000g1', 'v', 'Internal', 100000000, toDateTime64('2026-05-12 13:00:00', 9), 'Unset', '', '', '', map(), map('service.name', 'svc')),
+    ('f0000000000000000000000000000008', '00000000000000h1', '',                 'r', 'Server',   100000000, toDateTime64('2026-05-12 10:00:05', 9), 'Unset', '', '', '', map(), map('service.name', 'svc')),
+    ('f0000000000000000000000000000008', '00000000000000h2', '00000000000000h1', 'c', 'Internal', 100000000, toDateTime64('2026-05-12 09:59:30', 9), 'Unset', '', '', '', map(), map('service.name', 'svc')),
+    ('f0000000000000000000000000000008', '00000000000000h3', '00000000000000h2', 'c', 'Internal', 100000000, toDateTime64('2026-05-12 10:00:15', 9), 'Unset', '', '', '', map(), map('service.name', 'svc'));`
 
 // statementWindowCase is one metrics shape and the count_over_time() it
 // answers at the two anchors, start and end.
@@ -82,38 +101,44 @@ type statementWindowCase struct {
 var statementWindowCases = []statementWindowCase{
 	{
 		query: `{ } | count_over_time()`,
-		want:  []float64{6, 1},
-		why:   "the span rows themselves; a span on 10:00:00 or before is not one",
+		want:  []float64{8, 3},
+		why:   "the span rows themselves; a span on 10:00:00 or before, or after 10:02:00, is not one",
 	},
 	{
 		query: `{ } > { } | count_over_time()`,
 		want:  []float64{1, 1},
 		why: "a2 and b2, whose parents lie in (start - step, start); read over [start, end] the closure " +
-			"counts neither (0, 0), and a closure that read 10:00:00 or the lookback would count c2 or d2",
+			"counts neither (0, 0), and a closure that read 10:00:00 or the lookback would count c2, d2 or 83",
 	},
 	{
 		query: `{ } >> { } | count_over_time()`,
 		want:  []float64{1, 1},
 		why: "a2 and b2, whose ancestors lie in (start - step, start); read over [start, end] the closure " +
-			"counts neither (0, 0), and a closure that read 10:00:00 or the lookback would count c2 or d2",
+			"counts neither (0, 0), and a closure whose step arm read the lookback would reach 83 through 82",
 	},
 	{
 		query: `{ nestedSetLeft > 0 } | count_over_time()`,
-		want:  []float64{3, 1},
-		why: "a1, a2, b1 and b2, numbered from roots in (start - step, start); numbered over [start, end] " +
-			"none is, and a numbering that read 10:00:00 or the lookback would number c2 or d2",
+		want:  []float64{4, 3},
+		why: "a1, a2, b1 and 81, then b2, f1 and 71, numbered from roots in the statement's span; numbered over " +
+			"[start, end] only f1 and 71 are, and a numbering that read 10:00:00 or the lookback would number c2, d2 or 83",
 	},
 	{
 		query: `{ rootName = name } | count_over_time()`,
-		want:  []float64{3, 0},
-		why: "a1, b1 and d2, whose root d1 lies inside the lookback; read inside the statement's span alone " +
-			"d2 has no root (2), and read past the lookback e2 resolves root 'z' (4)",
+		want:  []float64{4, 2},
+		why: "a1, b1, d2 and 81, then f1 and 71, d2's root d1 lying inside the lookback; read inside the " +
+			"statement's span alone d2 has no root (3, 2), and read past the lookback e2 resolves root 'z' (5, 2)",
 	},
 	{
 		query: `{ traceDuration > 1s } | count_over_time()`,
-		want:  []float64{5, 1},
-		why: "a1, a2, b1, c2 and d2, then b2; measured inside the statement's span alone traces 03 and 04 " +
-			"last 0.1s (3), and measured past the lookback trace 05 lasts 2h (6)",
+		want:  []float64{7, 2},
+		why: "every span row but e2, then b2 and f1; measured inside the statement's span alone traces 03, 04 " +
+			"and 06 last 0.1s (5, 1), and measured past the lookback traces 05 and 07 last over 2h (8, 3)",
+	},
+	{
+		query: `{ traceDuration > duration } | count_over_time()`,
+		want:  []float64{7, 2},
+		why: "the spans of every trace longer than its 0.1s spans: every span row but e2, then b2 and f1; " +
+			"measured inside the statement's span alone (5, 1), and measured past the lookback (8, 3)",
 	},
 }
 
