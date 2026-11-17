@@ -149,3 +149,39 @@ func TestSentinels_ServerPrewhereOnLines(t *testing.T) {
 		}
 	}
 }
+
+// TestLabelValuesBaselineHeadroom_CoversTheRunnerSpread pins the label_values
+// sentinels' headroom against the per-line runner spread measured over the
+// gating runs labelValuesBaselineHeadroom's comment names: the lowest and
+// highest max-of-5 of each sentinel on each line. On every line, a ceiling calibrated
+// from the lowest still clears the highest, so no gating run inside the
+// measured spread trips a calibration that landed in its low tail.
+func TestLabelValuesBaselineHeadroom_CoversTheRunnerSpread(t *testing.T) {
+	headroom := make(map[string]float64, len(Sentinels))
+	for _, s := range Sentinels {
+		headroom[s.Name] = s.BaselineHeadroom
+	}
+	for _, spread := range []struct {
+		line, sentinel  string
+		lowest, highest uint64
+	}{
+		{"24.8", "label_values_matcher_stock_key", 33_208_704, 37_450_163},
+		{"24.8", "label_values_matcher_stock_key_renamed", 34_352_393, 37_453_706},
+		{"25.9", "label_values_matcher_stock_key", 20_891_390, 20_946_293},
+		{"25.9", "label_values_matcher_stock_key_renamed", 20_974_191, 27_534_939},
+		{"26.8", "label_values_matcher_stock_key", 27_121_273, 31_783_886},
+		{"26.8", "label_values_matcher_stock_key_renamed", 24_550_528, 32_965_940},
+		{"26.9", "label_values_matcher_stock_key", 27_093_018, 31_627_769},
+		{"26.9", "label_values_matcher_stock_key_renamed", 24_526_542, 32_643_773},
+	} {
+		h, ok := headroom[spread.sentinel]
+		if !ok {
+			t.Fatalf("%s: no such sentinel", spread.sentinel)
+		}
+		bound := nightlyBound{MaxOfNBytes: spread.lowest, CeilingBytes: committedCeilingBytes(spread.lowest, h)}
+		if exceedsCommittedCeiling(spread.highest, bound) {
+			t.Errorf("%s %s: the highest measured max-of-5 %d exceeds the %d-byte ceiling a %.2fx headroom puts over the lowest %d",
+				spread.line, spread.sentinel, spread.highest, bound.CeilingBytes, h, spread.lowest)
+		}
+	}
+}
