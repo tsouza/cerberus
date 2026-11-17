@@ -150,6 +150,7 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 				"err", err, "missing", len(missingRoots))
 		}
 	}
+	tempo.FinishTraceSummaries(summaries, res.Meta)
 
 	// Frame-batch the summaries into searchFrameSize-sized chunks. Every
 	// frame — intermediate shards AND the tail — carries the same

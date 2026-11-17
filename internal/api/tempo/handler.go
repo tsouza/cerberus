@@ -569,13 +569,12 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		// of the affected TraceIDs and patch RootServiceName /
 		// RootTraceName before responding.
 		//
-		// A lookup failure WARN-degrades (the earliest-span fallback
-		// stays in place) instead of failing the search — mirroring
-		// reference Tempo, where root metadata is best-effort by
-		// design: a search whose root span is unavailable still
-		// returns 200 with placeholder root fields
-		// (modules/frontend/combiner/search.go sets
-		// search.RootSpanNotYetReceivedText), never an error.
+		// A lookup failure WARN-degrades instead of failing the search:
+		// the affected summaries keep the earliest matched span's name
+		// and service, since the failure leaves unknown whether the
+		// trace has a root. Reference Tempo likewise treats root
+		// metadata as best-effort and answers 200 for a trace whose
+		// root it lacks.
 		roots, lookupErr := h.resolveTraceRoots(ctx, missingRoots)
 		if lookupErr != nil {
 			h.Logger.Warn("cerberus tempo root-span lookup failed",
@@ -584,6 +583,7 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 			applyRootMetadata(summaries, roots)
 		}
 	}
+	FinishTraceSummaries(summaries, res.Meta)
 	httperr.WriteEngineHeaders(w, res.Headers)
 	writeInspectedSpans(w, inspectedSpans)
 	writeJSON(w, http.StatusOK, SearchResponse{
@@ -729,6 +729,7 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 			applyRootMetadata(summaries, roots)
 		}
 	}
+	FinishTraceSummaries(summaries, res.Meta)
 	// /search/recent applies its limit SQL-side (chplan.Limit), so the
 	// summary set is never truncated in Go and the pre-truncation trace
 	// count is simply the grouped set.
@@ -1207,11 +1208,13 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Traces, meta engine.Met
 		// reserved-key pattern as canonicalSampleProjections — the
 		// latter is what lets the /api/search root-resolution machinery
 		// correct an arbitrarily-picked non-root row, see issue #1481).
-		// boundNewestTraces caps the result to
+		// `by(...)` / `coalesce()` carry the same envelope but group
+		// below the trace; spansetRowsPerTrace folds their rows to one
+		// per trace first. boundNewestTraces caps the result to
 		// the newest `limit` qualifying traces server-side, below the
 		// projection so the TraceStartNs sort key is still in scope.
 		return &chplan.Project{
-			Input:       boundNewestTraces(plan, searchLimitFromMeta(meta)),
+			Input:       boundNewestTraces(spansetRowsPerTrace(plan), searchLimitFromMeta(meta)),
 			Projections: spansetAggregateSampleProjections(),
 		}
 	case isAggregateShape(plan):
@@ -1558,6 +1561,62 @@ func refsNameIntrinsicFromMeta(meta engine.Meta) bool {
 	return v
 }
 
+// spansetRowsPerTrace returns a spanset-aggregate plan with one row per
+// trace. A per-trace aggregate (`| count() > 0`, `| avg(...) > X`) already
+// groups by TraceId alone and passes through. `by(...)` and `coalesce()`
+// group by TraceId plus a group key (or the span identity), so they emit
+// several rows per trace; this folds those into one envelope row per trace,
+// carrying every column of the inner aggregate's envelope, so
+// boundNewestTraces' LIMIT counts traces rather than groups and each trace's
+// envelope spans every group: the earliest start, the latest end, the summed
+// Value, and a representative of every other column.
+func spansetRowsPerTrace(plan chplan.Node) chplan.Node {
+	inner := spansetAggregateRoot(plan)
+	if inner == nil || len(inner.GroupBy) == 1 {
+		return plan
+	}
+	merged := make([]chplan.AggFunc, 0, len(inner.AggFuncs))
+	for _, af := range inner.AggFuncs {
+		merged = append(merged, chplan.AggFunc{
+			Fn:    envelopeMergeFn(af.Alias),
+			Args:  []chplan.Expr{&chplan.ColumnRef{Name: af.Alias}},
+			Alias: af.Alias,
+		})
+	}
+	return &chplan.Aggregate{
+		Input:          plan,
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "TraceId"}},
+		GroupByAliases: []string{"TraceId"},
+		AggFuncs:       merged,
+	}
+}
+
+// envelopeMergeFn is the aggregate that folds one spanset-envelope column
+// across a trace's group rows.
+func envelopeMergeFn(alias string) chplan.Fn {
+	switch alias {
+	case sampleTimeUnixCol, "TraceStartNs":
+		return chplan.FnMin
+	case "TraceEndNs":
+		return chplan.FnMax
+	case "Value":
+		return chplan.FnSum
+	}
+	return chplan.FnAny
+}
+
+// spansetAggregateRoot returns the Aggregate at the root of a spanset-
+// aggregate plan, under any scalar-filter Filter, or nil.
+func spansetAggregateRoot(plan chplan.Node) *chplan.Aggregate {
+	switch v := plan.(type) {
+	case *chplan.Aggregate:
+		return v
+	case *chplan.Filter:
+		return spansetAggregateRoot(v.Input)
+	}
+	return nil
+}
+
 // boundNewestTraces caps a spanset-aggregation search (`| count() > N`,
 // `| by(name)`, `| avg(...) > X`) to the newest `limit` qualifying traces
 // server-side as ORDER BY TraceStartNs DESC LIMIT N — the parity counterpart to
@@ -1628,13 +1687,8 @@ func isAggregateShape(plan chplan.Node) bool {
 // deliberately fall through; the metrics search-envelope shape is
 // distinct (no TraceId group key, no `__cerberus_traceID` thread).
 func isSpansetAggregateShape(plan chplan.Node) bool {
-	switch v := plan.(type) {
-	case *chplan.Aggregate:
-		return aggregateCarriesSpansetEnvelope(v)
-	case *chplan.Filter:
-		return isSpansetAggregateShape(v.Input)
-	}
-	return false
+	a := spansetAggregateRoot(plan)
+	return a != nil && aggregateCarriesSpansetEnvelope(a)
 }
 
 // aggregateCarriesSpansetEnvelope reports whether a *chplan.Aggregate

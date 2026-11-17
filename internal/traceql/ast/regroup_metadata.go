@@ -1,0 +1,260 @@
+package ast
+
+// This file answers one question about a parsed search query: does
+// reference Tempo leave a trace-level search-summary field unset for it?
+//
+// Tempo fills a search summary's trace-level fields (rootServiceName,
+// rootTraceName, durationMs) from the spanset the pipeline returns. A
+// `by(...)` or `coalesce()` stage returns fresh spansets that carry none of
+// those fields, and the storage layer backfills them from its second fetch
+// pass. That pass skips every trace-level intrinsic the first pass already
+// read for all candidate spans: one whose first-pass condition has no
+// predicate (OpNone), or any of them when every condition must hold
+// (AllConditions). See SearchMetaConditionsWithout in Tempo's
+// pkg/traceql/storage.go and the rebatch copy in vparquet5's
+// block_traceql.go. A `select(...)` stage, and every stage after it, reads
+// in the second pass instead, and a second-pass read of the intrinsic fills
+// the field again. So a regrouped search that reads such an intrinsic in the
+// first pass, and not in the second, reports its field empty.
+//
+// The walk below mirrors Tempo's extractConditions (pkg/traceql/ast.go,
+// ast_conditions.go) for the parts that decide that outcome: which
+// attributes reach each pass with which operator, and when AllConditions
+// is cleared.
+
+// RegroupLeavesTraceFieldUnset reports whether reference Tempo's search
+// response leaves the trace-level field backed by intrinsic in empty for this
+// query: the pipeline regroups its spansets (`by(...)` or `coalesce()`), the
+// first fetch pass already read in for every candidate span, and the second
+// pass does not read it.
+//
+// Only the trace-level intrinsics that back a search-summary field
+// (IntrinsicTraceRootService, IntrinsicTraceRootSpan,
+// IntrinsicTraceDuration) are meaningful arguments; any other returns false.
+func (r *RootExpr) RegroupLeavesTraceFieldUnset(in Intrinsic) bool {
+	if r == nil {
+		return false
+	}
+	switch in {
+	case IntrinsicTraceRootService, IntrinsicTraceRootSpan, IntrinsicTraceDuration:
+	default:
+		return false
+	}
+	if !pipelineRegroups(r.Pipeline) {
+		return false
+	}
+	c := fetchConditions{all: true}
+	c.pipeline(r.Pipeline)
+	for _, fc := range c.secondPass {
+		if fc.intrinsic == in {
+			return false
+		}
+	}
+	for _, fc := range c.conds {
+		if fc.intrinsic == in && (fc.op == OpNone || c.all) {
+			return true
+		}
+	}
+	return false
+}
+
+// pipelineRegroups reports whether a stage of p returns new spansets — a
+// `by(...)` or `coalesce()` stage, directly or in a nested pipeline. A
+// regrouping operand of a spanset operation does not count: the operation
+// answers a clone of its input spanset (Tempo's addSpanset), which keeps the
+// input's trace-level fields.
+func pipelineRegroups(p Pipeline) bool {
+	for _, elem := range p.Elements {
+		if elemRegroups(elem) {
+			return true
+		}
+	}
+	return false
+}
+
+func elemRegroups(elem any) bool {
+	switch e := elem.(type) {
+	case GroupOperation, CoalesceOperation:
+		return true
+	case Pipeline:
+		return pipelineRegroups(e)
+	}
+	return false
+}
+
+// fetchCondition is one fetch condition: the intrinsic it reads
+// (IntrinsicNone for an ordinary attribute) and its operator.
+type fetchCondition struct {
+	intrinsic Intrinsic
+	op        Operator
+}
+
+// fetchConditions accumulates the first-pass conditions (conds), the
+// second-pass ones (secondPass) and the AllConditions flag the way Tempo's
+// FetchSpansRequest does.
+type fetchConditions struct {
+	conds      []fetchCondition
+	secondPass []fetchCondition
+	all        bool
+}
+
+func (c *fetchConditions) add(a Attribute, op Operator) {
+	c.conds = append(c.conds, fetchCondition{intrinsic: a.Intrinsic, op: op})
+}
+
+// pipeline mirrors Pipeline.extractConditions: after a select() stage every
+// remaining stage goes to the second pass (extractToSecondPass).
+func (c *fetchConditions) pipeline(p Pipeline) {
+	afterSelect := false
+	for _, elem := range p.Elements {
+		if afterSelect {
+			c.toSecondPass(elem)
+		} else {
+			c.element(elem)
+		}
+		if _, ok := elem.(SelectOperation); ok {
+			afterSelect = true
+		}
+	}
+}
+
+// toSecondPass mirrors extractToSecondPass: the stage's conditions go to the
+// second pass, except one whose attribute either pass already reads with no
+// predicate. Its AllConditions effect stays with its own throwaway request.
+func (c *fetchConditions) toSecondPass(elem any) {
+	stage := fetchConditions{}
+	stage.element(elem)
+	for _, fc := range append(stage.conds, stage.secondPass...) {
+		if !c.readsUnfiltered(fc.intrinsic) {
+			c.secondPass = append(c.secondPass, fc)
+		}
+	}
+}
+
+// readsUnfiltered reports whether either pass already reads in with no
+// predicate (HasAttributeWithOp(_, OpNone)).
+func (c *fetchConditions) readsUnfiltered(in Intrinsic) bool {
+	for _, list := range [][]fetchCondition{c.conds, c.secondPass} {
+		for _, fc := range list {
+			if fc.intrinsic == in && fc.op == OpNone {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (c *fetchConditions) element(elem any) {
+	if expr, ok := spansetFilterExpression(elem); ok {
+		c.field(expr)
+		return
+	}
+	switch e := elem.(type) {
+	case GroupOperation:
+		c.field(e.Expression)
+		c.all = false
+	case SpansetOperation:
+		c.element(e.LHS)
+		c.element(e.RHS)
+		c.all = false
+	case ScalarFilter:
+		c.scalar(e.LHS)
+		c.scalar(e.RHS)
+	case SelectOperation:
+		// SelectOperation.extractConditions: every selected attribute is
+		// read, with no predicate, in the second pass.
+		for _, a := range e.Attrs() {
+			c.secondPass = append(c.secondPass, fetchCondition{intrinsic: a.Intrinsic, op: OpNone})
+		}
+	case Pipeline:
+		c.pipeline(e)
+	}
+	// CoalesceOperation reads nothing.
+}
+
+func (c *fetchConditions) scalar(se ScalarExpression) {
+	switch s := se.(type) {
+	case Aggregate:
+		c.all = false
+		if s.e != nil {
+			c.field(s.e)
+		}
+	case ScalarOperation:
+		c.scalar(s.LHS)
+		c.scalar(s.RHS)
+	case Pipeline:
+		c.pipeline(s)
+	}
+}
+
+// field mirrors the FieldExpression extractConditions methods.
+func (c *fetchConditions) field(fe FieldExpression) {
+	switch e := fe.(type) {
+	case *BinaryOperation:
+		if e != nil {
+			c.binary(e)
+		}
+	case UnaryOperation:
+		c.unary(e)
+	case Attribute:
+		c.add(e, OpNone)
+	}
+}
+
+// binary mirrors (*BinaryOperation).extractConditions: an attribute
+// compared with a literal carries the operator, unless the operator builds no
+// predicate (literalConditionOp); any other attribute operand is read with no
+// predicate.
+func (c *fetchConditions) binary(o *BinaryOperation) {
+	switch l := o.LHS.(type) {
+	case Attribute:
+		switch r := o.RHS.(type) {
+		case Static:
+			c.add(l, literalConditionOp(o.Op))
+		case Attribute:
+			c.add(l, OpNone)
+			c.add(r, OpNone)
+		default:
+			c.add(l, OpNone)
+			c.field(o.RHS)
+		}
+	case Static:
+		switch r := o.RHS.(type) {
+		case Static:
+		case Attribute:
+			c.add(r, literalConditionOp(o.Op))
+		default:
+			c.field(o.RHS)
+		}
+	default:
+		c.field(o.LHS)
+		c.field(o.RHS)
+		c.all = c.all && o.Op != OpOr
+	}
+}
+
+// literalConditionOp is the operator an attribute-vs-literal comparison
+// hands the fetch layer: none for a non-boolean operator, which is no
+// predicate. Tempo also drops the operator of a `!= nil` comparison and of a
+// boolean literal under && / ||; neither reaches a trace-level intrinsic,
+// the only reads this walk reports, because the parser folds every nil
+// comparison into an existence test and validation rejects a boolean
+// literal against a string or duration operand.
+func literalConditionOp(op Operator) Operator {
+	if !op.isBoolean() {
+		return OpNone
+	}
+	return op
+}
+
+// unary mirrors UnaryOperation.extractConditions: an existence test on an
+// attribute carries its operator; anything else reads its operand. Only
+// `!= nil` applies to a trace-level intrinsic, since validation rejects
+// `= nil` on any intrinsic.
+func (c *fetchConditions) unary(o UnaryOperation) {
+	if a, ok := o.Expression.(Attribute); ok && o.Op == OpExists {
+		c.add(a, o.Op)
+		return
+	}
+	c.field(o.Expression)
+}

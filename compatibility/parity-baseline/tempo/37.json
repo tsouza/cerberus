@@ -3,6 +3,7 @@
   "head": "tempo",
   "bucket": "37",
   "cases": [
+    "search | aggregate_max_trace_duration_minus_duration",
     "search | spansets_and_unions_distinct_spans"
   ]
 }

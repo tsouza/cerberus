@@ -48,6 +48,10 @@ var metricsConformanceFamily = []string{
 	`{ trace:rootService = "x" } | rate()`,
 	`{ rootName = name } | compare({ traceDuration > 1s })`,
 	`{ } | compare({ rootServiceName = "checkout" })`,
+	// A compare() selection comparing a trace-scoped intrinsic with a span
+	// operand joins the per-trace value onto compare()'s input spans.
+	`{ } | compare({ rootName = name })`,
+	`{ rootName = name } | compare({ traceDuration > duration })`,
 }
 
 // metricsConformanceGet sends q to route over [start, end] and returns the

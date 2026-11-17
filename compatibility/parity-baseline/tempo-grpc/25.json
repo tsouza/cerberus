@@ -3,6 +3,7 @@
   "head": "tempo-grpc",
   "bucket": "25",
   "cases": [
+    "search | coalesce_all_spans",
     "search | duration_gt_dynamic_attribute"
   ]
 }
