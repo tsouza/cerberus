@@ -64,7 +64,39 @@ func lowerSelect(prev chplan.Node, sel traceql.SelectOperation, s schema.Traces)
 			Alias: a.Name,
 		})
 	}
+	readSelectedAttributesFrom(projections, input.RowType())
 	return &chplan.Project{Input: input, Projections: projections}, nil
+}
+
+// readSelectedAttributesFrom routes every materialized attribute read in
+// projections (a FieldAccess whose MaterializedColumn is set) back to its
+// attribute map unless a select() over rows of type row may read the
+// column in the map cell's place. projections is rewritten in place. A
+// selected value is an output, so the column stands in for the cell only
+// when it is value-identical to it and the rows carry it:
+//
+//   - String-kind columns only. A numeric-kind column
+//     (FieldAccess.MaterializedColumnNumeric) holds toInt32OrNull of the
+//     cell — NULL for a malformed value, and not the cell's own spelling.
+//   - The column must be one of row's columns. An open row type is the
+//     span table itself (a Scan, under any Filter or nested-set
+//     annotation), which carries every column. A closed one — the structural-join span envelope, or a set
+//     operation's aligned arms — carries the attribute maps but no
+//     materialized column.
+func readSelectedAttributesFrom(projections []chplan.Projection, row chplan.Schema) {
+	for _, projection := range projections {
+		chplan.InspectExpr(projection.Expr, func(e chplan.Expr) bool {
+			f, ok := e.(*chplan.FieldAccess)
+			if !ok || f.MaterializedColumn == "" {
+				return true
+			}
+			if _, carried := row.ByName(f.MaterializedColumn); f.MaterializedColumnNumeric || (!carried && !row.Open) {
+				f.MaterializedColumn = ""
+				f.MaterializedColumnNumeric = false
+			}
+			return true
+		})
+	}
 }
 
 // selectsNestedSet reports whether any selected attribute is one of

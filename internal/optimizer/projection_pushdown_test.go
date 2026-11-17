@@ -402,6 +402,52 @@ func TestProjectionPushdown_KeepsWindowExprColumns(t *testing.T) {
 	}
 }
 
+// TestProjectionPushdown_KeepsMaterializedAttributeColumn pins that a
+// FieldAccess routed to a materialized attribute column keeps that column
+// on the narrowed Scan, and only that column: the emitter reads the
+// materialized column in place of the Source map, so pruning it emits SQL
+// ClickHouse rejects with UNKNOWN_IDENTIFIER, and keeping the map reads a
+// column nothing references. An unmaterialized FieldAccess still keeps its
+// Source map.
+func TestProjectionPushdown_KeepsMaterializedAttributeColumn(t *testing.T) {
+	t.Parallel()
+
+	plan := &chplan.Project{
+		Input: &chplan.Filter{
+			Input:     &chplan.Scan{Table: "otel_traces"},
+			Predicate: &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "SpanKind"}, Right: &chplan.LitString{V: "Server"}},
+		},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: "TraceId"}},
+			{
+				Expr: &chplan.FieldAccess{
+					Source:             &chplan.ColumnRef{Name: "SpanAttributes"},
+					Path:               "rpc.method",
+					MaterializedColumn: "__cerberus_materialized_rpc.method",
+				},
+				Alias: "rpc.method",
+			},
+			{
+				Expr: &chplan.FieldAccess{
+					Source: &chplan.ColumnRef{Name: "ResourceAttributes"},
+					Path:   "service.name",
+				},
+				Alias: "service.name",
+			},
+		},
+	}
+
+	out, changed := ProjectionPushdown{}.Apply(plan)
+	if !changed {
+		t.Fatal("ProjectionPushdown did not fire on Project(Filter(Scan))")
+	}
+	got := narrowedScanColumns(t, out)
+	want := []string{"ResourceAttributes", "SpanKind", "TraceId", "__cerberus_materialized_rpc.method"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("narrowed Scan.Columns = %v, want %v", got, want)
+	}
+}
+
 // TestProjectionPushdown_KeepsInSubqueryLeftColumn pins that the LHS of an
 // `<col> IN (<subquery>)` predicate survives the narrowing. The predicate
 // is evaluated on the narrowed Scan's row shape, so pruning TraceId off it
