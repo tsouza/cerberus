@@ -26,7 +26,7 @@
   ],
   "metadata_integrity_note": "test/semantic/*.json is hand-authored, reviewed source, not a self-service approval surface. A pull request that adds, weakens, or removes a contract statement, a required evidence class or independence group, or a binding is an ordinary diff line like any other production change — visible in `git diff`, reviewed under the same merge gate (docs/agent-workflow.md), and carried into this guide and the full report the moment `just semantic-report` / `just semantic-guide` regenerate them. Neither generator can mask a weakening: both only ever project the checked-in model faithfully, and their own `--check` mode fails the build the instant the committed projection stops matching it (invariant 9) — so a metadata change that widens what counts as assured is exactly as loud in review as a change to production code, never quieter for being JSON.",
   "adversarial_evidence": {
-    "mutant_count": 7,
+    "mutant_count": 8,
     "by_contract": [
       {
         "contract": "LOGQL-LABEL-MATCHER-REGEX-ANCHORING",
@@ -108,6 +108,16 @@
         "mutants": [
           {
             "id": "MUTANT-TRACEQL-SCOPE-SWAP",
+            "disposition": "killed",
+            "bucket": "denominator"
+          }
+        ]
+      },
+      {
+        "contract": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+        "mutants": [
+          {
+            "id": "MUTANT-TRACEQL-PER-TRACE-LOOKUP-WINDOW-DROPPED",
             "disposition": "killed",
             "bucket": "denominator"
           }
@@ -747,6 +757,20 @@
         "binding_id": "BINDING-TRACEQL-SELECT-PRESERVES-MATCH-SET-PROPERTY",
         "lane_id": "quality.property",
         "command": "just property",
+        "merge_required": true,
+        "release_required": true
+      }
+    },
+    {
+      "id": "TRACEQL-STATEMENT-WINDOW-PER-TRACE-LOOKBACK",
+      "status": "active",
+      "scope_label": "HEAD-TRACEQL",
+      "authority": "design-decision",
+      "assured": true,
+      "execution": {
+        "binding_id": "BINDING-TRACEQL-STATEMENT-WINDOW-METRICS-COHORT-RECURSIVE-EMIT",
+        "lane_id": "ci.check",
+        "command": "just build && just test-unit && just vet-tagged",
         "merge_required": true,
         "release_required": true
       }
