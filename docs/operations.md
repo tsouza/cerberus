@@ -623,19 +623,37 @@ query's own. `CERBERUS_TEMPO_MAX_TRACE_DURATION` (default `1h`) is the longest
 trace it assumes, and each per-trace lookup reads the trace's spans inside the
 query window widened by that duration on both sides:
 
-| Endpoint                                           | Window the matched spans come from   | Window each per-trace lookup reads   |
-| -------------------------------------------------- | ------------------------------------ | ------------------------------------ |
-| `/api/search`                                      | `[start, end]`                       | `[start - L, end + L]`               |
-| `/api/metrics/query_range`, `/api/metrics/query`   | `(start - step, end]`                | `(start - step - L, end + L]`        |
+| Endpoint                                         | Window the traces are chosen from | Window the returned spans come from | Window each per-trace lookup reads |
+| ------------------------------------------------ | --------------------------------- | ----------------------------------- | ---------------------------------- |
+| `/api/search`                                    | `[start, end]`                    | `[start - L, end + L]`              | `[start - L, end + L]`             |
+| `/api/metrics/query_range`, `/api/metrics/query` | —                                 | `(start - step, end]`               | `(start - step - L, end + L]`      |
 
 `L` is the configured duration. The per-trace values are `rootName`,
 `rootServiceName` and `traceDuration`, in every form a query uses them — a
 comparison with a literal, with a span operand, and inside a spanset operation —
 plus the per-trace cohort behind a spanset aggregate used as an operand of a
 spanset operation (`({ … } | count() > 1) && { … }`) and the non-root
-selection of `compare()`. The spans a query returns or counts still come from
-the query window itself, and so does a top-level spanset aggregate
-(`{ … } | count() > 1`), which aggregates the matched span rows.
+selection of `compare()`.
+
+A windowed search chooses its top `limit` traces from their matching spans
+inside `[start, end]`, then returns every matching span of each chosen trace
+inside `[start - L, end + L]`, the spans outside the query window included.
+A trace whose matching spans all lie outside `[start, end]` is not chosen.
+Spanset filters, spanset operations (`&&`, `||`), positive structural relations
+and a `select(...)` over them return the widened spans. Every other search
+returns the matching spans inside `[start, end]` alone, among them:
+
+- a spanset aggregate or grouping at the top of the query
+  (`{ … } | count() > 1`, `{ … } | by(…)`), which aggregates the matched span
+  rows;
+- a query containing a negated structural relation (`!>>`, `!>`, `!<<`, `!<`,
+  `!~`), whose matches a wider read can remove;
+- a select of a nested-set intrinsic (`nestedSetLeft`, `nestedSetRight`,
+  `nestedSetParent`);
+- with `CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE=false`, a recursive structural
+  relation at the top of the query, alone or under a `select(...)`.
+
+A metrics query counts the spans inside its own window.
 
 A trace no longer than `L` reads the same values reference Tempo reads, which
 measures the whole stored trace of every trace that overlaps the window: a root
@@ -652,8 +670,8 @@ Set `L` at or above the longest trace the instrumented services emit. Every
 per-trace scan reads `2 × L` more of the time axis than the query window, so a
 15-minute search reads 2 hours 15 minutes for its per-trace lookups at the
 default; raising `L` raises that cost in proportion. `0` reads per-trace values
-from the query window alone, which clips every trace that crosses a window
-edge.
+and search spans from the query window alone, which clips every trace that
+crosses a window edge.
 
 ## Backing services
 

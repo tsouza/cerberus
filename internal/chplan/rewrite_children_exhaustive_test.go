@@ -88,7 +88,6 @@ func allNodeCases() []nodeExhaustivenessCase {
 		{"Project", &Project{Input: sentinelChild()}, false},
 		{"NestedSetAnnotate", &NestedSetAnnotate{Input: sentinelChild()}, false},
 		{"TraceLookupFilter", &TraceLookupFilter{Input: sentinelChild(), Lookups: []Node{sentinelChild(), sentinelChild()}, Predicate: &LitBool{V: true}}, false},
-		{"SearchTraceLimit", &SearchTraceLimit{Input: sentinelChild(), TraceLimit: 20}, false},
 		{"Aggregate", &Aggregate{Input: sentinelChild()}, false},
 		{"RangeWindowGridNative", &RangeWindowGridNative{Input: sentinelChild(), Func: "rate"}, false},
 		{"RangeWindowGridNativeVectorAgg", &RangeWindowGridNativeVectorAgg{Input: sentinelChild(), Fn: FnSum}, false},
@@ -119,6 +118,11 @@ func allNodeCases() []nodeExhaustivenessCase {
 		//     cerberus issue #2389). Plant the sentinel in BOTH so the
 		//     recursion assertion exercises the two-child path. ---
 		{"RangeWindow", &RangeWindow{Input: sentinelChild(), DeltaPrefixAggregateInput: sentinelChild(), Func: "rate"}, false},
+
+		// --- SearchTraceLimit: Input (+ optional Rank). Plant the sentinel
+		//     in BOTH so the recursion assertion exercises the two-child
+		//     path. ---
+		{"SearchTraceLimit", &SearchTraceLimit{Input: sentinelChild(), Rank: sentinelChild(), TraceLimit: 20}, false},
 
 		// --- InfoJoin: Input (base) + Info (info-metric scan). Plant the
 		//     sentinel in both so the recursion assertion exercises the

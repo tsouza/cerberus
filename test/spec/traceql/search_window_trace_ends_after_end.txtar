@@ -1,7 +1,8 @@
 # A search comparing traceDuration with a literal measures each trace from its
 # spans inside the request window, [00:00:00, 00:10:00], widened by the
-# maximum trace duration (1h) on both sides, [23:00:00, 01:10:00], and
-# returns the matching span rows inside the request window. A trace that ends
+# maximum trace duration (1h) on both sides, [23:00:00, 01:10:00]. It chooses
+# its traces from the matching span rows inside the request window and returns
+# each chosen trace's matching spans over that widened window. A trace that ends
 # after the window but within the setting is measured whole, as reference
 # /api/search measures every trace that overlaps the window.
 #
@@ -50,35 +51,31 @@ endpoint: /api/search
 scope: full
 -- args --
 [0] string = "start"
-[1] int64 = 1767225600000000000
-[2] int64 = 1767226200000000000
-[3] int64 = 1767222000000000000
-[4] int64 = 1767229800000000000
-[5] int64 = 1800000000000
-[6] string = "start"
-[7] int64 = 1767225600000000000
-[8] int64 = 1767226200000000000
-[9] int64 = 1767222000000000000
-[10] int64 = 1767229800000000000
-[11] int64 = 1800000000000
--- args_optimized --
-[0] string = "__cerberus_traceID"
-[1] string = "__cerberus_parentSpanID"
-[2] string = "__cerberus_spanID"
+[1] int64 = 1767222000000000000
+[2] int64 = 1767229800000000000
 [3] string = "start"
 [4] int64 = 1767225600000000000
 [5] int64 = 1767226200000000000
 [6] int64 = 1767222000000000000
 [7] int64 = 1767229800000000000
 [8] int64 = 1800000000000
-[9] string = "start"
-[10] int64 = 1767225600000000000
-[11] int64 = 1767226200000000000
-[12] int64 = 1767222000000000000
-[13] int64 = 1767229800000000000
-[14] int64 = 1800000000000
+-- args_optimized --
+[0] string = "__cerberus_traceID"
+[1] string = "__cerberus_parentSpanID"
+[2] string = "__cerberus_spanID"
+[3] string = "start"
+[4] int64 = 1767222000000000000
+[5] int64 = 1767229800000000000
+[6] string = "start"
+[7] int64 = 1767225600000000000
+[8] int64 = 1767226200000000000
+[9] int64 = 1767222000000000000
+[10] int64 = 1767229800000000000
+[11] int64 = 1800000000000
 -- chplan --
-SearchTraceLimit traceLimit=20
+SearchTraceLimit traceLimit=20 rank=second-child
+  Filter predicate=(((SpanName = "start") AND (Timestamp >= FnFromUnixNanos(1767222000000000000))) AND (Timestamp <= FnFromUnixNanos(1767229800000000000)))
+    Scan(otel_traces, columns=[Duration, ParentSpanId, ResourceAttributes, SpanId, SpanName, Timestamp, TraceId])
   Filter predicate=((((TraceId IN {Project [TraceId] ; Filter predicate=(_cerb_trace_scoped_val > 1800000000000) ; Project [TraceId AS TraceId, (_cerb_trace_end_ns - _cerb_trace_start_ns) AS _cerb_trace_scoped_val] ; Aggregate groupBy=[TraceId AS TraceId] funcs=[FnMin(FnToUnixNanos(Timestamp)) AS _cerb_trace_start_ns, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS _cerb_trace_end_ns] ; Filter predicate=((Timestamp >= FnFromUnixNanos(1767222000000000000)) AND (Timestamp <= FnFromUnixNanos(1767229800000000000))) ; Scan(otel_traces)}) AND (SpanName = "start")) AND (Timestamp >= FnFromUnixNanos(1767225600000000000))) AND (Timestamp <= FnFromUnixNanos(1767226200000000000)))
     Scan(otel_traces, columns=[Duration, ParentSpanId, ResourceAttributes, SpanId, SpanName, Timestamp, TraceId])
 -- settings --
@@ -90,6 +87,6 @@ max_bytes_before_external_sort=536870912
 min_table_rows_to_use_projection_index=0
 use_query_condition_cache=1
 -- sql --
-SELECT s.* FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, (`_cerb_trace_end_ns` - `_cerb_trace_start_ns`) AS `_cerb_trace_scoped_val` FROM (SELECT `TraceId` AS `TraceId`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `_cerb_trace_start_ns`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `_cerb_trace_end_ns` FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId`)) WHERE (`_cerb_trace_scoped_val` > ?)))) AS s WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, (`_cerb_trace_end_ns` - `_cerb_trace_start_ns`) AS `_cerb_trace_scoped_val` FROM (SELECT `TraceId` AS `TraceId`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `_cerb_trace_start_ns`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `_cerb_trace_end_ns` FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId`)) WHERE (`_cerb_trace_scoped_val` > ?)))) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 20)
+SELECT s.* FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) AS s WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, (`_cerb_trace_end_ns` - `_cerb_trace_start_ns`) AS `_cerb_trace_scoped_val` FROM (SELECT `TraceId` AS `TraceId`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `_cerb_trace_start_ns`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `_cerb_trace_end_ns` FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId`)) WHERE (`_cerb_trace_scoped_val` > ?)))) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 20)
 -- sql_optimized --
-SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT s.* FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, (`_cerb_trace_end_ns` - `_cerb_trace_start_ns`) AS `_cerb_trace_scoped_val` FROM (SELECT `TraceId` AS `TraceId`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `_cerb_trace_start_ns`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `_cerb_trace_end_ns` FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId`)) WHERE (`_cerb_trace_scoped_val` > ?)))) AS s WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, (`_cerb_trace_end_ns` - `_cerb_trace_start_ns`) AS `_cerb_trace_scoped_val` FROM (SELECT `TraceId` AS `TraceId`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `_cerb_trace_start_ns`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `_cerb_trace_end_ns` FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId`)) WHERE (`_cerb_trace_scoped_val` > ?)))) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 20))
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT s.* FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) AS s WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)) AND `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, (`_cerb_trace_end_ns` - `_cerb_trace_start_ns`) AS `_cerb_trace_scoped_val` FROM (SELECT `TraceId` AS `TraceId`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `_cerb_trace_start_ns`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `_cerb_trace_end_ns` FROM (SELECT * FROM `otel_traces` WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId`)) WHERE (`_cerb_trace_scoped_val` > ?)))) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 20))

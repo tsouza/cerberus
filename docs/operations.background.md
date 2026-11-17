@@ -528,6 +528,54 @@ in memory before it is flushed, not how long a trace may be, and the WAL's
 `ingestion_time_range_slack` (2m) bounds clock skew on ingest. Each would clip
 ordinary request traces that Tempo answers whole.
 
+## Why a windowed search chooses its traces in the window and drains them from the widened window
+
+Reference `/api/search` returns, for each trace whose stored time range
+overlaps the request window, every span of that trace that matches, wherever
+in the trace the span lies. Reproducing that exactly means choosing the top
+`limit` traces from every trace that overlaps the window: reading the window
+widened by the maximum trace duration on both sides, building the per-trace
+overlap set, and ranking over it. Measured on 10M spans with a last-hour
+window and limit 20 on ClickHouse 26.8, that made every windowed search 3.5 to
+15 times slower than reading the window alone (594 ms to 3,094 ms for
+`{ span.http.status_code = 500 }`, 69 ms to 1,013 ms for a rare route and span
+name), with up to about 3.5 times the peak memory.
+
+The two-step form keeps the ranking on the request window and widens only the
+read that returns the chosen traces' spans, restricted to their trace ids. It
+costs about what reading the window alone costs, and it answers every trace
+that has a matching span inside the window exactly as Tempo answers it, when
+the trace is no longer than the maximum trace duration. A trace whose
+matching spans all lie outside the window is the residual difference.
+
+The plain shape drains inside its own plan: `SearchTraceLimit` ranks over its
+`Rank` child and returns the rows of its `Input`, the same row source lowered
+over the widened window. A spanset operation or a structural relation drains
+in the search handler's second phase instead, with the chosen trace ids as a
+literal `IN` list pushed into every span leaf. Restricting the leaves with a
+subquery was measured first and rejected: a nested plan is not gate-safe, so
+it broke the fused `QUALIFY` form of `&&`, and it repeated the ranking subquery
+once per `||` arm (3,185 ms against 1,254 ms on v1.24.0). The literal list
+keeps each shape's single-query form, and the two phases together cost less
+than v1.24.0's single query on both operations (654 ms against 981 ms for
+`&&`, 589 ms against 1,254 ms for `||`).
+
+The list is spliced into every leaf span scan, the per-trace subqueries and
+lookups included, so each one reads only the chosen traces' granules; leaving
+it off those measured up to 1.5 times the rows read. Each splice costs about 35
+bytes per trace id, so at the largest search limit a shape with several arms
+would push the statement past ClickHouse's `max_query_size`. Phase B therefore reads the
+chosen traces in batches whose lists fit the same literal budget the structural
+split uses. Every trace's spans depend on that trace's rows alone, so the
+batches' rows together are the single statement's.
+
+A negated structural relation keeps the request window's answer because it is
+not monotone in the window: reading more of a chosen trace can add the partner
+span that removes a match, so a trace chosen over the window could come back
+with fewer spans than it matched there, or with none. A top-level spanset
+aggregate keeps it because its count would then cover spans the ranking never
+saw.
+
 ## Why the TraceId lookup projection covers logs as well as traces
 
 **Both tables carry it, not traces alone.** The issue's own motivation names

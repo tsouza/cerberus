@@ -51,6 +51,9 @@ func Lower(ctx context.Context, expr *traceql.RootExpr, s schema.Traces) (chplan
 	// returns zero times for callers that pass no window (spec/property harnesses,
 	// /traces/{id}).
 	start, end := searchWindowFromCtx(ctx)
+	// A drain lowering (WithSearchDrain) reads the window widened by the
+	// maximum trace duration, and its per-trace subqueries read no further.
+	start, end, s = drainLowering(ctx, start, end, s)
 	// LEAF stamping is SEARCH-ONLY. The /api/search trace-limit + window folds
 	// apply to the chplan-leaf scans of a SPAN search plan. A metrics query
 	// (MetricsPipeline / MetricsSecondStage) gets its leaf time bound from the
