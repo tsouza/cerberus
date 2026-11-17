@@ -3,6 +3,7 @@
   "head": "tempo-grpc",
   "bucket": "0e",
   "cases": [
+    "search | group_by_trace_duration_arith",
     "tags_v2 | tags_v2_event"
   ]
 }

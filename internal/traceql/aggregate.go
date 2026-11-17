@@ -130,12 +130,14 @@ type scalarAggLeafResult struct {
 }
 
 // prepareInput returns the aggregate Input the leaf needs — the caller's
-// node, wrapped in the nested-set annotation when the leaf reads one.
+// node, wrapped in the nested-set annotation when the leaf reads one, and
+// joined to the per-trace value of every trace-scoped intrinsic its argument
+// reads (`avg(traceDuration)`, `max(traceDuration - duration)`).
 func (r scalarAggLeafResult) prepareInput(prev chplan.Node, s schema.Traces) chplan.Node {
 	if r.needsNestedSet {
 		return annotateNestedSet(prev, s)
 	}
-	return prev
+	return withTraceScopedValues(prev, s, r.fn.Args...)
 }
 
 // scalarAggLeaf lowers a single TraceQL aggregate (`count()`,
@@ -175,7 +177,7 @@ func scalarAggLeaf(agg traceql.Aggregate, s schema.Traces, alias string) (scalar
 			needsNestedSet: true,
 		}, nil
 	}
-	arg, err := lowerFieldExpr(inner, s, noLookupJoin)
+	arg, err := lowerFieldExpr(inner, s)
 	if err != nil {
 		return scalarAggLeafResult{}, err
 	}

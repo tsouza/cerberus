@@ -106,7 +106,10 @@ func lowerMetricsCompare(prev chplan.Node, mc *traceql.MetricsCompare, s schema.
 	if f == nil {
 		return nil, fmt.Errorf("traceql: compare() requires a selection spanset filter")
 	}
-	sel, err := lowerFieldExpr(f.Expression, s, noLookupJoin)
+	// A selection reading a trace-scoped intrinsic against a span operand
+	// (`{ rootName = name }`) compares each span's own trace's value, joined
+	// onto the spans compare() splits into selection and baseline.
+	sel, err := lowerFieldExpr(f.Expression, s)
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +146,7 @@ func lowerMetricsCompare(prev chplan.Node, mc *traceql.MetricsCompare, s schema.
 		AttrAlias:  compareAttrAlias,
 		ValAlias:   compareValAlias,
 		ValueAlias: metricsValueAlias,
-		Inner:      prev,
+		Inner:      withTraceScopedValues(prev, s, sel),
 		// The compare({...}) selection's membership subqueries and the
 		// non-root-scoped root lookup read their traces' spans within the
 		// input span widened by the maximum trace duration.

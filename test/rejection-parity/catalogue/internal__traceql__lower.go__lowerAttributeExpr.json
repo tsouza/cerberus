@@ -12,7 +12,7 @@
           "if !ok"
         ],
         "callers": [
-          "lowerFieldExpr"
+          "lowerAttributeValue"
         ]
       }
     }

@@ -27,9 +27,24 @@ func (o *OrderBy) RowType() Schema            { return o.Input.RowType() }
 func (s *SearchTraceLimit) RowType() Schema   { return s.Input.RowType() }
 func (m *MetricsSecondStage) RowType() Schema { return m.Input.RowType() }
 
-// RowType is Input's: the lookup columns feed Predicate and are never
+// RowType is Input's, followed by the lookups' value columns when the node
+// exposes them; otherwise the lookup columns feed Predicate and are never
 // projected.
-func (f *TraceLookupFilter) RowType() Schema { return f.Input.RowType() }
+func (f *TraceLookupFilter) RowType() Schema {
+	input := f.Input.RowType()
+	if !f.ExposeLookups {
+		return input
+	}
+	values, ok := f.LookupValueColumns()
+	if !ok {
+		// The emitter rejects an exposing node whose lookup columns are
+		// unknown, so no proven output column follows Input's.
+		return input
+	}
+	out := Schema{Columns: slices.Clone(input.Columns), Open: input.Open}
+	out.Columns = append(out.Columns, values...)
+	return out
+}
 
 func (p *Project) RowType() Schema {
 	if projectRolesAlignWithOutputs(p.Projections, p.Roles) {

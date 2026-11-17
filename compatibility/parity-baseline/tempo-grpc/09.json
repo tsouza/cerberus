@@ -3,6 +3,7 @@
   "head": "tempo-grpc",
   "bucket": "09",
   "cases": [
+    "search | group_by_resource_service_name",
     "search | resource_deployment_env_eq_compat_test"
   ]
 }

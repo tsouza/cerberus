@@ -4,6 +4,7 @@
   "bucket": "05",
   "cases": [
     "metrics_range | drilldown_breakdown_kind_not_nil",
+    "search | aggregate_avg_trace_duration_gt_1s",
     "search | scoped_trace_root_name_regex"
   ]
 }

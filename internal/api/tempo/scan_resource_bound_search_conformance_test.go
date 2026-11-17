@@ -81,6 +81,15 @@ func TestSearchTraceScopedIntrinsicsBounded(t *testing.T) {
 		`{ traceDuration > duration }`,
 		`{ rootName = name || traceDuration > 2s }`,
 		`{ rootName = name || traceDuration > 2s } && { kind = server }`,
+		// A trace-scoped intrinsic in a value position outside the filter —
+		// a by() key, an aggregate argument — joins its per-trace lookup
+		// onto the spans the aggregate reads, which must carry the window.
+		`{ } | by(rootName)`,
+		`{ } | by(rootName = name)`,
+		`{ } | by(traceDuration * 2)`,
+		`{ } | avg(traceDuration) > 1s`,
+		`{ } | max(traceDuration - duration) > 0`,
+		`{ rootName = name } | max(traceDuration * 2) > 1s`,
 	}
 	for _, q := range family {
 		assertNoUnboundedSpansScan(t, h, q, start, end)
