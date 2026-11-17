@@ -2,6 +2,7 @@ package logql
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
@@ -1179,5 +1180,70 @@ func TestDetectedLevelSource_NoAttributesColumnCollapses(t *testing.T) {
 	col, ok := detectedLevelSourceExpr(s).(*chplan.ColumnRef)
 	if !ok || col.Name != s.SeverityColumn {
 		t.Fatalf("source = %#v; want bare ColumnRef(%q) with neither an attributes nor a severity-number column", detectedLevelSourceExpr(s), s.SeverityColumn)
+	}
+}
+
+// evalLevelPredicate evaluates a predicate levelEqualsExpr builds, with
+// the ColumnRef src bound to source.
+func evalLevelPredicate(t *testing.T, e chplan.Expr, source string) any {
+	t.Helper()
+	switch v := e.(type) {
+	case *chplan.ColumnRef:
+		return source
+	case *chplan.LitString:
+		return v.V
+	case *chplan.LitBool:
+		return v.V
+	case *chplan.Binary:
+		l, r := evalLevelPredicate(t, v.Left, source), evalLevelPredicate(t, v.Right, source)
+		switch v.Op {
+		case chplan.OpEq:
+			return l == r
+		case chplan.OpOr:
+			return l.(bool) || r.(bool)
+		}
+	case *chplan.FuncCall:
+		switch v.Fn {
+		case chplan.FnLower:
+			return strings.ToLower(evalLevelPredicate(t, v.Args[0], source).(string))
+		case chplan.FnArray:
+			out := make([]string, len(v.Args))
+			for i, a := range v.Args {
+				out[i] = evalLevelPredicate(t, a, source).(string)
+			}
+			return out
+		case chplan.FnArrayHas:
+			return slices.Contains(evalLevelPredicate(t, v.Args[0], source).([]string), evalLevelPredicate(t, v.Args[1], source).(string))
+		}
+	}
+	t.Fatalf("unexpected node %T in %v", e, e)
+	return nil
+}
+
+// TestLevelEqualsExprMatchesTheNormalisation pins that the predicate
+// levelEqualsExpr builds over a level source holds exactly when
+// NormalizeDetectedLevel of that source equals one of the levels, across every
+// variant spelling in several cases, the empty source, `unknown`, and
+// values the normalisation passes through.
+func TestLevelEqualsExprMatchesTheNormalisation(t *testing.T) {
+	t.Parallel()
+	values := []string{"", "unknown", "Unknown", "UNKNOWN", "custom", "Custom", "notice", "Warning"}
+	for _, g := range levelNormalizationGroups {
+		for _, v := range g.variants {
+			values = append(values, v, strings.ToUpper(v), strings.ToUpper(v[:1])+v[1:])
+		}
+	}
+	src := &chplan.ColumnRef{Name: "src"}
+	for i, level := range values {
+		// Each level alone, and with the next one as an OR of two.
+		for _, levels := range [][]string{{level}, {level, values[(i+1)%len(values)]}} {
+			predicate := levelEqualsExpr(src, levels...)
+			for _, source := range values {
+				want := slices.Contains(levels, NormalizeDetectedLevel(source))
+				if got := evalLevelPredicate(t, predicate, source).(bool); got != want {
+					t.Errorf("levels %q, source %q: predicate = %v, normalisation %q is one of them = %v", levels, source, got, NormalizeDetectedLevel(source), want)
+				}
+			}
+		}
 	}
 }

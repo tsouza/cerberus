@@ -545,12 +545,14 @@ The emitter is also CH-native rather than ANSI-ish:
   layer alias and whose `WHERE` reads them by name, when the `Project`
   reading it is marked `OneScopeRows` and has an explicit select list.
   The LogQL lowering marks a log query's row stage — under a limit,
-  the part of it below the sort. A range aggregation's row stage folds
-  each filter conjunct that reads no layer into the scan's filter, and
-  moves into the scan's scope the layers that read only the table's
-  columns and the filters, with the layers they read, whose scope stays
-  within three times its text size once every alias read is replaced by
-  its expression. A filter conjunct that reads a map column as a whole
+  the part of it below the sort. A range aggregation's row stage moves
+  into the scan's scope the layers that read only the table's columns
+  and the filters, with the layers they read, whose scope stays within
+  three times its text size once every alias read is replaced by its
+  expression; a filter conjunct that reads no layer joins the scan's
+  filter, or, behind a moved filter, the scope's `WHERE`, so the
+  conjuncts keep the pipeline's order. A `detected_level` equality reads
+  the level source rather than the normalised level. A filter conjunct that reads a map column as a whole
   stays where it is, and nothing that reads a key of a map column the
   stage reads as a whole moves. The layers above the moved part render
   one `SELECT` each. The chain

@@ -66,7 +66,7 @@ func lowerLogQuery(sel syntax.LogSelectorExpr, s schema.Logs, lc lowerCtx) (chpl
 		return nil, fmt.Errorf("logql: log query is %T (not MatchersExpr or PipelineExpr)", sel)
 	}
 	rows := newRowLayers(lowerMatchers(stream, s, lc))
-	level := defineDetectedLevel(rows, s)
+	_, level := defineDetectedLevel(rows, s)
 	labels := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
 	if pipeline != nil {
 		lc.row.level = level

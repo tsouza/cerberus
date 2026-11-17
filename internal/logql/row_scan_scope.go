@@ -31,12 +31,12 @@ const maxScanScopeExpansion = 3
 //
 // Walking the stack from the bottom:
 //
-//   - a filter conjunct that reads no layer is folded into the stream
-//     scan's own filter;
+//   - a filter conjunct that reads no layer, and that no conjunct moved
+//     ahead of it, is folded into the stream scan's own filter;
 //   - a layer whose value reads only the table's columns and the values
-//     already moved, and a filter conjunct that reads only those values,
-//     moves into the scan's scope while the scope stays within
-//     [maxScanScopeExpansion];
+//     already moved, and a filter conjunct that reads only those values
+//     or no layer at all, moves into the scan's scope while the scope
+//     stays within [maxScanScopeExpansion];
 //   - neither happens to a filter conjunct whose own text reads a map
 //     column as a whole, or to a value or conjunct whose own text reads a
 //     key of a map column that some expression of the stage, or of
@@ -54,6 +54,11 @@ const maxScanScopeExpansion = 3
 // whole is read whole wherever it is read; a key subcolumn read of it in
 // the scan's scope only reads it a second time, and a predicate on the
 // whole map in the scan's scope reads it ahead of the rows it filters.
+//
+// The conjuncts in the scan's scope keep the order the stage gives them,
+// which is the pipeline's: ClickHouse runs a multi-step PREWHERE in the
+// order of the WHERE conjuncts, and the order the query was written in
+// is the one a reader of it can tune.
 //
 // Moving a value below the layers it does not read changes nothing it
 // computes: every layer is a pure per-row value, and an AND of predicates
@@ -141,9 +146,11 @@ func (r *rowLayers) gatherAtScan(maps []string, consumer ...chplan.Expr) {
 			var kept []chplan.Expr
 			for _, conjunct := range conjuncts(n.Predicate) {
 				switch {
-				case !scope.readsLayer(conjunct) && !readsWhole(conjunct):
+				case readsWhole(conjunct):
+					kept = append(kept, conjunct)
+				case !scope.readsLayer(conjunct) && len(filtered) == 0:
 					base = andFilter(base, conjunct)
-				case scope.readsLayer(conjunct) && !readsWhole(conjunct) && movable(conjunct):
+				case movable(conjunct):
 					scope.add(conjunct)
 					filtered = append(filtered, conjunct)
 				default:

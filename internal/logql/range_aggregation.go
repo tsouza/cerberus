@@ -396,11 +396,11 @@ func lowerLogRange(lr *syntax.LogRangeExpr, s schema.Logs, lc lowerCtx) (rows *r
 		return nil, nil, nil, fmt.Errorf("logql: range-aggregation inner is %T (not MatchersExpr or PipelineExpr)", lr.Left)
 	}
 	rows = newRowLayers(lowerMatchers(stream, s, lc))
-	level = defineDetectedLevel(rows, s)
+	source, level := defineDetectedLevel(rows, s)
 	// No pipeline — labels-map is the ResourceAttributes column.
 	labelsExpr = &chplan.ColumnRef{Name: s.ResourceAttributesColumn}
 	if pipeline != nil {
-		lc.row.level = level
+		lc.row.level, lc.row.levelSource = level, source
 		if labelsExpr, err = lowerPipelineStages(pipeline, s, lc, rows); err != nil {
 			return nil, nil, nil, err
 		}

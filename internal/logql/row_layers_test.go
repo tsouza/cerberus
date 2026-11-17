@@ -338,6 +338,16 @@ func TestRowLayersGatherAtScanLeavesWhatItMustNotMove(t *testing.T) {
 			moved: []string{"_value", "filter"},
 		},
 		{
+			name: "a line filter after a moved filter",
+			build: func(rows *rowLayers) []chplan.Expr {
+				value := rows.define("_value", lowerOf("Y"))
+				rows.filter(eq(value, "v"))
+				rows.filter(eq(&chplan.ColumnRef{Name: "Body"}, "line"))
+				return []chplan.Expr{&chplan.ColumnRef{Name: "Timestamp"}}
+			},
+			moved: []string{"_value", "filter"},
+		},
+		{
 			name: "a map read by key alone",
 			build: func(rows *rowLayers) []chplan.Expr {
 				rows.define("_key", key)

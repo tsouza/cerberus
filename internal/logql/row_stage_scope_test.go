@@ -42,7 +42,8 @@ func TestRangeAggregationFiltersRunWhereTheTableIsRead(t *testing.T) {
 		reads []string
 	}{
 		{`sum(count_over_time({job="wide"} |= "orders/5 " [5m]))`, []string{"position(`Body`", "AS `_logql_level_source`"}},
-		{`sum(count_over_time({job="wide"} | detected_level="fatal" [5m]))`, []string{"AS `_logql_level_source`"}},
+		{`sum(count_over_time({job="wide"} | detected_level="fatal" [5m]))`, []string{"AS `_logql_level_source`", "has(array(?), lower(`_logql_level_source`))"}},
+		{`sum by (detected_level) (count_over_time({job="wide"} | detected_level="debug" or detected_level="info" or detected_level="custom" [5m]))`, []string{"(has(array(?, ?, ?, ?, ?), lower(`_logql_level_source`)) OR has(array(?), `_logql_level_source`))"}},
 		{`absent_over_time({job="api"} |= "timeout" [5m])`, []string{"position(`Body`"}},
 		{`sum_over_time({job="api"} | logfmt | unwrap duration(latency) [5m])`, []string{"AS `_logql_unwrap_source`", "(`_logql_unwrap_source` != ?)"}},
 		{`sum by (level) (count_over_time({service_name="api"} | logfmt | level=~"error|warn" [1h]))`, []string{"AS `_logql_labels_0`", "mapContains(`_logql_labels_0`"}},
@@ -56,6 +57,33 @@ func TestRangeAggregationFiltersRunWhereTheTableIsRead(t *testing.T) {
 				if !strings.Contains(scope, want) {
 					t.Errorf("the SELECT reading otel_logs does not contain %s: %s", want, scope)
 				}
+			}
+		})
+	}
+}
+
+// TestRangeAggregationScanFiltersKeepTheirOrder pins that the filters a
+// range aggregation evaluates where the table is read keep the order the
+// pipeline gives them: a detected_level filter written ahead of a line
+// filter runs ahead of it, so ClickHouse's multi-step PREWHERE reads the
+// line only for the rows the level keeps.
+func TestRangeAggregationScanFiltersKeepTheirOrder(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		query string
+		first string
+		then  string
+	}{
+		{`sum(count_over_time({job="wide"} | detected_level="error" |= "orders/5" [5m]))`, "lower(`_logql_level_source`)", "position(`Body`"},
+		{`sum(count_over_time({job="wide"} |= "orders/5" | detected_level="error" [5m]))`, "position(`Body`", "lower(`_logql_level_source`)"},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			t.Parallel()
+			sql, _ := rangeAggregationSQL(t, tc.query)
+			scope := scopeAround(t, sql, "FROM `otel_logs`")
+			first, then := strings.Index(scope, tc.first), strings.Index(scope, tc.then)
+			if first < 0 || then < 0 || first > then {
+				t.Errorf("the SELECT reading otel_logs does not read %s ahead of %s: %s", tc.first, tc.then, scope)
 			}
 		})
 	}
