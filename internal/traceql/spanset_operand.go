@@ -4,6 +4,9 @@
 package traceql
 
 import (
+	"maps"
+	"slices"
+
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -36,12 +39,17 @@ import (
 // node needs the span timestamp the per-trace row no longer has.
 //
 // Un-collapsing restores all of them at once: the aggregate becomes the
-// span rows it consumed, semi-joined against the trace cohort it admits.
-// The rows are Tempo's spans and the column list is the same `SELECT *`
-// every plain selector exposes.
+// span rows it consumed, semi-joined against the spansets it admits. The
+// rows are Tempo's spans and the column list is the same `SELECT *` every
+// plain selector exposes.
+//
+// After a by() stage the aggregate evaluates once per group
+// (groupPerSpanset) and admits groups rather than traces, so the semi-join
+// keys on the (TraceId, group key) pair: `{ } | by(name) | count() > 1`
+// keeps the spans of each (trace, name) group with more than one span.
 //
 // Any other shape — a bare selector, a nested set operation, a structural
-// join, a `| by(…)` grouping — is returned untouched.
+// join — is returned untouched.
 func spanGranularOperand(n chplan.Node, s schema.Traces) chplan.Node {
 	agg := traceGranularAggregate(n, s)
 	if agg == nil {
@@ -52,25 +60,38 @@ func spanGranularOperand(n chplan.Node, s schema.Traces) chplan.Node {
 	// independent clone of the aggregate's input, so the two subtrees stay
 	// separately rewritable by the window / trace-limit stamping passes
 	// rather than aliasing one node into two positions.
-	cohort := &chplan.Project{
-		Input:       cohortAggregate(n, agg),
-		Projections: []chplan.Projection{{Expr: &chplan.ColumnRef{Name: aggTraceIDAlias}}},
+	member := chplan.Expr(&chplan.ColumnRef{Name: s.TraceIDColumn})
+	keys := []chplan.Projection{{Expr: &chplan.ColumnRef{Name: aggTraceIDAlias}}}
+	if len(agg.GroupBy) == len(spansetGroupByAliases) {
+		// The group key sits in a one-element tuple on both sides. A key can
+		// be NULL (`by(span.a + 1)` on a span with no `a`), and GROUP BY
+		// keeps the NULL-keyed spans as one group, as Tempo keeps its nil
+		// group; a NULL top-level IN element never matches, while a NULL
+		// inside a nested tuple compares as a value.
+		member = &chplan.FuncCall{Fn: chplan.FnTuple, Args: []chplan.Expr{member, nullSafeKey(agg.GroupBy[1])}}
+		keys = append(keys, chplan.Projection{Expr: nullSafeKey(&chplan.ColumnRef{Name: groupKeyAlias})})
 	}
 	return &chplan.Filter{
 		Input: chplan.CloneNode(agg.Input),
 		Predicate: &chplan.InSubquery{
-			Left:     &chplan.ColumnRef{Name: s.TraceIDColumn},
-			Subquery: cohort,
+			Left:     member,
+			Subquery: &chplan.Project{Input: cohortAggregate(n, agg), Projections: keys},
 		},
 	}
 }
 
+// nullSafeKey wraps a group key in the one-element tuple spanGranularOperand
+// compares it in.
+func nullSafeKey(key chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{Fn: chplan.FnTuple, Args: []chplan.Expr{key}}
+}
+
 // cohortAggregate rebuilds the operand's aggregate (and the scalar-filter
-// HAVING above it, when there is one) carrying only the aggregate functions
-// that HAVING actually reads. The cohort projects the group key alone, so
-// every other function in lowerAggregate's /api/search envelope — span name,
-// resource attributes, trace start/end — would be computed over the whole
-// scan and then thrown away.
+// HAVING Filters above it, when there are any) carrying only the aggregate
+// functions those Filters actually read. The cohort projects the group key
+// alone, so every other function in lowerAggregate's /api/search envelope —
+// span name, resource attributes, trace start/end — would be computed over
+// the whole scan and then thrown away.
 func cohortAggregate(n chplan.Node, agg *chplan.Aggregate) chplan.Node {
 	f, ok := n.(*chplan.Filter)
 	if !ok {
@@ -78,7 +99,19 @@ func cohortAggregate(n chplan.Node, agg *chplan.Aggregate) chplan.Node {
 		// is every group the aggregate produces and no function is read.
 		return narrowAggFuncs(agg, nil)
 	}
-	return &chplan.Filter{Input: narrowAggFuncs(agg, havingRefs(f.Predicate)), Predicate: f.Predicate}
+	return &chplan.Filter{Input: cohortAggregateUnder(f.Input, agg, havingRefs(f.Predicate)), Predicate: f.Predicate}
+}
+
+// cohortAggregateUnder is cohortAggregate below the outermost HAVING Filter:
+// keep accumulates the aggregate functions every Filter on the way down
+// reads.
+func cohortAggregateUnder(n chplan.Node, agg *chplan.Aggregate, keep map[string]bool) chplan.Node {
+	f, ok := n.(*chplan.Filter)
+	if !ok {
+		return narrowAggFuncs(agg, keep)
+	}
+	maps.Copy(keep, havingRefs(f.Predicate))
+	return &chplan.Filter{Input: cohortAggregateUnder(f.Input, agg, keep), Predicate: f.Predicate}
 }
 
 // narrowAggFuncs returns a copy of agg keeping only the aggregate functions
@@ -108,29 +141,42 @@ func havingRefs(e chplan.Expr) map[string]bool {
 	return refs
 }
 
-// traceGranularAggregate returns the per-trace spanset aggregate at the
-// root of n — either the bare `| count()` Aggregate or the same node
-// under the `| count() > N` scalar-filter Filter — and nil for every
-// other shape.
+// traceGranularAggregate returns the spanset aggregate at the root of n —
+// either the bare `| count()` Aggregate or the same node under the
+// `| count() > N` scalar-filter Filter (and the `Value IS NOT NULL` Filter
+// a nullable aggregate carries, dropNullValueRows) — and nil for every
+// other shape. The aggregate groups per trace, or per (trace, group key)
+// after a by() stage (groupPerSpanset).
 func traceGranularAggregate(n chplan.Node, s schema.Traces) *chplan.Aggregate {
-	if f, ok := n.(*chplan.Filter); ok {
+	for {
+		f, ok := n.(*chplan.Filter)
+		if !ok {
+			break
+		}
 		n = f.Input
 	}
 	agg, ok := n.(*chplan.Aggregate)
-	if !ok || agg.Input == nil || !groupsOnTraceID(agg, s.TraceIDColumn) {
+	if !ok || agg.Input == nil || !groupsPerSpanset(agg, s.TraceIDColumn) {
 		return nil
 	}
 	return agg
 }
 
-// groupsOnTraceID reports whether agg's GROUP BY is exactly the trace-id
-// column under lowerAggregate's alias — the only grouping whose cohort a
-// `TraceId IN (…)` semi-join can reproduce. A `| by(…)` grouping
-// (group_coalesce.go) or any future multi-key aggregate falls through.
-func groupsOnTraceID(agg *chplan.Aggregate, traceIDCol string) bool {
-	if len(agg.GroupBy) != 1 || len(agg.GroupByAliases) != 1 {
+// spansetGroupByAliases are the GROUP BY aliases of a spanset aggregate after
+// a by() stage: the trace and the by() group key. A spanset aggregate with
+// no by() before it carries the first alone.
+var spansetGroupByAliases = []string{aggTraceIDAlias, groupKeyAlias}
+
+// groupsPerSpanset reports whether agg's GROUP BY is the trace-id column
+// under lowerAggregate's alias, optionally followed by a group key under the
+// GroupKey alias — the only groupings whose cohort a `TraceId IN (…)` or
+// `(TraceId, key) IN (…)` semi-join can reproduce. A coalesce() aggregate
+// (group_coalesce.go), which groups by span identity, falls through.
+func groupsPerSpanset(agg *chplan.Aggregate, traceIDCol string) bool {
+	n := len(agg.GroupBy)
+	if n == 0 || n > len(spansetGroupByAliases) || !slices.Equal(agg.GroupByAliases, spansetGroupByAliases[:n]) {
 		return false
 	}
 	col, ok := agg.GroupBy[0].(*chplan.ColumnRef)
-	return ok && col.Name == traceIDCol && agg.GroupByAliases[0] == aggTraceIDAlias
+	return ok && col.Name == traceIDCol
 }
