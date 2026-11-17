@@ -511,12 +511,17 @@ func validateAggregate(a Aggregate) error {
 	return nil
 }
 
-// referencesSpan reports whether fe names any span field — an attribute or
+// ReferencesSpan reports whether fe names any span field — an attribute or
 // an intrinsic — anywhere in its tree. It is the reference's
 // `FieldExpression.referencesSpan` in pkg/traceql/ast.go (with
 // `Static.referencesSpan` false and `Attribute.referencesSpan` true),
-// spelled as a walk here rather than a method per node so the rule
-// lives beside the two validators that are its only callers.
+// spelled as a walk here rather than a method per node. The reference
+// evaluates a span-free expression at parse time, so lowering reads it to
+// tell such an expression from one evaluated per span.
+func ReferencesSpan(fe FieldExpression) bool {
+	return referencesSpan(fe)
+}
+
 func referencesSpan(fe FieldExpression) bool {
 	switch e := fe.(type) {
 	case *BinaryOperation:

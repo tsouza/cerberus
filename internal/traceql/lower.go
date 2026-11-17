@@ -1047,31 +1047,39 @@ func lowerUnaryMinus(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr, er
 
 // lowerUnaryNot lowers the boolean negation `!( <bool-expr> )`.
 //
-// Reference Tempo's `/api/search` has three DIFFERENT evaluation
-// behaviours for this shape depending on ctx, all pinned by differential
+// Reference Tempo's `/api/search` evaluates this shape four DIFFERENT
+// ways, depending on the operand and on ctx, all pinned by differential
 // probing against the same instance + fixture the compatibility/tempo
-// harness uses (issues #1711/#1712):
+// harness uses (issues #1711/#1712/#4139):
 //
 //  1. Double negation always cancels, regardless of ctx: `!(!(x))`
 //     evaluates exactly like `x` on its own. This is checked first and
 //     unconditionally, before any of the position-specific rules below —
 //     `!(!(!(!(kind = server))))` still cancels down to `kind = server`.
 //
-//  2. notContextTop — the NOT node IS the entire spanset filter
+//  2. <expr> references no span field (a comparison between two statics,
+//     such as `("test" = "test")`): reference evaluates the NOT, in every
+//     position. Its parser folds a span-free expression to a Static before
+//     execution (pkg/traceql/ast.go newBinaryOperation /
+//     newUnaryOperation), so the NOT never reaches the fetch layer whose
+//     behaviour the two rules below reproduce. Cerberus lowers it to SQL
+//     `not(<inner>)`, which ClickHouse evaluates to the same constant —
+//     `{ ("test" = "test") && !("test" = "test") }` matches no span, and
+//     `{ !("a" = "b") }` matches every span.
+//
+//  3. notContextTop — the NOT node IS the entire spanset filter
 //     predicate (`{ !(<expr>) }`, nothing else in the `{ }`): reference
 //     matches ZERO traces, regardless of what <expr> is (a single
 //     comparison, a satisfiable AND, or a satisfiable OR).
 //
-//  3. notContextAndOperand / notContextOrOperand — the NOT node is a
+//  4. notContextAndOperand / notContextOrOperand — the NOT node is a
 //     direct operand of a logical AND/OR, and <expr> (after the double-
 //     negation check above) is a single comparison (NOT itself a
 //     compound AND/OR): reference silently drops the NOT operand,
 //     behaving as if it were that combinator's identity element —
 //     `x && !(<comparison>)` ≡ `x`, `x || !(<comparison>)` ≡ `x`. See
 //     test/spec/traceql/unary_not_or_composition.txtar (an OR-operand
-//     case) for a fixture pin of this behaviour. Reference evaluates a
-//     NOT over a comparison between two statics instead of dropping it,
-//     which this rule does not yet distinguish (#4139).
+//     case) for a fixture pin of this behaviour.
 //
 // Everything else — an AND/OR-operand NOT wrapping a compound (AND/OR)
 // sub-expression — is genuinely unresolved: differential probing showed
@@ -1095,6 +1103,9 @@ func lowerUnaryNot(u traceql.UnaryOperation, s schema.Traces, ctx notContext) (c
 		// ColumnRef.
 		return lowerBooleanFieldExpr(inner, s, ctx)
 	}
+	if !traceql.ReferencesSpan(u.Expression) {
+		return negate(u.Expression, s, ctx)
+	}
 	if ctx == notContextTop {
 		return &chplan.LitBool{V: false}, nil
 	}
@@ -1105,7 +1116,13 @@ func lowerUnaryNot(u traceql.UnaryOperation, s schema.Traces, ctx notContext) (c
 		// `x || false` to `x`).
 		return &chplan.LitBool{V: ctx == notContextAndOperand}, nil
 	}
-	inner, err := lowerBooleanFieldExpr(u.Expression, s, ctx)
+	return negate(u.Expression, s, ctx)
+}
+
+// negate lowers e at ctx and wraps it in SQL `not(...)`: the logically
+// correct translation of `!(e)`, Tempo's own UnaryOperation.execute OpNot.
+func negate(e traceql.FieldExpression, s schema.Traces, ctx notContext) (chplan.Expr, error) {
+	inner, err := lowerBooleanFieldExpr(e, s, ctx)
 	if err != nil {
 		return nil, err
 	}

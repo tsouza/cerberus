@@ -1467,14 +1467,43 @@ search
 #     and the `nil` static the grammar's Static rule lists for the
 #     presence checks), against a value the seeder writes.
 #   * Static booleans: the string-comparison seed `{ "test" = "test" }`
-#     composed with the grammar's `!` and `&&` diverges from reference
-#     Tempo (#4139), so no such case is in the corpus until that is fixed.
+#     composed with the grammar's `!` and `&&`. Reference Tempo folds a
+#     span-free expression before execution, so the NOT is evaluated, not
+#     dropped as an AND operand's identity element.
 #   * Cross-scope comparison: the attribute seeds `{ span.a != 3 }` /
 #     `{ resource.a != 3 }` with both operands made attributes.
 #
 # Every case runs as a live differential against reference Tempo; the
 # bounds below are the fixture's arithmetic, not values taken from
 # either backend.
+
+-- name --
+static_bool_and_not_static
+# Seed `{ "test" = "test" }` composed with `!` and `&&`: `true && !true` is
+# false for every span, so no trace matches. A backend that drops the NOT
+# operand answers `true`, which matches every trace.
+-- query --
+{ ("test" = "test") && !("test" = "test") }
+-- endpoint --
+search
+-- expected_min_traces --
+0
+-- expected_max_traces --
+0
+
+-- name --
+static_bool_and_not_static_false
+# The same shape with the negated comparison false: `true && !false` is
+# true for every span, so every trace matches. A backend that answers the
+# NOT over a static as constant-false matches none.
+-- query --
+{ ("test" = "test") && !("test" = "other") }
+-- endpoint --
+search
+-- expected_min_traces --
+1
+-- expected_max_traces --
+500
 
 -- name --
 scoped_span_kind_consumer
