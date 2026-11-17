@@ -1,0 +1,44 @@
+`irate` has no per-`le` rung fold, so `sum by (le) (irate(...))` is not one
+of the array-domain idioms. The argument is lowered as an ordinary float
+expression over the bucket fan-out, and the ladder is reassembled from the
+`le`-labelled samples, as Prometheus reads them.
+
+The seed holds two series of one classic layout, bounds 1 / 2 / 4, with a
+sample a minute at 23:58, 23:59 and 00:00. Cumulative counts at
+le = 1 / 2 / 4 / +Inf:
+
+    lb=a  23:58:  1   2   3   4
+          23:59:  2   5   8  10
+          00:00:  3   7  13  16
+    lb=b  23:58:  1   2   2   2
+          23:59:  2   5   6   7
+          00:00:  3   7  11  13
+
+irate reads the last two samples of each bucket series (60s apart): both
+series rise by 1 / 2 / 5 / 6 per minute, so the summed ladder is
+2 / 4 / 10 / 12 per minute. At phi = 0.8 the rank 9.6 lands in (2, 4]:
+2 + (4 - 2) * (9.6 - 4) / (10 - 4) = 3.8666…
+
+-- query.promql --
+histogram_quantile(0.8, sum by (le) (irate(request_latency_bucket[5m])))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9), Count UInt64, Sum Float64,
+    BucketCounts Array(UInt64), ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('request_latency', map('lb','a'), map(), toDateTime64('2025-12-31 23:58:00', 9), 4,  6.0,  [1,1,1,1], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','a'), map(), toDateTime64('2025-12-31 23:59:00', 9), 10, 15.0, [2,3,3,2], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','a'), map(), toDateTime64('2026-01-01 00:00:00', 9), 16, 30.0, [3,4,6,3], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','b'), map(), toDateTime64('2025-12-31 23:58:00', 9), 2,  3.0,  [1,1,0,0], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','b'), map(), toDateTime64('2025-12-31 23:59:00', 9), 7,  12.0, [2,3,1,1], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','b'), map(), toDateTime64('2026-01-01 00:00:00', 9), 13, 25.0, [3,4,4,2], [1.0,2.0,4.0]);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:01Z", 3.866666666666667]
+]

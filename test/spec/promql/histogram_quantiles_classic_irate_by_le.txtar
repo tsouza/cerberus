@@ -1,0 +1,42 @@
+histogram_quantiles over the float-reassembled ladder of
+histogram_quantile_classic_irate_by_le: both levels share one quantile
+kernel over the summed per-minute ladder 2 / 4 / 10 / 12.
+
+The seed holds two series of one classic layout, bounds 1 / 2 / 4, with a
+sample a minute at 23:58, 23:59 and 00:00. Cumulative counts at
+le = 1 / 2 / 4 / +Inf:
+
+    lb=a  23:58:  1   2   3   4
+          23:59:  2   5   8  10
+          00:00:  3   7  13  16
+    lb=b  23:58:  1   2   2   2
+          23:59:  2   5   6   7
+          00:00:  3   7  11  13
+
+phi = 0.5: rank 6 in (2, 4], 2 + 2 * (6 - 4) / (10 - 4) = 2.6666….
+phi = 0.8: rank 9.6, 3.8666… as in the singular fixture.
+
+-- query.promql --
+histogram_quantiles(sum by (le) (irate(request_latency_bucket[5m])), "q", 0.5, 0.8)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),
+    TimeUnix DateTime64(9), Count UInt64, Sum Float64,
+    BucketCounts Array(UInt64), ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('request_latency', map('lb','a'), map(), toDateTime64('2025-12-31 23:58:00', 9), 4,  6.0,  [1,1,1,1], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','a'), map(), toDateTime64('2025-12-31 23:59:00', 9), 10, 15.0, [2,3,3,2], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','a'), map(), toDateTime64('2026-01-01 00:00:00', 9), 16, 30.0, [3,4,6,3], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','b'), map(), toDateTime64('2025-12-31 23:58:00', 9), 2,  3.0,  [1,1,0,0], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','b'), map(), toDateTime64('2025-12-31 23:59:00', 9), 7,  12.0, [2,3,1,1], [1.0,2.0,4.0]),
+    ('request_latency', map('lb','b'), map(), toDateTime64('2026-01-01 00:00:00', 9), 13, 25.0, [3,4,4,2], [1.0,2.0,4.0]);
+-- expected_rows --
+[
+  ["", {"q": "0.5"}, "2026-01-01T00:00:01Z", 2.666666666666667],
+  ["", {"q": "0.8"}, "2026-01-01T00:00:01Z", 3.866666666666667]
+]
