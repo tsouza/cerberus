@@ -877,11 +877,16 @@ What it proves (the contracts, mapped to their landing PRs):
   not-applicable (`::notice::`) and the breaker contract is covered by
   `ch-pod-kill` instead — never a vacuous pass.
 - **Admission control + pool (phase-2).** `load-admit-saturation`
-  bursts concurrency beyond the small overlay admit cap → some requests
-  shed cleanly with 503 + `Retry-After: 1` `server saturated` while a
-  below-cap request still 200s; `cerberus_admit_rejected_total` climbs;
-  the breaker stays CLOSED (admit + pool-acquire rejections are
-  breaker-neutral).
+  fires 16 concurrent requests carrying the same deterministic
+  server-side sleep as `ch-slow-query-timeout`, so every admitted request
+  holds its prom admit slot until ClickHouse aborts the sleep. With
+  `replicas × CERBERUS_ADMIT_PROM` slots, at least
+  `16 − replicas × CERBERUS_ADMIT_PROM` requests shed cleanly with 503 +
+  `Retry-After: 1` `server saturated`, and every admitted request must
+  have held its slot for at least 2 s; a Loki-head request during the
+  saturation still 200s (each head owns its own budget);
+  `cerberus_admit_rejected_total` climbs; the breaker stays CLOSED
+  (admit rejections are breaker-neutral).
 - **Handler panic (#885).** Already pinned deterministically by Layer 10
   — the live lane only corroborates that the process recovered cleanly
   from the cumulative fault storm (all 3 heads 200, no lingering 5xx) as

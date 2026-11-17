@@ -895,7 +895,8 @@ jobs:
       # e2e-up family extraction (#3096, epic #3091 phase 5): the pure
       # helpers behind the .mjs replacements for e2e-up's inline
       # bash/awk — kubectl/ClickHouse lookups, image-ref filtering, the
-      # datasource-ConfigMap rewrite, and the chaos-overlay env parser.
+      # datasource-ConfigMap rewrite, the chaos-overlay env parser, and
+      # the chaos lane's load-admit-saturation verdict.
       # Self-test only here, same rationale as verify-just-invocations —
       # a real k3d cluster is what the real `e2e` CI job exercises these
       # against.
@@ -911,6 +912,7 @@ jobs:
           node .github/scripts/run-node-tests.mjs .github/scripts/e2e-seed-rolling.test.mjs
           node .github/scripts/run-node-tests.mjs .github/scripts/e2e-seed-stop.test.mjs
           node .github/scripts/run-node-tests.mjs .github/scripts/e2e-chaos-overlay.test.mjs
+          node .github/scripts/run-node-tests.mjs .github/scripts/lib/admit-saturation.test.mjs
           node .github/scripts/run-node-tests.mjs .github/scripts/dump-cluster-state.test.mjs
           node .github/scripts/run-node-tests.mjs .github/scripts/e2e-datashard-verify.test.mjs
           node .github/scripts/run-node-tests.mjs .github/scripts/e2e-bwc-replicated-verify.test.mjs
