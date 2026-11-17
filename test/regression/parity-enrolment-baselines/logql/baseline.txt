@@ -29,6 +29,9 @@ sort_desc.txtar
 sum_by_job_rate.txtar
 sum_count_over_time.txtar
 sum_count_over_time_line_filter.txtar
+sum_count_over_time_line_filter_not_pattern_empty.txtar
+sum_count_over_time_line_filter_pattern_empty.txtar
+sum_count_over_time_line_filter_pattern_lone_capture.txtar
 sum_rate.txtar
 topk.txtar
 topk_by_partition.txtar
