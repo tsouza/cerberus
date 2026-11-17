@@ -37,13 +37,13 @@
           "name": "label_values_matcher_stock_key",
           "expected_status": 200,
           "max_of_n_bytes": 37431966,
-          "ceiling_bytes": 44918359
+          "ceiling_bytes": 52404752
         },
         {
           "name": "label_values_matcher_stock_key_renamed",
           "expected_status": 200,
           "max_of_n_bytes": 37406741,
-          "ceiling_bytes": 44888089
+          "ceiling_bytes": 52369437
         },
         {
           "name": "rate_by_route_matcher_stock_key",
@@ -102,13 +102,13 @@
           "name": "label_values_matcher_stock_key",
           "expected_status": 200,
           "max_of_n_bytes": 25884493,
-          "ceiling_bytes": 31061391
+          "ceiling_bytes": 36238290
         },
         {
           "name": "label_values_matcher_stock_key_renamed",
           "expected_status": 200,
           "max_of_n_bytes": 25963344,
-          "ceiling_bytes": 31156012
+          "ceiling_bytes": 36348681
         },
         {
           "name": "rate_by_route_matcher_stock_key",
@@ -167,13 +167,13 @@
           "name": "label_values_matcher_stock_key",
           "expected_status": 200,
           "max_of_n_bytes": 29471296,
-          "ceiling_bytes": 35365555
+          "ceiling_bytes": 41259814
         },
         {
           "name": "label_values_matcher_stock_key_renamed",
           "expected_status": 200,
           "max_of_n_bytes": 29517042,
-          "ceiling_bytes": 35420450
+          "ceiling_bytes": 41323858
         },
         {
           "name": "rate_by_route_matcher_stock_key",
@@ -232,13 +232,13 @@
           "name": "label_values_matcher_stock_key",
           "expected_status": 200,
           "max_of_n_bytes": 29427258,
-          "ceiling_bytes": 35312709
+          "ceiling_bytes": 41198161
         },
         {
           "name": "label_values_matcher_stock_key_renamed",
           "expected_status": 200,
           "max_of_n_bytes": 26550752,
-          "ceiling_bytes": 31860902
+          "ceiling_bytes": 37171052
         },
         {
           "name": "rate_by_route_matcher_stock_key",
