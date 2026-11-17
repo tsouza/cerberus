@@ -164,9 +164,9 @@ func TestStructuredMetadata_PipelineFilterResolvesLogAttributes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lower: %v", err)
 	}
-	filt, ok := plan.(*chplan.Filter)
-	if !ok {
-		t.Fatalf("top is %T, want *chplan.Filter", plan)
+	filt := selectionFilter(plan)
+	if filt == nil {
+		t.Fatalf("no Filter under the Project layers of %T", plan)
 	}
 	if !findCoalescingLookup(filt.Predicate, "query_kind") {
 		t.Errorf("expected a LogAttributes-preferred coalescing lookup for query_kind; got %v", filt.Predicate)
@@ -187,10 +187,16 @@ func TestStructuredMetadata_SelectorUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lower: %v", err)
 	}
-	// No LogAttributes reference may appear anywhere in the selector
-	// lowering — the selector matches the stream index only.
+	// No LogAttributes reference may appear anywhere in the predicate
+	// that selects the rows — the selector matches the stream index only.
+	// (The output projection reads LogAttributes for the returned lines'
+	// structured metadata, which selects nothing.)
+	filt := selectionFilter(plan)
+	if filt == nil {
+		t.Fatalf("no Filter under the Project layers of %T", plan)
+	}
 	sawLogAttrs := false
-	walkChplanExpr(plan, func(e chplan.Expr) {
+	walkChplanExpr(filt, func(e chplan.Expr) {
 		if col, ok := e.(*chplan.ColumnRef); ok && col.Name == s.AttributesColumn {
 			sawLogAttrs = true
 		}

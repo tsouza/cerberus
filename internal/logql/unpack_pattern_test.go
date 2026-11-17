@@ -7,6 +7,7 @@ import (
 
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
+	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/logql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -22,7 +23,7 @@ import (
 // pins; only a filter on the `__error__` / `__error_details__` family
 // loses SQL visibility (see
 // TestLowerUnpackPattern_ErrorLabelFilterDeferredToGo below and
-// lowerPipelineWithLabels's dynamicLabels gate) since those keys are
+// lowerPipelineStages's dynamicLabels gate) since those keys are
 // never legitimately present via that fallback.
 //
 // `| unpack` is NOT in this family: its extraction is modelled in SQL,
@@ -72,8 +73,8 @@ func TestLowerUnpackPattern_NoSQLImpact(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			gotWith := emitSQL(t, tc.with, s)
-			gotWithout := emitSQL(t, tc.without, s)
+			gotWith := emitSelectionSQL(t, tc.with, s)
+			gotWithout := emitSelectionSQL(t, tc.without, s)
 			if gotWith != gotWithout {
 				t.Errorf("parser stage altered SQL\nwith stage:    %s\nwithout stage: %s",
 					gotWith, gotWithout)
@@ -102,8 +103,8 @@ func TestLowerUnpackPattern_ErrorLabelFilterDeferredToGo(t *testing.T) {
 	for _, q := range cases {
 		t.Run(q, func(t *testing.T) {
 			t.Parallel()
-			got := emitSQL(t, q, s)
-			bare := emitSQL(t, `{job="api"}`, s)
+			got := emitSelectionSQL(t, q, s)
+			bare := emitSelectionSQL(t, `{job="api"}`, s)
 			if got != bare {
 				t.Errorf("expected the __error__ filter to have no SQL impact once handled in Go instead\nwith filter: %s\nbare:        %s", got, bare)
 			}
@@ -194,6 +195,34 @@ func emitSQL(t *testing.T, q string, s schema.Logs) string {
 	plan, err := logql.Lower(context.Background(), expr, s)
 	if err != nil {
 		t.Fatalf("Lower(%q): %v", q, err)
+	}
+	sqlStr, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit(%q): %v", q, err)
+	}
+	return sqlStr
+}
+
+// emitSelectionSQL lowers q and emits the rows its log query selects:
+// the plan below the Project layers on top of it — the output projection
+// and the per-row values only that projection reads — so a stage that
+// changes only a returned line or label set leaves it unchanged.
+func emitSelectionSQL(t *testing.T, q string, s schema.Logs) string {
+	t.Helper()
+	expr, err := syntax.ParseExpr(q)
+	if err != nil {
+		t.Fatalf("ParseExpr(%q): %v", q, err)
+	}
+	plan, err := logql.Lower(context.Background(), expr, s)
+	if err != nil {
+		t.Fatalf("Lower(%q): %v", q, err)
+	}
+	for {
+		p, ok := plan.(*chplan.Project)
+		if !ok {
+			break
+		}
+		plan = p.Input
 	}
 	sqlStr, _, err := chsql.Emit(context.Background(), plan)
 	if err != nil {

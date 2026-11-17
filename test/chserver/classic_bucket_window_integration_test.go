@@ -14,8 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/testcontainers/testcontainers-go"
-
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/promql"
@@ -423,22 +421,6 @@ func TestClassicWindow_SeriesCeilingAt16Threads(t *testing.T) {
 			}
 		})
 	}
-}
-
-// classicServerMaxThreads is the max_threads classicServerThreadsConfig gives
-// a server's default profile: the value ClickHouse sizes from a 16-core host.
-const classicServerMaxThreads = 16
-
-// classicServerThreadsConfig sets the default profile's max_threads to
-// classicServerMaxThreads.
-func classicServerThreadsConfig() testcontainers.ContainerCustomizer {
-	config := fmt.Sprintf("<clickhouse><profiles><default><max_threads>%d</max_threads></default></profiles></clickhouse>",
-		classicServerMaxThreads)
-	return testcontainers.WithFiles(testcontainers.ContainerFile{
-		Reader:            strings.NewReader(config),
-		ContainerFilePath: "/etc/clickhouse-server/users.d/max-threads.xml",
-		FileMode:          configFileMode,
-	})
 }
 
 // assertClassicWindowRefusal checks the probe qid was answered with want's

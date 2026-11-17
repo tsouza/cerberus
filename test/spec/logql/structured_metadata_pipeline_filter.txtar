@@ -4,76 +4,196 @@
 CREATE TABLE otel_logs (
     ServiceName LowCardinality(String) DEFAULT 'clickhouse',
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('service_name', 'clickhouse'),
-    LogAttributes Map(String, String) MATERIALIZED map(
+    ResourceAttributes Map(String, String) DEFAULT map('service_name', 'clickhouse'),
+    LogAttributes Map(String, String) DEFAULT map(
         'query_kind', if(Body = 'q2', 'Insert', 'Select'),
         'query_duration_ms', Body
-    )
+    ),
+    SeverityNumber UInt8 DEFAULT 0,
+    SeverityText LowCardinality(String) DEFAULT '',
+    Timestamp DateTime64(9) DEFAULT 0
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Body) VALUES ('q1'), ('q2'), ('q3');
 -- expected_rows --
 [
-  ["clickhouse", "q1"],
-  ["clickhouse", "q3"]
+  ["q1", {"detected_level": "unknown", "service_name": "clickhouse"}, "1970-01-01T00:00:00Z", {"query_duration_ms": "q1", "query_kind": "Select"}],
+  ["q3", {"detected_level": "unknown", "service_name": "clickhouse"}, "1970-01-01T00:00:00Z", {"query_duration_ms": "q3", "query_kind": "Select"}]
 ]
 -- chplan --
-Filter predicate=((FnCoalesce(FnNullIf(ServiceName, ""), FnIf(FnMapContainsKey(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], FnIf(FnMapContainsKey(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "clickhouse") AND (FnIf(((FnMapContainsKey(LogAttributes, "query_kind") OR FnMapContainsKey(LogAttributes, "query.kind")) OR FnMapContainsKey(LogAttributes, "query/kind")), FnIf(FnMapContainsKey(LogAttributes, "query_kind"), LogAttributes["query_kind"], FnIf(FnMapContainsKey(LogAttributes, "query.kind"), LogAttributes["query.kind"], LogAttributes["query/kind"])), FnIf(FnMapContainsKey(ResourceAttributes, "query_kind"), ResourceAttributes["query_kind"], FnIf(FnMapContainsKey(ResourceAttributes, "query.kind"), ResourceAttributes["query.kind"], ResourceAttributes["query/kind"]))) = "Select"))
-  Scan(otel_logs)
+Project [Body AS Line, FnMapMerge(ResourceAttributes, FnMapFilter((k, v) -> (v != ""), FnMap("detected_level", _logql_detected_level))) AS Attributes, Timestamp AS TimeUnix, FnToJSONString(FnMapFilter((k, v) -> (v != ""), LogAttributes)) AS Metadata] oneScopeRows
+  Project [Body, LogAttributes, ResourceAttributes, Timestamp, FnMultiIf((FnLower(_logql_level_source) = ""), "unknown", ((FnLower(_logql_level_source) = "trace") OR (FnLower(_logql_level_source) = "trc")), "trace", ((FnLower(_logql_level_source) = "debug") OR (FnLower(_logql_level_source) = "dbg")), "debug", (((FnLower(_logql_level_source) = "info") OR (FnLower(_logql_level_source) = "inf")) OR (FnLower(_logql_level_source) = "information")), "info", (((FnLower(_logql_level_source) = "warn") OR (FnLower(_logql_level_source) = "wrn")) OR (FnLower(_logql_level_source) = "warning")), "warn", ((FnLower(_logql_level_source) = "error") OR (FnLower(_logql_level_source) = "err")), "error", (FnLower(_logql_level_source) = "critical"), "critical", (FnLower(_logql_level_source) = "fatal"), "fatal", _logql_level_source) AS _logql_detected_level]
+    Project [Body, LogAttributes, ResourceAttributes, Timestamp, FnMultiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], FnMultiIf((SeverityText != ""), SeverityText, FnMultiIf((SeverityNumber <= 0), "", (SeverityNumber <= 4), "trace", (SeverityNumber <= 8), "debug", (SeverityNumber <= 12), "info", (SeverityNumber <= 16), "warn", (SeverityNumber <= 20), "error", (SeverityNumber <= 24), "fatal", ""))) AS _logql_level_source]
+      Filter predicate=((FnCoalesce(FnNullIf(ServiceName, ""), FnIf(FnMapContainsKey(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], FnIf(FnMapContainsKey(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "clickhouse") AND (FnIf(((FnMapContainsKey(LogAttributes, "query_kind") OR FnMapContainsKey(LogAttributes, "query.kind")) OR FnMapContainsKey(LogAttributes, "query/kind")), FnIf(FnMapContainsKey(LogAttributes, "query_kind"), LogAttributes["query_kind"], FnIf(FnMapContainsKey(LogAttributes, "query.kind"), LogAttributes["query.kind"], LogAttributes["query/kind"])), FnIf(FnMapContainsKey(ResourceAttributes, "query_kind"), ResourceAttributes["query_kind"], FnIf(FnMapContainsKey(ResourceAttributes, "query.kind"), ResourceAttributes["query.kind"], ResourceAttributes["query/kind"]))) = "Select"))
+        Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?) AND (if(((mapContains(`LogAttributes`, ?) OR mapContains(`LogAttributes`, ?)) OR mapContains(`LogAttributes`, ?)), if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?])), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?)
+SELECT `Body` AS `Line`, mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`))) AS `Attributes`, `Timestamp` AS `TimeUnix`, toJSONString(mapFilter((k, v) -> (v != ?), `LogAttributes`)) AS `Metadata` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `Timestamp`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `Timestamp`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source` FROM (SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?) AND (if(((mapContains(`LogAttributes`, ?) OR mapContains(`LogAttributes`, ?)) OR mapContains(`LogAttributes`, ?)), if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?])), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?))))
 -- args --
 [0] string = ""
-[1] string = "service_name"
-[2] string = "service_name"
-[3] string = "service.name"
-[4] string = "service.name"
-[5] string = "service/name"
-[6] string = "clickhouse"
-[7] string = "query_kind"
-[8] string = "query.kind"
-[9] string = "query/kind"
-[10] string = "query_kind"
-[11] string = "query_kind"
-[12] string = "query.kind"
-[13] string = "query.kind"
-[14] string = "query/kind"
-[15] string = "query_kind"
-[16] string = "query_kind"
-[17] string = "query.kind"
-[18] string = "query.kind"
-[19] string = "query/kind"
-[20] string = "Select"
+[1] string = "detected_level"
+[2] string = ""
+[3] string = ""
+[4] string = "unknown"
+[5] string = "trace"
+[6] string = "trc"
+[7] string = "trace"
+[8] string = "debug"
+[9] string = "dbg"
+[10] string = "debug"
+[11] string = "info"
+[12] string = "inf"
+[13] string = "information"
+[14] string = "info"
+[15] string = "warn"
+[16] string = "wrn"
+[17] string = "warning"
+[18] string = "warn"
+[19] string = "error"
+[20] string = "err"
+[21] string = "error"
+[22] string = "critical"
+[23] string = "critical"
+[24] string = "fatal"
+[25] string = "fatal"
+[26] string = "detected_level"
+[27] string = ""
+[28] string = "detected_level"
+[29] string = "level"
+[30] string = ""
+[31] string = "level"
+[32] string = "log.level"
+[33] string = ""
+[34] string = "log.level"
+[35] string = "severity"
+[36] string = ""
+[37] string = "severity"
+[38] string = "severity_text"
+[39] string = ""
+[40] string = "severity_text"
+[41] string = ""
+[42] int64 = 0
+[43] string = ""
+[44] int64 = 4
+[45] string = "trace"
+[46] int64 = 8
+[47] string = "debug"
+[48] int64 = 12
+[49] string = "info"
+[50] int64 = 16
+[51] string = "warn"
+[52] int64 = 20
+[53] string = "error"
+[54] int64 = 24
+[55] string = "fatal"
+[56] string = ""
+[57] string = ""
+[58] string = "service_name"
+[59] string = "service_name"
+[60] string = "service.name"
+[61] string = "service.name"
+[62] string = "service/name"
+[63] string = "clickhouse"
+[64] string = "query_kind"
+[65] string = "query.kind"
+[66] string = "query/kind"
+[67] string = "query_kind"
+[68] string = "query_kind"
+[69] string = "query.kind"
+[70] string = "query.kind"
+[71] string = "query/kind"
+[72] string = "query_kind"
+[73] string = "query_kind"
+[74] string = "query.kind"
+[75] string = "query.kind"
+[76] string = "query/kind"
+[77] string = "Select"
 -- parity_exempt --
 reason: log-query-answer
-detail: log query `{service_name="clickhouse"} | query_kind="Select"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+detail: log query `{service_name="clickhouse"} | query_kind="Select"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
 [0] string = ""
-[1] string = "service_name"
-[2] string = "service_name"
-[3] string = "service.name"
-[4] string = "service.name"
-[5] string = "service/name"
-[6] string = "clickhouse"
-[7] string = "query_kind"
-[8] string = "query.kind"
-[9] string = "query/kind"
-[10] string = "query_kind"
-[11] string = "query_kind"
-[12] string = "query.kind"
-[13] string = "query.kind"
-[14] string = "query/kind"
-[15] string = "query_kind"
-[16] string = "query_kind"
-[17] string = "query.kind"
-[18] string = "query.kind"
-[19] string = "query/kind"
-[20] string = "Select"
+[1] string = "detected_level"
+[2] string = ""
+[3] string = ""
+[4] string = "unknown"
+[5] string = "trace"
+[6] string = "trc"
+[7] string = "trace"
+[8] string = "debug"
+[9] string = "dbg"
+[10] string = "debug"
+[11] string = "info"
+[12] string = "inf"
+[13] string = "information"
+[14] string = "info"
+[15] string = "warn"
+[16] string = "wrn"
+[17] string = "warning"
+[18] string = "warn"
+[19] string = "error"
+[20] string = "err"
+[21] string = "error"
+[22] string = "critical"
+[23] string = "critical"
+[24] string = "fatal"
+[25] string = "fatal"
+[26] string = "detected_level"
+[27] string = ""
+[28] string = "detected_level"
+[29] string = "level"
+[30] string = ""
+[31] string = "level"
+[32] string = "log.level"
+[33] string = ""
+[34] string = "log.level"
+[35] string = "severity"
+[36] string = ""
+[37] string = "severity"
+[38] string = "severity_text"
+[39] string = ""
+[40] string = "severity_text"
+[41] string = ""
+[42] int64 = 0
+[43] string = ""
+[44] int64 = 4
+[45] string = "trace"
+[46] int64 = 8
+[47] string = "debug"
+[48] int64 = 12
+[49] string = "info"
+[50] int64 = 16
+[51] string = "warn"
+[52] int64 = 20
+[53] string = "error"
+[54] int64 = 24
+[55] string = "fatal"
+[56] string = ""
+[57] string = ""
+[58] string = "service_name"
+[59] string = "service_name"
+[60] string = "service.name"
+[61] string = "service.name"
+[62] string = "service/name"
+[63] string = "clickhouse"
+[64] string = "query_kind"
+[65] string = "query.kind"
+[66] string = "query/kind"
+[67] string = "query_kind"
+[68] string = "query_kind"
+[69] string = "query.kind"
+[70] string = "query.kind"
+[71] string = "query/kind"
+[72] string = "query_kind"
+[73] string = "query_kind"
+[74] string = "query.kind"
+[75] string = "query.kind"
+[76] string = "query/kind"
+[77] string = "Select"
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
-log_comment=cerb:filter
+log_comment=cerb:project
 max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?) AND (if(((mapContains(`LogAttributes`, ?) OR mapContains(`LogAttributes`, ?)) OR mapContains(`LogAttributes`, ?)), if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?])), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?)
+SELECT `Body` AS `Line`, mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`))) AS `Attributes`, `Timestamp` AS `TimeUnix`, toJSONString(mapFilter((k, v) -> (v != ?), `LogAttributes`)) AS `Metadata` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `Timestamp`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `Timestamp`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `ServiceName`, `SeverityNumber`, `SeverityText`, `Timestamp` FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?) AND (if(((mapContains(`LogAttributes`, ?) OR mapContains(`LogAttributes`, ?)) OR mapContains(`LogAttributes`, ?)), if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `LogAttributes`[?])), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?))))

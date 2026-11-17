@@ -6,7 +6,8 @@
 import { test } from 'node:test';
 import process from 'node:process';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 
 import {
   CANCELLATION_TEST,
@@ -14,6 +15,7 @@ import {
   KIND_CANCELLATION,
   KIND_FAMILY,
   KIND_REST,
+  PACKAGE_DIR,
   SHARD_ALL,
   SHARD_REST,
   aggregate,
@@ -309,4 +311,26 @@ test('live tree: every planned shard resolves against test/chserver and the pinn
   );
   assert.deepEqual([...booted].sort(), [...pinned].sort());
   assert.ok(shardImages(selection(SHARD_REST, live), pinned).length < pinned.length, 'rest boots every image');
+  // Every top-level test of a classic_bucket_* source runs in one of the
+  // classic-histogram family shards, never in rest.
+  const classicTests = topLevelTests(
+    readdirSync(PACKAGE_DIR)
+      .filter((file) => file.startsWith('classic_bucket_') && file.endsWith('_test.go'))
+      .map((file) => readFileSync(join(PACKAGE_DIR, file), 'utf8'))
+      .filter(builtUnderIntegration),
+  );
+  assert.ok(classicTests.length > 0, 'test/chserver has no classic_bucket_* test');
+  const classicShards = ['classic-histogram', 'classic-histogram-window'].flatMap(
+    (id) => selection(id, live).expect,
+  );
+  assert.deepEqual(
+    classicTests.filter((name) => !classicShards.includes(name)),
+    [],
+    'a classic_bucket_* test runs outside the classic-histogram family shards',
+  );
+  assert.deepEqual(
+    classicTests.filter((name) => selection(SHARD_REST, live).expect.includes(name)),
+    [],
+    'a classic_bucket_* test runs in rest',
+  );
 });

@@ -880,7 +880,7 @@ path, because at the time all three production `Limit` constructions wrapped an
 `OrderBy` directly under `Limit` (the matcher's switch only accepted
 `Filter`/`Scan` there) and the Loki line path built no SQL `Limit` at all,
 applying the request limit Go-side in `buildRangeData` — the gap since closed
-by `maybePushLogLineLimit`, described in
+by `logLineLimit`, described in
 [`clickhouse-optimizations.md`](clickhouse-optimizations.md).
 
 Sizing the knob to the request's own LIMIT rather than to a fixed ceiling was

@@ -1,70 +1,109 @@
 -- query.logql --
 {job="api"} | logfmt | status > 400
 -- args --
-[0] string = "job"
-[1] string = "api"
-[2] string = "_extracted"
-[3] int64 = 1
+[0] string = ""
+[1] string = "detected_level"
+[2] string = ""
+[3] string = "_extracted"
 [4] int64 = 1
-[5] string = "="
-[6] string = " "
-[7] string = "\""
-[8] string = "Array(Tuple(String,String))"
+[5] int64 = 1
+[6] string = "="
+[7] string = " "
+[8] string = "\""
 [9] string = "Array(Tuple(String,String))"
-[10] string = "Map(String,String)"
-[11] string = "status"
-[12] string = "status"
-[13] bool = false
-[14] string = "_extracted"
-[15] int64 = 1
-[16] int64 = 1
-[17] string = "="
-[18] string = " "
-[19] string = "\""
-[20] string = "Array(Tuple(String,String))"
-[21] string = "Array(Tuple(String,String))"
-[22] string = "Map(String,String)"
-[23] string = "status"
-[24] string = "_extracted"
-[25] int64 = 1
-[26] int64 = 1
-[27] string = "="
-[28] string = " "
-[29] string = "\""
-[30] string = "Array(Tuple(String,String))"
-[31] string = "Array(Tuple(String,String))"
-[32] string = "Map(String,String)"
-[33] string = "status"
-[34] string = "status"
-[35] string = "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$"
-[36] bool = true
-[37] string = "_extracted"
-[38] int64 = 1
-[39] int64 = 1
-[40] string = "="
-[41] string = " "
-[42] string = "\""
-[43] string = "Array(Tuple(String,String))"
-[44] string = "Array(Tuple(String,String))"
-[45] string = "Map(String,String)"
-[46] string = "status"
-[47] string = "_extracted"
-[48] int64 = 1
-[49] int64 = 1
-[50] string = "="
-[51] string = " "
-[52] string = "\""
-[53] string = "Array(Tuple(String,String))"
-[54] string = "Array(Tuple(String,String))"
-[55] string = "Map(String,String)"
-[56] string = "status"
-[57] string = "status"
-[58] float64 = 400
+[10] string = "Array(Tuple(String,String))"
+[11] string = "Map(String,String)"
+[12] string = "detected_level"
+[13] string = ""
+[14] string = "detected_level"
+[15] string = "level"
+[16] string = ""
+[17] string = "level"
+[18] string = "log.level"
+[19] string = ""
+[20] string = "log.level"
+[21] string = "severity"
+[22] string = ""
+[23] string = "severity"
+[24] string = "severity_text"
+[25] string = ""
+[26] string = "severity_text"
+[27] string = ""
+[28] int64 = 0
+[29] string = ""
+[30] int64 = 4
+[31] string = "trace"
+[32] int64 = 8
+[33] string = "debug"
+[34] int64 = 12
+[35] string = "info"
+[36] int64 = 16
+[37] string = "warn"
+[38] int64 = 20
+[39] string = "error"
+[40] int64 = 24
+[41] string = "fatal"
+[42] string = ""
+[43] string = ""
+[44] string = "unknown"
+[45] string = "trace"
+[46] string = "trc"
+[47] string = "trace"
+[48] string = "debug"
+[49] string = "dbg"
+[50] string = "debug"
+[51] string = "info"
+[52] string = "inf"
+[53] string = "information"
+[54] string = "info"
+[55] string = "warn"
+[56] string = "wrn"
+[57] string = "warning"
+[58] string = "warn"
+[59] string = "error"
+[60] string = "err"
+[61] string = "error"
+[62] string = "critical"
+[63] string = "critical"
+[64] string = "fatal"
+[65] string = "fatal"
+[66] string = "__error__"
+[67] string = "status"
+[68] string = "status"
+[69] string = "status"
+[70] string = "status"
+[71] string = "status"
+[72] string = "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$"
+[73] string = "__error__"
+[74] string = "LabelFilterErr"
+[75] string = "__error_details__"
+[76] string = "strconv.ParseFloat: parsing \""
+[77] string = "status"
+[78] string = "status"
+[79] string = "status"
+[80] string = "\": invalid syntax"
+[81] string = "job"
+[82] string = "api"
+[83] string = "status"
+[84] string = "status"
+[85] bool = false
+[86] string = "status"
+[87] string = "status"
+[88] string = "status"
+[89] string = "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$"
+[90] bool = true
+[91] string = "status"
+[92] string = "status"
+[93] string = "status"
+[94] float64 = 400
 -- seed --
 CREATE TABLE otel_logs (
     LogAttributes Map(String, String) MATERIALIZED map(),
     Body String,
-    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api')
+    ResourceAttributes Map(String, String) MATERIALIZED map('job', 'api'),
+    Timestamp DateTime64(9) DEFAULT 0,
+    SeverityText LowCardinality(String) DEFAULT '',
+    SeverityNumber UInt8 DEFAULT 0
 ) ENGINE = Memory;
 INSERT INTO otel_logs (Body) VALUES
     ('ts=2026-01-01 status=200 msg="ok"'),
@@ -72,83 +111,125 @@ INSERT INTO otel_logs (Body) VALUES
     ('ts=2026-01-01 status=503 msg="unavailable"');
 -- expected_rows --
 [
-  ["ts=2026-01-01 status=500 msg=\"server_error\""],
-  ["ts=2026-01-01 status=503 msg=\"unavailable\""]
+  ["ts=2026-01-01 status=500 msg=\"server_error\"", {"detected_level": "unknown", "job": "api", "msg": "server_error", "status": "500", "ts": "2026-01-01"}, "1970-01-01T00:00:00Z", {}],
+  ["ts=2026-01-01 status=503 msg=\"unavailable\"", {"detected_level": "unknown", "job": "api", "msg": "unavailable", "status": "503", "ts": "2026-01-01"}, "1970-01-01T00:00:00Z", {}]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["job"] = "api") AND FnMultiIf(FnNot((FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "status") OR FnMapContainsKey(LogAttributes, "status"))), false, FnNot(FnRegexMatch(FnIf(FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "status"), FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)")))["status"], LogAttributes["status"]), "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$")), true, (FnToFloat64OrZero(FnIf(FnMapContainsKey(FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))), "status"), FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)")))["status"], LogAttributes["status"])) > 400)))
-  Scan(otel_logs)
+Project [Body AS Line, FnMapMerge(_logql_labels_1, FnMapFilter((k, v) -> (v != ""), FnMap("detected_level", _logql_detected_level))) AS Attributes, Timestamp AS TimeUnix, FnToJSONString(FnMapFilter((k, v) -> (v != ""), LogAttributes)) AS Metadata] oneScopeRows
+  Project [Body, LogAttributes, Timestamp, _logql_detected_level, FnMapMerge(_logql_labels_0, FnIf((FnNot(FnMapContainsKey(_logql_labels_0, "__error__")) AND ((FnMapContainsKey(_logql_labels_0, "status") OR FnMapContainsKey(LogAttributes, "status")) AND FnNot(FnRegexMatch(FnIf(FnMapContainsKey(_logql_labels_0, "status"), _logql_labels_0["status"], LogAttributes["status"]), "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$")))), FnMap("__error__", "LabelFilterErr", "__error_details__", FnConcat("strconv.ParseFloat: parsing \"", FnIf(FnMapContainsKey(_logql_labels_0, "status"), _logql_labels_0["status"], LogAttributes["status"]), "\": invalid syntax")), FnMap())) AS _logql_labels_1]
+    Project [Body, LogAttributes, Timestamp, _logql_labels_0, FnMultiIf((FnLower(_logql_level_source) = ""), "unknown", ((FnLower(_logql_level_source) = "trace") OR (FnLower(_logql_level_source) = "trc")), "trace", ((FnLower(_logql_level_source) = "debug") OR (FnLower(_logql_level_source) = "dbg")), "debug", (((FnLower(_logql_level_source) = "info") OR (FnLower(_logql_level_source) = "inf")) OR (FnLower(_logql_level_source) = "information")), "info", (((FnLower(_logql_level_source) = "warn") OR (FnLower(_logql_level_source) = "wrn")) OR (FnLower(_logql_level_source) = "warning")), "warn", ((FnLower(_logql_level_source) = "error") OR (FnLower(_logql_level_source) = "err")), "error", (FnLower(_logql_level_source) = "critical"), "critical", (FnLower(_logql_level_source) = "fatal"), "fatal", _logql_level_source) AS _logql_detected_level]
+      Project [Body, LogAttributes, Timestamp, _logql_labels_0, FnMultiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], FnMultiIf((SeverityText != ""), SeverityText, FnMultiIf((SeverityNumber <= 0), "", (SeverityNumber <= 4), "trace", (SeverityNumber <= 8), "debug", (SeverityNumber <= 12), "info", (SeverityNumber <= 16), "warn", (SeverityNumber <= 20), "error", (SeverityNumber <= 24), "fatal", ""))) AS _logql_level_source]
+        Filter predicate=FnMultiIf(FnNot((FnMapContainsKey(_logql_labels_0, "status") OR FnMapContainsKey(LogAttributes, "status"))), false, FnNot(FnRegexMatch(FnIf(FnMapContainsKey(_logql_labels_0, "status"), _logql_labels_0["status"], LogAttributes["status"]), "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$")), true, (FnToFloat64OrZero(FnIf(FnMapContainsKey(_logql_labels_0, "status"), _logql_labels_0["status"], LogAttributes["status"])) > 400))
+          Project [Body, LogAttributes, SeverityNumber, SeverityText, Timestamp, FnMapMerge(ResourceAttributes, FnMapApply((k, v) -> FnTuple(FnIf(FnMapContainsKey(ResourceAttributes, k), FnConcat(k, "_extracted"), k), v), FnCast(FnArrayReverse(FnArrayFold((__json_seen, __json_entry) -> FnIf(FnArrayHas(FnArrayMap(__json_seen_entry -> FnTupleElement(__json_seen_entry, 1), __json_seen), FnTupleElement(__json_entry, 1)), __json_seen, FnArrayPushBack(__json_seen, __json_entry)), FnArrayReverse(FnCast(FnExtractKeyValuePairs(Body, "=", " ", "\""), "Array(Tuple(String,String))")), FnCast(FnArray(), "Array(Tuple(String,String))"))), "Map(String,String)"))) AS _logql_labels_0]
+            Filter predicate=(ResourceAttributes["job"] = "api")
+              Scan(otel_logs)
 -- sql --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND multiIf(not((mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?) OR mapContains(`LogAttributes`, ?))), ?, not(match(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], `LogAttributes`[?]), ?)), ?, (toFloat64OrZero(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], `LogAttributes`[?])) > toFloat64(?)))
+SELECT `Body` AS `Line`, mapConcat(`_logql_labels_1`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`))) AS `Attributes`, `Timestamp` AS `TimeUnix`, toJSONString(mapFilter((k, v) -> (v != ?), `LogAttributes`)) AS `Metadata` FROM (SELECT `Body`, `LogAttributes`, `Timestamp`, mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))) AS `_logql_labels_0`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level`, mapConcat(`_logql_labels_0`, if((not(mapContains(`_logql_labels_0`, ?)) AND ((mapContains(`_logql_labels_0`, ?) OR mapContains(`LogAttributes`, ?)) AND not(match(if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?]), ?)))), map(?, ?, ?, concat(?, if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?]), ?)), map())) AS `_logql_labels_1` FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND multiIf(not((mapContains(`_logql_labels_0`, ?) OR mapContains(`LogAttributes`, ?))), ?, not(match(if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?]), ?)), ?, (toFloat64OrZero(if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?])) > toFloat64(?))))
 -- parity_exempt --
 reason: log-query-answer
-detail: log query `{job="api"} | logfmt | status > 400` answers with log lines: the reference returns logqlmodel.Streams and cerberus the `SELECT *` columns this fixture's own seed declares, which have no element-wise correspondence
+detail: log query `{job="api"} | logfmt | status > 400` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args_optimized --
-[0] string = "job"
-[1] string = "api"
-[2] string = "_extracted"
-[3] int64 = 1
+[0] string = ""
+[1] string = "detected_level"
+[2] string = ""
+[3] string = "_extracted"
 [4] int64 = 1
-[5] string = "="
-[6] string = " "
-[7] string = "\""
-[8] string = "Array(Tuple(String,String))"
+[5] int64 = 1
+[6] string = "="
+[7] string = " "
+[8] string = "\""
 [9] string = "Array(Tuple(String,String))"
-[10] string = "Map(String,String)"
-[11] string = "status"
-[12] string = "status"
-[13] bool = false
-[14] string = "_extracted"
-[15] int64 = 1
-[16] int64 = 1
-[17] string = "="
-[18] string = " "
-[19] string = "\""
-[20] string = "Array(Tuple(String,String))"
-[21] string = "Array(Tuple(String,String))"
-[22] string = "Map(String,String)"
-[23] string = "status"
-[24] string = "_extracted"
-[25] int64 = 1
-[26] int64 = 1
-[27] string = "="
-[28] string = " "
-[29] string = "\""
-[30] string = "Array(Tuple(String,String))"
-[31] string = "Array(Tuple(String,String))"
-[32] string = "Map(String,String)"
-[33] string = "status"
-[34] string = "status"
-[35] string = "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$"
-[36] bool = true
-[37] string = "_extracted"
-[38] int64 = 1
-[39] int64 = 1
-[40] string = "="
-[41] string = " "
-[42] string = "\""
-[43] string = "Array(Tuple(String,String))"
-[44] string = "Array(Tuple(String,String))"
-[45] string = "Map(String,String)"
-[46] string = "status"
-[47] string = "_extracted"
-[48] int64 = 1
-[49] int64 = 1
-[50] string = "="
-[51] string = " "
-[52] string = "\""
-[53] string = "Array(Tuple(String,String))"
-[54] string = "Array(Tuple(String,String))"
-[55] string = "Map(String,String)"
-[56] string = "status"
-[57] string = "status"
-[58] float64 = 400
+[10] string = "Array(Tuple(String,String))"
+[11] string = "Map(String,String)"
+[12] string = "detected_level"
+[13] string = ""
+[14] string = "detected_level"
+[15] string = "level"
+[16] string = ""
+[17] string = "level"
+[18] string = "log.level"
+[19] string = ""
+[20] string = "log.level"
+[21] string = "severity"
+[22] string = ""
+[23] string = "severity"
+[24] string = "severity_text"
+[25] string = ""
+[26] string = "severity_text"
+[27] string = ""
+[28] int64 = 0
+[29] string = ""
+[30] int64 = 4
+[31] string = "trace"
+[32] int64 = 8
+[33] string = "debug"
+[34] int64 = 12
+[35] string = "info"
+[36] int64 = 16
+[37] string = "warn"
+[38] int64 = 20
+[39] string = "error"
+[40] int64 = 24
+[41] string = "fatal"
+[42] string = ""
+[43] string = ""
+[44] string = "unknown"
+[45] string = "trace"
+[46] string = "trc"
+[47] string = "trace"
+[48] string = "debug"
+[49] string = "dbg"
+[50] string = "debug"
+[51] string = "info"
+[52] string = "inf"
+[53] string = "information"
+[54] string = "info"
+[55] string = "warn"
+[56] string = "wrn"
+[57] string = "warning"
+[58] string = "warn"
+[59] string = "error"
+[60] string = "err"
+[61] string = "error"
+[62] string = "critical"
+[63] string = "critical"
+[64] string = "fatal"
+[65] string = "fatal"
+[66] string = "__error__"
+[67] string = "status"
+[68] string = "status"
+[69] string = "status"
+[70] string = "status"
+[71] string = "status"
+[72] string = "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$"
+[73] string = "__error__"
+[74] string = "LabelFilterErr"
+[75] string = "__error_details__"
+[76] string = "strconv.ParseFloat: parsing \""
+[77] string = "status"
+[78] string = "status"
+[79] string = "status"
+[80] string = "\": invalid syntax"
+[81] string = "job"
+[82] string = "api"
+[83] string = "status"
+[84] string = "status"
+[85] bool = false
+[86] string = "status"
+[87] string = "status"
+[88] string = "status"
+[89] string = "^[+-]?(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?|[iI][nN][fF]([iI][nN][iI][tT][yY])?|[nN][aA][nN])$"
+[90] bool = true
+[91] string = "status"
+[92] string = "status"
+[93] string = "status"
+[94] float64 = 400
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
-log_comment=cerb:filter
+log_comment=cerb:project
 max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND multiIf(not((mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?) OR mapContains(`LogAttributes`, ?))), ?, not(match(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], `LogAttributes`[?]), ?)), ?, (toFloat64OrZero(if(mapContains(mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))), ?), mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?)))[?], `LogAttributes`[?])) > toFloat64(?)))
+SELECT `Body` AS `Line`, mapConcat(`_logql_labels_1`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`))) AS `Attributes`, `Timestamp` AS `TimeUnix`, toJSONString(mapFilter((k, v) -> (v != ?), `LogAttributes`)) AS `Metadata` FROM (SELECT `Body`, `LogAttributes`, `Timestamp`, mapConcat(`ResourceAttributes`, mapApply((k, v) -> tuple(if(mapContains(`ResourceAttributes`, k), concat(k, ?), k), v), CAST(arrayReverse(arrayFold((__json_seen, __json_entry) -> if(has(arrayMap(__json_seen_entry -> tupleElement(__json_seen_entry, ?), __json_seen), tupleElement(__json_entry, ?)), __json_seen, arrayPushBack(__json_seen, __json_entry)), arrayReverse(CAST(extractKeyValuePairs(`Body`, ?, ?, ?), ?)), CAST(array(), ?))), ?))) AS `_logql_labels_0`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level`, mapConcat(`_logql_labels_0`, if((not(mapContains(`_logql_labels_0`, ?)) AND ((mapContains(`_logql_labels_0`, ?) OR mapContains(`LogAttributes`, ?)) AND not(match(if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?]), ?)))), map(?, ?, ?, concat(?, if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?]), ?)), map())) AS `_logql_labels_1` FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND multiIf(not((mapContains(`_logql_labels_0`, ?) OR mapContains(`LogAttributes`, ?))), ?, not(match(if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?]), ?)), ?, (toFloat64OrZero(if(mapContains(`_logql_labels_0`, ?), `_logql_labels_0`[?], `LogAttributes`[?])) > toFloat64(?))))

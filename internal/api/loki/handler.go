@@ -574,7 +574,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 // contract. limit/dir are threaded unconditionally — including for a
 // metric query, which the handler doesn't know it's building until the
 // lowering classifies the parsed expression — since
-// maybePushLogLineLimit only ever engages for a genuine log-line plan.
+// logLineLimit only ever engages for a genuine log-line plan.
 func (h *Handler) langForRequest(ctx context.Context, start, end time.Time, limit int, dir logDirection) *logql.Lang {
 	return &logql.Lang{
 		Schema:              h.Schema,

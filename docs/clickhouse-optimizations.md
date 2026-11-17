@@ -610,8 +610,8 @@ Notes:
   `AutoSelect` is `true`. The setting is gated behind the analyzer, so
   cerberus co-stamps `enable_analyzer=1`
   alongside it, mirroring `condition_cache`'s own co-stamp. Loki's log-line path
-  benefits too: `internal/logql/lower.go`'s `maybePushLogLineLimit` wraps the
-  plan in `Limit(OrderBy(plan))` — a real SQL `ORDER BY Timestamp {DESC|ASC}
+  benefits too: `internal/logql/lower.go`'s `logLineLimit` places
+  `Limit(OrderBy(...))` over the filtered rows — a real SQL `ORDER BY Timestamp {DESC|ASC}
   LIMIT N` carrying the request's own `limit` — for every log-line pipeline
   shape proven incapable of dropping a row in Go after the SQL executes
   (`pipelineCanDropRowsInGo`). That is precisely the shape

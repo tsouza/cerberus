@@ -1,0 +1,21 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/lang.go:ProjectSamples#5982b4f6",
+      "message": "logql: log query plan is %T, not the log-row projection the lowering builds",
+      "class": "internal",
+      "rationale": "invariant guard: a non-metric plan is the one lowerLogQuery builds, whose root is the log-row Project with LogLineColumn first; the error turns a future lowering or rewrite that changes that root into a refusal instead of a mis-shaped stream",
+      "evidence": {
+        "guard": [
+          "past returning if meta.IsMetric",
+          "if !isLogRowProjection(plan)"
+        ],
+        "callers": null,
+        "cited": [
+          "lowerLogQuery"
+        ]
+      }
+    }
+  ]
+}

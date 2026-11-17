@@ -2,7 +2,7 @@
 
 // Symptom-first regression test for cerberus issue #2829's M2 milestone
 // exit criterion ("M2: No knowingly-wrong answers on the default path").
-// #2829 itself is closed — internal/logql/lower.go's maybePushLogLineLimit
+// #2829 itself is closed — internal/logql/lower.go's logLineLimit
 // pushes Loki's `limit` into a real SQL `ORDER BY ... LIMIT N`, and
 // limit_pushdown_test.go / limit_pushdown_chdb_test.go already characterize
 // the plan-shape and correctness side of that change. What none of those
@@ -140,7 +140,7 @@ func TestLimitPushdown_SampleBudget400ThenRows_ChDB(t *testing.T) {
 	// query got before #2829 — no Limit(OrderBy(...)) wrap, full-window
 	// decode. It is not a hypothetical or a deleted code path:
 	// TestLogLineLimitPushdown_ShapeAndGating (internal/logql) pins it as
-	// the base plan maybePushLogLineLimit wraps additively, and it is
+	// the base plan logLineLimit wraps additively, and it is
 	// exercised here exactly as that test builds it.
 	basePlan, err := logql.LowerAt(context.Background(), expr, s, start, end)
 	if err != nil {
@@ -191,7 +191,7 @@ func TestLimitPushdown_SampleBudget400ThenRows_ChDB(t *testing.T) {
 	//
 	// handleQueryRange threads the request's own `limit` unconditionally
 	// (langForRangeRequest) and internal/logql/lower.go's
-	// maybePushLogLineLimit pushes it into SQL for this safe bare-selector
+	// logLineLimit pushes it into SQL for this safe bare-selector
 	// shape — this is not a bypass or a reconstruction, it is the exact
 	// code path a real /query_range request runs today.
 	mux := http.NewServeMux()
@@ -261,9 +261,18 @@ func TestLimitPushdown_SampleBudget400ThenRows_ChDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LowerAtRangeOpts (pushed plan): %v", err)
 	}
-	lim, ok := pushedPlan.(*chplan.Limit)
-	if !ok {
-		t.Fatalf("pushed plan top node = %T, want *chplan.Limit", pushedPlan)
+	// The limit sits under the log-row projection and the values computed
+	// for the returned rows.
+	var lim *chplan.Limit
+	for n := pushedPlan; lim == nil; {
+		switch v := n.(type) {
+		case *chplan.Limit:
+			lim = v
+		case *chplan.Project:
+			n = v.Input
+		default:
+			t.Fatalf("pushed plan reaches %T before any Limit, want Projects over *chplan.Limit", n)
+		}
 	}
 	if lim.Count != int64(reqLimit) {
 		t.Errorf("Limit.Count = %d, want %d", lim.Count, reqLimit)
