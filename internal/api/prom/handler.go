@@ -107,10 +107,10 @@ type Handler struct {
 	// read happens concurrently on every query_range request.
 	liveLowerers atomic.Pointer[promql.RangeLowerers]
 
-	// ResourceBounds carries the operator-tunable histogram cross-series
-	// merge cost ceilings (cerberus issue #2667:
-	// CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS /
-	// CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES). Wired at boot
+	// ResourceBounds carries the operator-tunable histogram resource
+	// ceilings (cerberus issue #2667:
+	// CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS and its siblings in
+	// internal/promql/resource_bounds_env.go). Wired at boot
 	// in cmd/cerberus from promql.ResourceBoundsFromEnv; the zero value
 	// resolves at the lowering-entry seam
 	// (promql.LowerOpts.ResourceBounds -> ResourceBounds.withDefaults) to
@@ -1466,23 +1466,10 @@ func classifyThrowIfGuardError(err error) *apiError {
 			Err:    errors.New(chsql.RangeLWRFanoutBudgetMessage),
 			Status: http.StatusUnprocessableEntity,
 		}
-	// Same family again: the classic-histogram cross-series bucket merge
-	// (#2408) planted its own throwIf — the shared classicBucketMergeShaping
-	// stage every per-series lowering mechanism (fan-out, native rate
-	// ladder) feeds, found by a real audited benchmark to be
-	// the dominant unguarded cost at realistic query width. Same 422
-	// errorType=execution "resource exhausted" shape as the histogram
-	// merge guard above.
-	case throwIfMessageMatches(err, chplan.ClassicBucketMergeBudgetMessage):
-		return &apiError{
-			Kind:   ErrExecution,
-			Err:    errors.New(chplan.ClassicBucketMergeBudgetMessage),
-			Status: http.StatusUnprocessableEntity,
-		}
-	// The instant path's per-series window stage that feeds that merge
-	// carries its own per-series throwIf (internal/promql's
-	// classic_bucket_window_bound.go), raised before the stage folds a
-	// series. Same 422 shape.
+	// Same family again: the instant classic-histogram quantile's
+	// per-series window stage carries its own per-series throwIf
+	// (internal/promql's classic_bucket_window_bound.go), raised before the
+	// stage folds a series. Same 422 shape.
 	case throwIfMessageMatches(err, chplan.ClassicBucketWindowSeriesBudgetMessage):
 		return &apiError{
 			Kind:   ErrExecution,
