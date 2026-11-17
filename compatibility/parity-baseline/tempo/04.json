@@ -3,6 +3,7 @@
   "head": "tempo",
   "bucket": "04",
   "cases": [
+    "metrics_range | metrics_rate_after_leading_aggregate_filter",
     "tags_v2 | tags_v2_instrumentation"
   ]
 }

@@ -1,24 +1,21 @@
-Bug 1: a standalone `| by(X)` grouping stage immediately before a metrics
-aggregate must fold into the aggregate's by-clause, so `{} | by(X) | rate()`
-lowers IDENTICALLY to the valid `{} | rate() by (X)` (see metrics_rate_by.txtar
-— same seed, same expected SQL/args/rows). Pre-fix this shape lowered to a
-standalone GROUP-BY Aggregate that stripped Timestamp; the metrics rate grid the
-/api/metrics/query_range handler wraps over it then referenced a Timestamp the
-inner aggregate had collapsed away — ClickHouse code 47 ("Unknown expression or
-function identifier `Timestamp`"), surfaced to Grafana as a 502. The fold
-(foldTrailingGroupByIntoMetrics) routes the grouping through the aggregate's
-by-clause, keeping Timestamp in scope and emitting valid grid-able SQL.
+A standalone `| by(X)` grouping stage immediately before a metrics function is
+invisible to the metric: reference Tempo's metrics evaluator observes every span
+of every group the by() stage returns and labels a series only from the metrics
+function's own by-clause. So `{} | by(resource.service.name) | rate()` answers
+the one unlabelled series `{} | rate()` answers — here all four spans, over two
+services — and lowers identically to it (dropGroupByBeforeMetrics). Lowered as
+a stage instead, by() would collapse the spans to one row per group and leave
+the metric no Timestamp to read (ClickHouse code 47, a 502).
 
 -- query.traceql --
 
 {} | by(resource.service.name) | rate()
 
 -- sql --
-SELECT `ResourceAttributes`[?] AS `service.name`, toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `service.name`
+SELECT toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)
 -- args --
-[0] string = "service.name"
-[1] int64 = 1
-[2] bool = true
+[0] int64 = 1
+[1] bool = true
 -- seed --
 CREATE TABLE otel_traces ( ResourceAttributes Map(String, String),
     TraceId String,
@@ -27,22 +24,22 @@ CREATE TABLE otel_traces ( ResourceAttributes Map(String, String),
 INSERT INTO otel_traces (ResourceAttributes, TraceId, SpanId) VALUES
     (map('service.name', 'frontend'), 'a0000000000000000000000000000001', '0000000000000001'),
     (map('service.name', 'frontend'), 'a0000000000000000000000000000001', '0000000000000002'),
-    (map('service.name', 'frontend'), 'a0000000000000000000000000000001', '0000000000000003');
+    (map('service.name', 'frontend'), 'a0000000000000000000000000000001', '0000000000000003'),
+    (map('service.name', 'backend'), 'a0000000000000000000000000000001', '0000000000000004');
 -- expected_rows --
-
-[["frontend",3]]
-
+[
+  [4]
+]
 -- chplan --
-MetricsAggregate op=rate groupBy=[ResourceAttributes["service.name"] AS service.name|resource.service.name] valueAlias=Value perTraceLookback=1h0m0s
+MetricsAggregate op=rate valueAlias=Value perTraceLookback=1h0m0s
   Filter predicate=true
     Scan(otel_traces)
 -- parity_exempt --
 reason: no-comparable-oracle
 detail: `{} | by(resource.service.name) | rate()` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare
 -- args_optimized --
-[0] string = "service.name"
-[1] int64 = 1
-[2] bool = true
+[0] int64 = 1
+[1] bool = true
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
@@ -51,4 +48,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT `ResourceAttributes`[?] AS `service.name`, toFloat64(count(?)) AS `Value` FROM (SELECT `ResourceAttributes` FROM `otel_traces` WHERE ?) GROUP BY `service.name`
+SELECT toFloat64(count(?)) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?)

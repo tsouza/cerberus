@@ -179,11 +179,10 @@ func TestMetricsRecursiveArmWindowed(t *testing.T) {
 		// A position-dependent nested-set filter (`nestedSetLeft > 0`, NOT the
 		// root-test `nestedSetParent < 0` which lowers straight to ParentSpanId='')
 		// backs the metric with the recursive nested-set numbering CTE — the
-		// nested-set counterpart of the structural recursive arm. (The former
-		// `{ nestedSetParent < 0 } | by(nestedSetParent) | rate()` case was the
-		// Bug 1 shape: a standalone `by()` before a metric now folds into the
-		// aggregate's by-clause — `rate() by (nestedSetParent)` — so it no longer
-		// emits a nested-set numbering arm at all.)
+		// nested-set counterpart of the structural recursive arm. (A standalone
+		// `by()` before a metric is dropped — the metric never sees it — so
+		// `{ nestedSetParent < 0 } | by(nestedSetParent) | rate()` emits no
+		// nested-set numbering arm at all.)
 		{"nested_set_filter", `{ nestedSetLeft > 0 } | rate()`, false},
 	}
 	for _, tc := range cases {
