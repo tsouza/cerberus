@@ -335,7 +335,11 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		// sort_by_label(h or f, l))`) is not such a pipeline: its
 		// histogram partition is interpolated exactly as the direct mixed
 		// `or`'s is above.
-		return lowerHistogramQuantileUnrecognisedArg(c.Args[1], phi, s, ctx)
+		inner, err := lower(c.Args[1], s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		return histogramQuantileOverUnrecognisedArg(c.Args[1], inner, phi, s, ctx)
 	}
 
 	if s.IsExpHistogramMetric(vs.Name) {
@@ -382,13 +386,10 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 	return lowerHistogramQuantileClassicBare(vs, phi, s, ctx)
 }
 
-// lowerHistogramQuantileUnrecognisedArg is lowerHistogramQuantile's
-// unrecognised-inner-shape fallback: see the comment at its call site.
-func lowerHistogramQuantileUnrecognisedArg(arg parser.Expr, phi phiArg, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	inner, err := lower(arg, s, ctx)
-	if err != nil {
-		return nil, err
-	}
+// histogramQuantileOverUnrecognisedArg is lowerHistogramQuantile's
+// unrecognised-inner-shape fallback over arg's ordinary lowering inner:
+// see the comment at its call site.
+func histogramQuantileOverUnrecognisedArg(arg parser.Expr, inner chplan.Node, phi phiArg, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if err := requireMixedPlanPolicy(inner, mixedHistogramValueFamily, mixedBespoke); err != nil {
 		return nil, err
 	}
