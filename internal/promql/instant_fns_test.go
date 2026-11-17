@@ -3,6 +3,7 @@ package promql_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
 
@@ -16,10 +17,15 @@ import (
 // algebra proves they carry no `le`: reference Prometheus accepts ANY
 // instant-vector second argument and skips float samples without an `le`
 // label (info annotation, empty result), so these fold to a constant-false
-// Filter (empty vector) instead of a 422 — and instead of reassembling a
-// bucket ladder from rows that cannot hold one. An argument that MAY carry
-// `le` (`up + up`: any series can) is not folded; the spec corpus pins its
-// answer against Prometheus (histogram_quantile_non_bucket_arithmetic_empty).
+// Filter (empty vector) instead of a 422 — and instead of reading the whole
+// argument to reassemble a bucket ladder from rows that cannot hold one. A
+// selector pinning a name without the `_bucket` suffix and with no `le`
+// matcher carries no `le`, so `up * 2` and `abs(up)` fold, in instant and
+// range mode alike. An argument that MAY carry `le` (a `_bucket` selector,
+// an `le` matcher, an unpinned name, a minted `le`) is not folded. The spec
+// corpus pins the `_bucket` and `le`-matcher answers against Prometheus
+// (histogram_quantile_classic_bucket_arithmetic,
+// histogram_quantile_le_matcher_unparseable_empty).
 func TestLower_HistogramQuantile_NonBucketInputFoldsEmpty(t *testing.T) {
 	t.Parallel()
 
@@ -27,28 +33,44 @@ func TestLower_HistogramQuantile_NonBucketInputFoldsEmpty(t *testing.T) {
 	p := parser.NewParser(parser.Options{})
 
 	for q, wantFold := range map[string]bool{
-		`histogram_quantile(0.9, sum(up))`:               true,
-		`histogram_quantile(0.9, vector(1))`:             true,
-		`histogram_quantile(0.9, sum by (job) (up) * 2)`: true,
-		`histogram_quantile(0.9, up + up)`:               false,
-		`histogram_quantile(0.9, sum by (le) (up))`:      false,
+		`histogram_quantile(0.9, sum(up))`:                              true,
+		`histogram_quantile(0.9, vector(1))`:                            true,
+		`histogram_quantile(0.9, sum by (job) (up) * 2)`:                true,
+		`histogram_quantile(0.9, up + up)`:                              true,
+		`histogram_quantile(0.9, up * 2)`:                               true,
+		`histogram_quantile(0.9, abs(up))`:                              true,
+		`histogram_quantile(0.9, rate(requests_total[5m]) * 2)`:         true,
+		`histogram_quantile(0.9, sum by (le) (up))`:                     true,
+		`histogram_quantile(0.9, max_over_time((up * 2)[5m:1m]))`:       true,
+		`histogram_quantile(0.9, request_latency_bucket * 2)`:           false,
+		`histogram_quantile(0.9, abs(request_latency_bucket))`:          false,
+		`histogram_quantile(0.9, up{le="1"} * 2)`:                       false,
+		`histogram_quantile(0.9, {__name__=~"up.*"} * 2)`:               false,
+		`histogram_quantile(0.9, label_replace(up, "le", "1", "", ""))`: false,
 	} {
 		expr, err := p.ParseExpr(q)
 		if err != nil {
 			t.Fatalf("ParseExpr(%q): %v", q, err)
 		}
-		plan, err := promql.Lower(context.Background(), expr, s)
+		instant, err := promql.Lower(context.Background(), expr, s)
 		if err != nil {
 			t.Fatalf("Lower(%q): %v", q, err)
 		}
-		f, isFilter := plan.(*chplan.Filter)
-		folded := false
-		if isFilter {
-			lit, ok := f.Predicate.(*chplan.LitBool)
-			folded = ok && !lit.V
+		rangeEnd := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		ranged, err := promql.LowerAtRange(context.Background(), expr, s, rangeEnd.Add(-time.Hour), rangeEnd, time.Minute)
+		if err != nil {
+			t.Fatalf("LowerAtRange(%q): %v", q, err)
 		}
-		if folded != wantFold {
-			t.Fatalf("Lower(%q) folded to constant-false = %v, want %v (root %T)", q, folded, wantFold, plan)
+		for mode, plan := range map[string]chplan.Node{"instant": instant, "range": ranged} {
+			f, isFilter := plan.(*chplan.Filter)
+			folded := false
+			if isFilter {
+				lit, ok := f.Predicate.(*chplan.LitBool)
+				folded = ok && !lit.V
+			}
+			if folded != wantFold {
+				t.Errorf("%s Lower(%q) folded to constant-false = %v, want %v (root %T)", mode, q, folded, wantFold, plan)
+			}
 		}
 	}
 }

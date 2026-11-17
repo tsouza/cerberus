@@ -1,26 +1,32 @@
-Float samples carrying an `le` label need not share a timestamp: here one
-series' rungs were last scraped at 23:59:50, 23:59:55 and 23:59:58. An
-instant vector stands every sample at the evaluation instant, so
-Prometheus reassembles the three into one ladder — {1: 2, 2: 4, +Inf: 4} —
-and answers one quantile: rank 2 lands in the first bucket, interpolated
-from 0, 0 + (1 - 0) * (2 - 0) / (2 - 0) = 1. The ladder must be keyed on the
-evaluation instant, not on each sample's own time.
+Float samples carrying an `le` label need not share a timestamp: here the
+three rungs of one `lat_bucket` series were last written at 23:59:50,
+23:59:55 and 23:59:58. Each histogram row carries a different bucket
+layout — bounds [1], then [2], then none — so each rung's newest sample
+comes from a different row: le=1 holds 2 from 23:59:50, le=2 holds 4 from
+23:59:55, and +Inf holds 4 from 23:59:58. An instant vector stands every
+sample at the evaluation instant, so Prometheus reassembles the three
+into one ladder — {1: 2, 2: 4, +Inf: 4} — and answers one quantile: rank
+2 lands in the first bucket, interpolated from 0,
+0 + (1 - 0) * (2 - 0) / (2 - 0) = 1. `lat_bucket * 1` is not an idiom
+shape, so the float-domain reassembly answers it, and the ladder must be
+keyed on the evaluation instant, not on each sample's own time.
 
 -- query.promql --
-histogram_quantile(0.5, lat * 1)
+histogram_quantile(0.5, lat_bucket * 1)
 -- parity --
 oracle: prometheus
 endpoint: /api/v1/query
 scope: full
 -- seed --
-CREATE TABLE otel_metrics_gauge (
+CREATE TABLE otel_metrics_histogram (
     MetricName String, Attributes Map(String, String), ResourceAttributes Map(String, String),
-    TimeUnix DateTime64(9), Value Float64
+    TimeUnix DateTime64(9), Count UInt64, Sum Float64,
+    BucketCounts Array(UInt64), ExplicitBounds Array(Float64)
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
-INSERT INTO otel_metrics_gauge VALUES
-    ('lat', map('le','1'), map(), toDateTime64('2025-12-31 23:59:50', 9), 2.0),
-    ('lat', map('le','2'), map(), toDateTime64('2025-12-31 23:59:55', 9), 4.0),
-    ('lat', map('le','+Inf'), map(), toDateTime64('2025-12-31 23:59:58', 9), 4.0);
+INSERT INTO otel_metrics_histogram VALUES
+    ('lat', map(), map(), toDateTime64('2025-12-31 23:59:50', 9), 2, 1.0, [2,0], [1.0]),
+    ('lat', map(), map(), toDateTime64('2025-12-31 23:59:55', 9), 4, 3.0, [4,0], [2.0]),
+    ('lat', map(), map(), toDateTime64('2025-12-31 23:59:58', 9), 4, 5.0, [4],   []);
 -- expected_rows --
 [
   ["", {}, "2026-01-01T00:00:01Z", 1]

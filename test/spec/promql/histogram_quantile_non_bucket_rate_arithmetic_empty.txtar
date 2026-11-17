@@ -1,9 +1,8 @@
 A range function over a counter that is not a histogram bucket, under
-arithmetic: the expression may carry an `le` label, so it is not folded
-statically, and its samples carry none, so Prometheus answers an empty
-vector. In instant mode the range function's rows carry no sample
-timestamp; the ladder reassembly keys them on the evaluation instant and
-drops them for want of an `le`.
+arithmetic: its samples carry no `le`, so Prometheus answers an empty
+vector. `rate` keeps its argument's labels and `requests_total` pins a
+name without the `_bucket` suffix and has no `le` matcher, so cerberus
+folds the query to that empty vector without reading the argument.
 
 -- query.promql --
 histogram_quantile(0.9, rate(requests_total[5m]) * 2)
