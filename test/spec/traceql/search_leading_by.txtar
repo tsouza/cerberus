@@ -1,0 +1,28 @@
+# A pipeline may open with `by(...)`. Reference Tempo hands it every span of
+# every trace, as `{ }` would, so `by(resource.service.name)` answers what
+# `{ } | by(resource.service.name)` answers: one group per (trace, service)
+# — frontend and backend on trace ...01, checkout on ...02, orders on ...03.
+-- query.traceql --
+by(resource.service.name)
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String),
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '', 'GET /a', toDateTime64('2026-01-01 00:00:00', 9), map('service.name', 'frontend'), 10000000),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', 'db.query', toDateTime64('2026-01-01 00:00:01', 9), map('service.name', 'backend'), 20000000),
+    ('a0000000000000000000000000000001', '0000000000000003', '0000000000000001', 'db.query', toDateTime64('2026-01-01 00:00:02', 9), map('service.name', 'backend'), 30000000),
+    ('a0000000000000000000000000000002', '0000000000000004', '', 'GET /b', toDateTime64('2026-01-01 00:00:03', 9), map('service.name', 'checkout'), 10000000),
+    ('a0000000000000000000000000000002', '0000000000000005', '0000000000000004', 'cache.get', toDateTime64('2026-01-01 00:00:04', 9), map('service.name', 'checkout'), 20000000),
+    ('a0000000000000000000000000000003', '0000000000000006', '', 'POST /c', toDateTime64('2026-01-01 00:00:05', 9), map('service.name', 'orders'), 10000000);
+-- expected_rows --
+[]
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `by(resource.service.name)` groups the spanset: its rows carry __cerberus_traceID and no __cerberus_spanID because each is a group representative, not a span, so there is no span set for runTempoParity to compare

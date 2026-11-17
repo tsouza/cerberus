@@ -28,8 +28,8 @@ func lowerPlain(t *testing.T, query string, s schema.Traces) chplan.Node {
 
 // hasGroupKeyAggregate reports whether the plan contains the standalone
 // spanset-grouping Aggregate (`| by(X)` lowered on its own) — the
-// Timestamp-stripping node that, fed into a metrics rate grid, produces the
-// Bug 1 code-47 SQL.
+// Timestamp-stripping node that, fed into a metrics rate grid, produces
+// ClickHouse code 47 SQL.
 func hasGroupKeyAggregate(n chplan.Node) bool {
 	if n == nil {
 		return false
@@ -42,21 +42,24 @@ func hasGroupKeyAggregate(n chplan.Node) bool {
 	return slices.ContainsFunc(n.Children(), hasGroupKeyAggregate)
 }
 
-// TestFoldStandaloneGroupByIntoMetrics pins Bug 1: a standalone `| by(X)`
-// grouping stage that immediately precedes a metrics aggregate folds into the
-// aggregate's by-clause, so `{...} | by(X) | rate()` lowers IDENTICALLY to the
-// already-valid `{...} | rate() by (X)`. The pre-fix lowering produced a
-// Timestamp-stripping GROUP-BY Aggregate feeding the rate grid (ClickHouse
-// code 47, a 502); the folded plan must instead match the inline-by form and
-// carry no GroupKey aggregate.
-func TestFoldStandaloneGroupByIntoMetrics(t *testing.T) {
+// TestDropGroupByBeforeMetrics pins that the by() stages right before a
+// metrics function are dropped: reference Tempo's metrics evaluator observes
+// every span of every spanset the pipeline returns and labels its series only
+// from the metrics function's own by-clause, so `{ } | by(name) | rate()`
+// answers the one unlabelled series `{ } | rate()` answers. Each pair must
+// lower to the same plan, with no GroupKey aggregate left in it.
+func TestDropGroupByBeforeMetrics(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelTraces()
 	pairs := [][2]string{
-		{`{} | by(name) | rate()`, `{} | rate() by (name)`},
-		{`{ resource.service.name = "a" } | by(resource.service.name) | count_over_time()`, `{ resource.service.name = "a" } | count_over_time() by (resource.service.name)`},
-		{`{ nestedSetParent < 0 } | by(nestedSetParent) | rate()`, `{ nestedSetParent < 0 } | rate() by (nestedSetParent)`},
-		{`{} | by(name) | avg_over_time(duration)`, `{} | avg_over_time(duration) by (name)`},
+		{`{} | by(name) | rate()`, `{} | rate()`},
+		{`by(name) | rate()`, `{} | rate()`},
+		{`{ resource.service.name = "a" } | by(resource.service.name) | count_over_time()`, `{ resource.service.name = "a" } | count_over_time()`},
+		{`{ nestedSetParent < 0 } | by(nestedSetParent) | rate()`, `{ nestedSetParent < 0 } | rate()`},
+		{`{} | by(name) | avg_over_time(duration)`, `{} | avg_over_time(duration)`},
+		{`{} | by(name) | count_over_time() by (kind)`, `{} | count_over_time() by (kind)`},
+		{`{} | by(name) | by(kind) | rate()`, `{} | rate()`},
+		{`{} | by(span.a + 1) | rate()`, `{} | rate()`},
 	}
 	for _, p := range pairs {
 		got := lowerPlain(t, p[0], s)
@@ -65,25 +68,36 @@ func TestFoldStandaloneGroupByIntoMetrics(t *testing.T) {
 			t.Errorf("%q did not lower equivalently to %q", p[0], p[1])
 		}
 		if hasGroupKeyAggregate(got) {
-			t.Errorf("%q still lowers to a Timestamp-stripping GroupKey aggregate (Bug 1 not fixed)", p[0])
+			t.Errorf("%q still lowers to a Timestamp-stripping GroupKey aggregate", p[0])
 		}
 	}
 }
 
-// TestFoldTrailingGroupByAllGroupOpsNoUnderflow pins the `keep > 0` loop
-// bound in foldTrailingGroupByIntoMetrics. A real parsed pipeline always
-// starts with a non-group spanset filter, which breaks the fold loop
-// before keep can reach 0. Feeding a degenerate pipeline whose every
-// element IS a foldable group op drives keep all the way down to 0, so
-// the bound is exercised directly: `keep > 0` must stop the loop at 0,
-// leaving an empty pipeline with both group keys folded into the metrics
-// by-clause. The mutant `keep >= 0` would re-enter the body at keep=0 and
-// index els[-1], panicking.
-func TestFoldTrailingGroupByAllGroupOpsNoUnderflow(t *testing.T) {
+// TestDropGroupByBeforeMetricsKeepsGroupByUnderAnotherStage pins the other
+// edge of the drop: a by() stage with another stage between it and the
+// metrics function decides which spans that stage passes, so it stays.
+func TestDropGroupByBeforeMetricsKeepsGroupByUnderAnotherStage(t *testing.T) {
+	t.Parallel()
+	expr, err := tempoql.Parse(`{} | by(name) | count() > 1 | rate()`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	got := dropGroupByBeforeMetrics(expr.Pipeline)
+	if len(got.Elements) != len(expr.Pipeline.Elements) {
+		t.Fatalf("dropGroupByBeforeMetrics kept %d of %d elements, want all of them", len(got.Elements), len(expr.Pipeline.Elements))
+	}
+}
+
+// TestDropGroupByBeforeMetricsAllGroupOpsNoUnderflow pins the `keep > 0`
+// loop bound in dropGroupByBeforeMetrics. A pipeline lowerRoot hands it
+// always starts with a spanset expression, which breaks the loop before keep
+// can reach 0. Feeding a pipeline whose every element IS a group op drives
+// keep all the way down to 0, so the bound is exercised directly: `keep > 0`
+// must stop the loop at 0, leaving an empty pipeline. The mutant `keep >= 0`
+// would re-enter the body at keep=0 and index els[-1], panicking.
+func TestDropGroupByBeforeMetricsAllGroupOpsNoUnderflow(t *testing.T) {
 	t.Parallel()
 
-	// Parse a valid `{} | by(name) | rate()` to obtain a real group-op
-	// element and a metrics aggregate that accepts a leading by-clause.
 	expr, err := tempoql.Parse(`{} | by(name) | rate()`)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -95,28 +109,15 @@ func TestFoldTrailingGroupByAllGroupOpsNoUnderflow(t *testing.T) {
 	if _, ok := asGroupOperation(groupOp); !ok {
 		t.Fatalf("Elements[1] = %T, want a GroupOperation", groupOp)
 	}
-	mp := expr.MetricsPipeline
-	if mp == nil {
-		t.Fatal("MetricsPipeline = nil, want the rate() aggregate")
-	}
 
-	// Two foldable group ops and nothing else: keep decrements 2 -> 1 -> 0.
+	// Two group ops and nothing else: keep decrements 2 -> 1 -> 0.
 	pipe := tempoql.Pipeline{Elements: []tempoql.PipelineElement{groupOp, groupOp}}
-	gotPipe, gotMerged := foldTrailingGroupByIntoMetrics(pipe, mp)
-
-	if len(gotPipe.Elements) != 0 {
-		t.Fatalf("all group ops must fold away (keep -> 0), got %d elements remaining", len(gotPipe.Elements))
-	}
-	merged, ok := gotMerged.(*tempoql.MetricsAggregate)
-	if !ok {
-		t.Fatalf("merged first stage = %T, want *MetricsAggregate", gotMerged)
-	}
-	if got := len(merged.GroupBy()); got != 2 {
-		t.Fatalf("merged by-clause = %d attrs, want 2 (both group ops folded, keep stopped exactly at 0)", got)
+	if got := dropGroupByBeforeMetrics(pipe); len(got.Elements) != 0 {
+		t.Fatalf("every group op must be dropped (keep -> 0), got %d elements remaining", len(got.Elements))
 	}
 }
 
-// TestStandaloneGroupByWithoutMetricsUnchanged verifies the fold is scoped to
+// TestStandaloneGroupByWithoutMetricsUnchanged verifies the drop is scoped to
 // the metrics path: a standalone `| by(X)` with NO following metrics aggregate
 // (a spanset search) still lowers to the GroupKey aggregate, unchanged.
 func TestStandaloneGroupByWithoutMetricsUnchanged(t *testing.T) {

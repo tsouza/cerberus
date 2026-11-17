@@ -127,51 +127,31 @@ func annotateNestedSet(n chplan.Node, s schema.Traces) chplan.Node {
 	return nestedSetAnnotate(n, s)
 }
 
-// foldTrailingGroupByIntoMetrics rewrites `{...} | by(X) | <metric>()` so the
-// trailing standalone `by(...)` grouping stages fold into the metric
-// aggregate's by-clause — making the query lower identically to
-// `{...} | <metric>() by (X)`. Returns the (possibly shortened) pipeline and
-// the (possibly re-grouped) metrics first stage.
+// dropGroupByBeforeMetrics returns pipeline without the contiguous run of
+// `by(...)` stages that ends it, for a pipeline that feeds a metrics function
+// (`{...} | by(X) | rate()`, `{...} | by(X) | compare({...})`).
 //
-// Only the contiguous run of GroupOperation stages immediately before the
-// metrics aggregate is folded, and only when each one's expression is a bare
-// attribute (the shape a metrics by-clause can carry — `[]Attribute`). A
-// non-attribute group key, a non-grouping stage in between, or a metrics first
-// stage with no by-clause (compare()) stops the fold and leaves the pipeline
-// untouched. mp is assumed non-nil (the caller gates on a metrics query).
+// Tempo's metrics evaluator observes the spans of every spanset the pipeline
+// returns, one span at a time, and labels a series only from the metrics
+// function's own by-clause. A by() stage splits each spanset into groups and
+// keeps every span, so the metric observes the same spans with or without
+// the trailing by() stages: `{ } | by(name) | rate()` answers the one
+// unlabelled series `{ } | rate()` answers, whatever the group key. Lowered
+// as a stage instead, by() collapses the spans to one row per group, which
+// leaves the metric no span timestamps to bucket.
 //
-// This is the fix for the standalone-`by()`-before-metrics shape that
-// otherwise lowers to a Timestamp-stripping GROUP BY feeding the rate grid
-// (ClickHouse code 47 / a 502); see lowerRoot.
-func foldTrailingGroupByIntoMetrics(pipeline traceql.Pipeline, mp traceql.FirstStageElement) (traceql.Pipeline, traceql.FirstStageElement) {
+// A by() stage with another stage after it (`{ } | by(name) | count() > 1 |
+// rate()`) decides which spans that stage passes, so it is kept.
+func dropGroupByBeforeMetrics(pipeline traceql.Pipeline) traceql.Pipeline {
 	els := pipeline.Elements
 	keep := len(els)
-	var folded []traceql.Attribute
 	for keep > 0 {
-		g, ok := asGroupOperation(els[keep-1])
-		if !ok {
+		if _, ok := asGroupOperation(els[keep-1]); !ok {
 			break
 		}
-		attr, ok := fieldExprAttribute(g.Expression)
-		if !ok {
-			// A non-attribute group key (`by(span.a + span.b)`) cannot be
-			// represented in a metrics by-clause; leave the whole pipeline as-is.
-			return pipeline, mp
-		}
-		// Prepend so the recovered slice stays in textual (left-to-right) order.
-		folded = append([]traceql.Attribute{attr}, folded...)
 		keep--
 	}
-	if len(folded) == 0 {
-		return pipeline, mp
-	}
-	merged := mergeGroupByIntoMetrics(mp, folded)
-	if merged == nil {
-		// Metrics first stage carries no by-clause (compare()): nothing to fold
-		// into; keep the original pipeline so behaviour is unchanged.
-		return pipeline, mp
-	}
-	return traceql.Pipeline{Elements: els[:keep]}, merged
+	return traceql.Pipeline{Elements: els[:keep]}
 }
 
 // asGroupOperation unwraps a pipeline element into a GroupOperation when it is
@@ -184,18 +164,6 @@ func asGroupOperation(el traceql.PipelineElement) (traceql.GroupOperation, bool)
 		return *v, true
 	}
 	return traceql.GroupOperation{}, false
-}
-
-// mergeGroupByIntoMetrics returns mp with attrs prepended to its by-clause, or
-// nil when mp is a metrics first stage that has no by-clause (compare()).
-func mergeGroupByIntoMetrics(mp traceql.FirstStageElement, attrs []traceql.Attribute) traceql.FirstStageElement {
-	switch v := mp.(type) {
-	case *traceql.MetricsAggregate:
-		return v.WithLeadingGroupBy(attrs)
-	case *traceql.AverageOverTimeAggregator:
-		return v.WithLeadingGroupBy(attrs)
-	}
-	return nil
 }
 
 // lowerCoalesce handles `| coalesce()` — Tempo's spanset-flattening

@@ -1,0 +1,28 @@
+# A pipeline may open with a scalar filter. Reference Tempo hands it every
+# span of every trace, as `{ }` would, so `count() > 1` answers what
+# `{ } | count() > 1` answers: traces ...01 (3 spans) and ...02 (2 spans)
+# pass, trace ...03 (1 span) does not.
+-- query.traceql --
+count() > 1
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String),
+    Duration UInt64
+) ENGINE = Memory;
+INSERT INTO otel_traces VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '', 'GET /a', toDateTime64('2026-01-01 00:00:00', 9), map('service.name', 'frontend'), 10000000),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', 'db.query', toDateTime64('2026-01-01 00:00:01', 9), map('service.name', 'backend'), 20000000),
+    ('a0000000000000000000000000000001', '0000000000000003', '0000000000000001', 'db.query', toDateTime64('2026-01-01 00:00:02', 9), map('service.name', 'backend'), 30000000),
+    ('a0000000000000000000000000000002', '0000000000000004', '', 'GET /b', toDateTime64('2026-01-01 00:00:03', 9), map('service.name', 'checkout'), 10000000),
+    ('a0000000000000000000000000000002', '0000000000000005', '0000000000000004', 'cache.get', toDateTime64('2026-01-01 00:00:04', 9), map('service.name', 'checkout'), 20000000),
+    ('a0000000000000000000000000000003', '0000000000000006', '', 'POST /c', toDateTime64('2026-01-01 00:00:05', 9), map('service.name', 'orders'), 10000000);
+-- expected_rows --
+[]
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `count() > 1` reduces the spanset to one per-trace row carrying __cerberus_traceID and no __cerberus_spanID, so the answer is an aggregate rather than the span set runTempoParity compares

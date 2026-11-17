@@ -1,0 +1,43 @@
+# A metrics pipeline may open with `by(...)`. Reference Tempo hands it every
+# span of every trace, as `{ }` would. Its metrics evaluator then observes
+# each span of every group and labels a series only from the metrics
+# function's own by-clause, so `by(resource.service.name) | rate()` answers
+# the one unlabelled series `{ } | rate()` answers, not one series per
+# service.
+#
+# Buckets (anchor - 60s, anchor]: 00:01:00 holds 3 spans (00:00:30, 00:00:31,
+# 00:00:40; rate 3/60), 00:02:00 holds 3 spans (00:01:10, 00:01:20, 00:01:30;
+# rate 3/60).
+-- query.traceql --
+by(resource.service.name) | rate()
+-- metrics_window --
+1704067260 1704067320 60
+-- seed --
+CREATE TABLE otel_traces (
+    TraceId String,
+    SpanId String,
+    ParentSpanId String,
+    SpanName String DEFAULT '',
+    Duration UInt64 DEFAULT 0,
+    Timestamp DateTime64(9),
+    ResourceAttributes Map(String, String) DEFAULT map(),
+    SpanAttributes Map(String, String) DEFAULT map(),
+    ServiceName String DEFAULT '',
+    StatusCode String DEFAULT '',
+    StatusMessage String DEFAULT '',
+    SpanKind String DEFAULT '',
+    ScopeName String DEFAULT '',
+    ScopeVersion String DEFAULT ''
+) ENGINE = MergeTree ORDER BY (Timestamp, SpanId);
+INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, SpanName, ResourceAttributes) VALUES
+    ('a0000000000000000000000000000001', '0000000000000001', '', toDateTime64('2024-01-01 00:00:30', 9), 1000000000, 'a', map('service.name', 'frontend')),
+    ('a0000000000000000000000000000001', '0000000000000002', '0000000000000001', toDateTime64('2024-01-01 00:00:31', 9), 1000000000, 'a', map('service.name', 'backend')),
+    ('a0000000000000000000000000000001', '0000000000000003', '0000000000000001', toDateTime64('2024-01-01 00:01:30', 9), 1000000000, 'a', map('service.name', 'backend')),
+    ('a0000000000000000000000000000002', '0000000000000016', '', toDateTime64('2024-01-01 00:00:40', 9), 1000000000, 'b', map('service.name', 'frontend')),
+    ('a0000000000000000000000000000003', '0000000000000032', '', toDateTime64('2024-01-01 00:01:10', 9), 1000000000, 'c', map('service.name', 'frontend')),
+    ('a0000000000000000000000000000003', '0000000000000033', '0000000000000032', toDateTime64('2024-01-01 00:01:20', 9), 1000000000, 'c', map('service.name', 'backend'));
+-- expected_rows --
+[]
+-- parity_exempt --
+reason: no-comparable-oracle
+detail: `by(resource.service.name) | rate()` answers with a time series rather than with a span set, so runTempoParity has no set of matched spans to compare

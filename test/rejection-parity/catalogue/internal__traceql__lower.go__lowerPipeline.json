@@ -5,7 +5,7 @@
       "site": "internal/traceql/lower.go:lowerPipeline#3bb91b26",
       "message": "traceql: empty pipeline",
       "class": "internal",
-      "rationale": "Defensive: lowerRoot rejects an empty top-level pipeline before this helper runs, and a parsed sub-pipeline operand always carries at least one element, so the empty-pipeline branch is unreachable.",
+      "rationale": "Defensive: lowerRoot rejects an empty top-level pipeline and hands this helper one that keeps its first element (withImplicitSpansetFilter puts `{ }` before a leading by(), and dropGroupByBeforeMetrics drops only by() stages, so `by(name) | rate()` arrives as `{ }`), and a parsed sub-pipeline operand always carries at least one element, so the empty-pipeline branch is unreachable.",
       "evidence": {
         "guard": [
           "if len(p.Elements) == 0"
@@ -15,7 +15,9 @@
           "lowerSpansetOperand"
         ],
         "cited": [
-          "lowerRoot"
+          "dropGroupByBeforeMetrics",
+          "lowerRoot",
+          "withImplicitSpansetFilter"
         ]
       }
     }
