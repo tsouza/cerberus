@@ -551,6 +551,78 @@ metrics_range
 samples_non_negative
 
 -- name --
+metrics_rate_after_coalesce
+# A metrics function after coalesce() observes every span of the one spanset
+# per trace coalesce() returns, so the series is `{ } | rate()`'s.
+-- query --
+{ } | coalesce() | rate()
+-- endpoint --
+metrics_range
+-- step --
+60s
+-- expected_min_series --
+1
+-- expected_max_series --
+1
+-- semantic_checks --
+samples_non_negative
+
+-- name --
+metrics_rate_after_group_aggregate_filter
+# A spanset-aggregate filter after by() counts the spans of each group. Every
+# seeded trace belongs to one service, so each trace is one group, and
+# `count() > 3` keeps the traces of four and five spans; the rate counts all
+# of their spans.
+-- query --
+{ } | by(resource.service.name) | count() > 3 | rate()
+-- endpoint --
+metrics_range
+-- step --
+60s
+-- expected_min_series --
+1
+-- expected_max_series --
+1
+-- semantic_checks --
+samples_non_negative
+
+-- name --
+metrics_rate_after_aggregate_filter_coalesce
+# coalesce() after a spanset-aggregate filter merges each passing trace's
+# spansets and drops no span, so the rate counts every span of the traces of
+# four and five spans.
+-- query --
+{ } | count() > 3 | coalesce() | rate()
+-- endpoint --
+metrics_range
+-- step --
+60s
+-- expected_min_series --
+1
+-- expected_max_series --
+1
+-- semantic_checks --
+samples_non_negative
+
+-- name --
+metrics_rate_after_group_select
+# by() and select() before a metrics function keep every span, and only the
+# metrics function's own by-clause labels a series, so the series is
+# `{ } | rate()`'s.
+-- query --
+{ } | by(name) | select(name) | rate()
+-- endpoint --
+metrics_range
+-- step --
+60s
+-- expected_min_series --
+1
+-- expected_max_series --
+1
+-- semantic_checks --
+samples_non_negative
+
+-- name --
 metrics_compare_status_error
 # `| compare({...}, topN)` — the baseline-vs-selection attribute split
 # Grafana Traces Drilldown's Comparison tab consumes. The differ
