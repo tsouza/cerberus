@@ -192,9 +192,8 @@ func withImplicitSpansetFilter(p traceql.Pipeline) traceql.Pipeline {
 	if len(p.Elements) == 0 || !isLeadingStage(p.Elements[0]) {
 		return p
 	}
-	elements := make([]traceql.PipelineElement, 0, len(p.Elements)+1)
-	elements = append(elements, &traceql.SpansetFilter{Expression: traceql.NewStaticBool(true)})
-	return traceql.Pipeline{Elements: append(elements, p.Elements...)}
+	matchAll := &traceql.SpansetFilter{Expression: traceql.NewStaticBool(true)}
+	return traceql.Pipeline{Elements: append([]traceql.PipelineElement{matchAll}, p.Elements...)}
 }
 
 // isLeadingStage reports whether elem is one of the non-spanset stages Tempo's
