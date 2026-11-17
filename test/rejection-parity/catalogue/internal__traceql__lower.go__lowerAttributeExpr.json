@@ -4,7 +4,8 @@
       "head": "traceql",
       "site": "internal/traceql/lower.go:lowerAttributeExpr#dbf30854",
       "message": "traceql: nil comparison on %s.%s is unsupported — the configured schema has no %s column",
-      "class": "",
+      "class": "internal",
+      "rationale": "Defensive: reached only when the configured Traces schema has no Events/Links column for the bare event-/link-scoped reference; the default OTel-CH schema materialises both, so no parseable query against the default schema hits it.",
       "evidence": {
         "guard": [
           "if a.Scope == traceql.AttributeScopeLink || a.Scope == traceql.AttributeScopeEvent",

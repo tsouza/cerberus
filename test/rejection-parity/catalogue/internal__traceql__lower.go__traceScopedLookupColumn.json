@@ -4,7 +4,8 @@
       "head": "traceql",
       "site": "internal/traceql/lower.go:traceScopedLookupColumn#9f6d7a12",
       "message": "traceql: intrinsic %s has no per-trace lookup column",
-      "class": "",
+      "class": "internal",
+      "rationale": "every caller passes an intrinsic isTraceScopedIntrinsic accepted, and isTraceScopedIntrinsic and this lookup read the same traceScopedLookups table",
       "evidence": {
         "guard": [
           "if !ok"
@@ -13,6 +14,9 @@
           "lowerAttributeValue",
           "lowerTraceScopedPeer",
           "traceScopedRowExpr"
+        ],
+        "cited": [
+          "isTraceScopedIntrinsic"
         ]
       }
     }
