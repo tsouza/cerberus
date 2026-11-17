@@ -331,7 +331,7 @@ jobs:
 
   // The job-level groups stay bound to the run.
   assert.match(
-    validateE2EWorkflow(valid.replace('qualification-\${{ github.run_id }}', 'qualification-\${{ github.ref }}')).join('\n'),
+    validateE2EWorkflow(valid.replace('qualification-${{ github.run_id }}', 'qualification-${{ github.ref }}')).join('\n'),
     /job-level concurrency group is not bound to github.run_id/,
   );
 
