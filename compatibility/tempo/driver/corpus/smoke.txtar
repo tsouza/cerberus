@@ -303,20 +303,11 @@ search
 # semantics differ (group-by-trace vs per-span).
 #
 # Every case here compares two answers, so both backends have to
-# produce one. `max(duration) - min(duration) >= 0` does not qualify,
-# and no longer needs to: reference Tempo's validator admits exactly
-# one scalar-filter LHS shape (`pkg/traceql/ast_validate.go:183-187`,
-# `case Aggregate:` and nothing else) plus exactly one RHS shape
-# (`case Static:`), and #1984 brought cerberus's own acceptance
-# surface back in line with both — it now rejects arithmetic between
-# aggregates, and an aggregate on the RHS, exactly as Tempo does.
-# Both shapes are gated as class=rejection entries in the rejection
-# catalogue (test/rejection-parity/catalogue/internal__traceql__
-# lower.go.json, sites lowerScalarFilter#e4a47953 / #88443708), where
-# the rejection-parity driver asserts on every compat run that BOTH
-# backends reject them. That lane compares status CLASSES, so it
-# expresses the pair cleanly (cerberus 422, tempo 400) where this
-# corpus — which needs one exact code on both sides — cannot.
+# produce one. `max(duration) - min(duration) >= 0` does not qualify:
+# both backends admit exactly one scalar-filter shape, a single aggregate
+# on the left against a literal on the right, and reject arithmetic
+# between aggregates or an aggregate on the right at validation, with
+# 400. scalar_filter_arithmetic_lhs_rejected pins that status.
 
 -- name --
 count_spans_per_trace
@@ -1869,3 +1860,56 @@ search
 400
 -- expect_grpc_code --
 InvalidArgument
+
+-- name --
+scalar_filter_arithmetic_lhs_rejected
+# Both backends parse a scalar filter with arithmetic on its left side and
+# reject it at validation, which admits a single aggregate on the left and a
+# literal on the right ("invalid TraceQL query: scalar filter lhs of type
+# (%v) not yet supported"). Graded on status: the rejection is a 400 on
+# both, not the lowering 422 cerberus answered when only its lowering
+# enforced the rule.
+#
+# Carries the gRPC sibling: the reference's query frontend validates before
+# searching and maps the 400 to codes.InvalidArgument, and cerberus's
+# grpcCodeFor maps ErrClassParse to the same code
+# (internal/api/tempo/grpc/errclass.go).
+-- query --
+{ } | count() + 1 > 2
+-- endpoint --
+search
+-- expect_status --
+400
+-- expect_grpc_code --
+InvalidArgument
+
+-- name --
+scalar_filter_aggregate_rhs_rejected
+# The right-hand twin of scalar_filter_arithmetic_lhs_rejected: an
+# aggregate on the right is rejected at validation on both backends
+# ("invalid TraceQL query: scalar filter rhs of type (%v) not yet
+# supported"), a 400 on both. Carries the gRPC sibling for the same reason.
+-- query --
+{ } | count() > count()
+-- endpoint --
+search
+-- expect_status --
+400
+-- expect_grpc_code --
+InvalidArgument
+
+-- name --
+metrics_topk_zero_rejected
+# Both backends parse `topk(0)` and reject it at validation ("invalid
+# TraceQL query: limit must be greater than 0"), a 400 on both.
+#
+# HTTP only: with no -- expect_grpc_code --, grpc_diff.go does not grade it
+# over gRPC.
+-- query --
+{ } | rate() | topk(0)
+-- endpoint --
+metrics_range
+-- step --
+60s
+-- expect_status --
+400

@@ -14,6 +14,10 @@
         "callers": [
           "lowerInOperation",
           "lowerRegexMatchArray"
+        ],
+        "cited": [
+          "foldArrayComparison",
+          "staticMerge"
         ]
       }
     },
@@ -30,6 +34,10 @@
         "callers": [
           "lowerInOperation",
           "lowerRegexMatchArray"
+        ],
+        "cited": [
+          "attrLiteralOperands",
+          "foldArrayComparison"
         ]
       }
     }

@@ -1,0 +1,20 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/ast/validate.go:validateUnaryOperand#5bf45213",
+      "message": "illegal operation for the given type: %s",
+      "class": "rejection",
+      "trigger_query": "{ -name = \"a\" }",
+      "evidence": {
+        "guard": [
+          "past returning if err := validateNilComparison(o); err != nil",
+          "if !o.Op.acceptsUnaryOperand(t)"
+        ],
+        "callers": [
+          "validateFieldExpr"
+        ]
+      }
+    }
+  ]
+}
