@@ -13,9 +13,9 @@ import (
 	"github.com/tsouza/cerberus/internal/traceql"
 )
 
-// selectedAttributeReads lowers query and returns, for every Project in the
-// plan whose input is of type inputType (a %T spelling such as
-// "*chplan.Filter"), the MaterializedColumn of each FieldAccess its
+// selectedAttributeReads lowers query and returns, keyed by the kind of each
+// Project's input (typeName: "Filter", "StructuralJoin", "SetOperation" or
+// "other"), the MaterializedColumn of each FieldAccess the Project's
 // projections read ("" for a map read), in projection order.
 func selectedAttributeReads(t *testing.T, query string, s schema.Traces) map[string][]string {
 	t.Helper()

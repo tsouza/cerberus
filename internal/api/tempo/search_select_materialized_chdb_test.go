@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
@@ -156,7 +157,15 @@ func TestSearch_SelectMaterializedAttribute_ChDB(t *testing.T) {
 		{`{ kind = client } << { kind = server }`, []string{matRootSpan}},
 		{`{ span.rpc.method = "ChildA" } ~ { kind = client }`, []string{matChildBSpan}},
 		{`{ kind = server } !> { kind = server }`, []string{matRootSpan}},
+		{`{ kind = server } !< { kind = client }`, children},
+		{`{ kind = server } !~ { kind = client }`, children},
+		{`{ kind = client } !>> { kind = client }`, children},
+		{`{ kind = client } !<< { kind = client }`, children},
 		{`{ kind = server } &> { kind = client }`, both},
+		{`{ kind = client } &< { kind = server }`, both},
+		{`{ span.rpc.method = "ChildA" } &~ { kind = client }`, children},
+		{`{ kind = server } &>> { kind = client }`, both},
+		{`{ kind = client } &<< { kind = server }`, both},
 		{`{ kind = server } && { kind = client }`, both},
 		{`{ kind = server } || { kind = client }`, both},
 	}
@@ -177,5 +186,68 @@ func TestSearch_SelectMaterializedAttribute_ChDB(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// materializedAttributeBody runs path (a request path with its query
+// string, relative to srv) and returns the 200 body; any other status
+// fails the test.
+func materializedAttributeBody(t *testing.T, srv *httptest.Server, path string) string {
+	t.Helper()
+	resp, err := http.Get(srv.URL + path)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("%s: status=%d body=%s", path, resp.StatusCode, body)
+	}
+	return body
+}
+
+// TestMaterializedAttributeReadsPastPrunedScan_ChDB covers the other plan
+// stages a pruned scan feeds, each narrowed by its own ProjectionPushdown
+// path: a select() straight over the table, a select() over a trace-scoped
+// lookup, a select() over the structural and set-operation shapes Grafana's
+// Traces Drilldown structure tab sends (nested-set annotated), a search
+// by(), and a metrics by(). Each reads a materialized attribute and must
+// answer exactly what the same data answers with materialization off.
+func TestMaterializedAttributeReadsPastPrunedScan_ChDB(t *testing.T) {
+	materialized := newMaterializedSelectServer(t, true)
+	mapOnly := newMaterializedSelectServer(t, false)
+
+	search := func(q string) string {
+		return "/api/search?q=" + url.QueryEscape(q) + "&start=1777593600&end=1777680000&limit=20&spss=20"
+	}
+	metrics := func(q string) string {
+		return "/api/metrics/query_range?" + url.Values{
+			"q": {q}, "start": {"1777593600"}, "end": {"1777680000"}, "step": {"3600s"},
+		}.Encode()
+	}
+	cases := []struct {
+		query   string
+		path    func(string) string
+		carries string // a selected or grouped value the answer must hold
+	}{
+		{`{ } | select(span.rpc.method)`, search, "ChildB"},
+		{`{ rootName = "root" } | select(span.rpc.method)`, search, "ChildA"},
+		{`{ kind = server } >> { kind = client } | select(span.rpc.method, nestedSetParent)`, search, "ChildA"},
+		{`({ kind = server } &>> { }) || ({ kind = server }) | select(resource.k8s.namespace.name, nestedSetParent)`, search, "ns-b"},
+		// A by() search answers no spanSets yet (#4316), so the pin is the
+		// matched trace itself.
+		{`{ kind = client } | by(span.rpc.method)`, search, "c0000000000000000000000000000001"},
+		{`{ } | rate() by (span.rpc.method)`, metrics, "Root"},
+		{`{ } | count_over_time() by (resource.k8s.namespace.name)`, metrics, "ns-a"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			got := materializedAttributeBody(t, materialized, tc.path(tc.query))
+			if want := materializedAttributeBody(t, mapOnly, tc.path(tc.query)); got != want {
+				t.Errorf("materialized answer differs from the map-only answer\n materialized: %s\n map-only:     %s", got, want)
+			}
+			if !strings.Contains(got, tc.carries) {
+				t.Errorf("answer does not carry %q: %s", tc.carries, got)
+			}
+		})
 	}
 }

@@ -79,9 +79,10 @@ func lowerSelect(prev chplan.Node, sel traceql.SelectOperation, s schema.Traces)
 //     (FieldAccess.MaterializedColumnNumeric) holds toInt32OrNull of the
 //     cell — NULL for a malformed value, and not the cell's own spelling.
 //   - The column must be one of row's columns. An open row type is the
-//     span table itself (a Scan, under any Filter or nested-set
-//     annotation), which carries every column. A closed one — the structural-join span envelope, or a set
-//     operation's aligned arms — carries the attribute maps but no
+//     span table itself — a Scan, under any Filter, trace-scoped lookup or
+//     nested-set annotation — which carries every column. A closed one
+//     carries only the columns it names: the structural-join span envelope
+//     and a set operation's aligned arms name the attribute maps but no
 //     materialized column.
 func readSelectedAttributesFrom(projections []chplan.Projection, row chplan.Schema) {
 	for _, projection := range projections {
