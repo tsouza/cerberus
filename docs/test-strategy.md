@@ -118,9 +118,13 @@ group; scheduled runs key their group by the exact cron expression. A routine
 push therefore cannot erase nightly-only coverage, and two differently scoped
 schedules cannot erase each other. Every pull request, merge group, manual
 dispatch, reusable-workflow call, maintenance branch, tag, release event, and
-unknown event/ref pair receives a unique run-id group. The exhaustive E2E workflow,
-the required `quickstart`, post-merge generated-artifact drift, core gates,
-publication, stateful mirroring, and monitors are explicit negative controls.
+unknown event/ref pair receives a unique run-id group. The exhaustive E2E
+workflow (`e2e.yml`) is enrolled in the queue-coalesced tier below: its main
+pushes share `latest-main-push`, its nightly keys on its cron, and every pull
+request, `release/*.x` push and dispatch keeps a unique run-id group, as do its
+job-level groups. The required `quickstart`, post-merge generated-artifact
+drift, core gates, publication, stateful mirroring, and monitors are explicit
+negative controls.
 `.github/scripts/main-coalescing.mjs` binds the enrolled workflow expressions
 to the lane registry, and its tests exercise the cancellation decision table.
 Its `QUEUE_COALESCED_WORKFLOWS` tier separates the two halves of "coalesced":
