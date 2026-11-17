@@ -2,7 +2,7 @@ package traceql_test
 
 import (
 	"context"
-	"strings"
+	"errors"
 	"testing"
 
 	tempo "github.com/tsouza/cerberus/internal/traceql/ast"
@@ -416,33 +416,27 @@ func TestLowerMetricsSecondStage(t *testing.T) {
 	}
 }
 
-// TestLowerMetricsSecondStageZeroLimit pins the `limit <= 0` guard in
-// lowerTopKBottomK: `topk(0)` / `bottomk(0)` parse upstream but a
-// zero-row top-K is meaningless, so lowering must reject it rather
-// than emit `ORDER BY Value LIMIT 0` (which silently returns no
-// series). The boundary matters: a CONDITIONALS_BOUNDARY mutant
-// (`limit <= 0` → `limit < 0`) lets exactly limit == 0 through.
+// TestLowerMetricsSecondStageZeroLimit pins that `topk(0)` / `bottomk(0)`
+// never reach lowering: a zero-row top-K would emit `ORDER BY Value LIMIT 0`
+// and silently return no series. ast.Parse rejects it at validation with
+// reference Tempo's message, so the Tempo head answers 400 as Tempo does.
 func TestLowerMetricsSecondStageZeroLimit(t *testing.T) {
 	t.Parallel()
 
-	s := schema.DefaultOTelTraces()
-
+	const want = "invalid TraceQL query: limit must be greater than 0"
 	for _, query := range []string{
 		`{} | rate() | topk(0)`,
 		`{} | rate() | bottomk(0)`,
 	} {
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
-			expr, err := tempo.Parse(query)
-			if err != nil {
-				t.Fatalf("Parse(%q): %v", query, err)
+			_, err := tempo.Parse(query)
+			var verr *tempo.ValidationError
+			if !errors.As(err, &verr) {
+				t.Fatalf("Parse(%q) error = %T (%v), want *ast.ValidationError", query, err, err)
 			}
-			_, err = traceql.Lower(context.Background(), expr, s)
-			if err == nil {
-				t.Fatalf("Lower(%q) succeeded; want 'limit must be > 0' error", query)
-			}
-			if !strings.Contains(err.Error(), "limit must be > 0") {
-				t.Errorf("Lower(%q) error %q does not contain %q", query, err, "limit must be > 0")
+			if got := verr.Error(); got != want {
+				t.Errorf("Parse(%q) error = %q, want %q", query, got, want)
 			}
 		})
 	}

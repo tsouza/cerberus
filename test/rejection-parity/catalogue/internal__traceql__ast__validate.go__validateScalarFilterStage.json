@@ -1,0 +1,41 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/ast/validate.go:validateScalarFilterStage#5f606472",
+      "message": "scalar filter lhs of type (%v) not yet supported",
+      "class": "rejection",
+      "trigger_query": "{ resource.service.name =~ \".+\" } | max(duration) - min(duration) \u003e= 0",
+      "evidence": {
+        "guard": [
+          "past returning if err := validateScalarExpr(f.LHS); err != nil",
+          "past returning if err := validateScalarExpr(f.RHS); err != nil",
+          "if !isAggregateOperand(f.LHS)"
+        ],
+        "callers": [
+          "validatePipelineElement",
+          "validateSpansetExpr"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/ast/validate.go:validateScalarFilterStage#ba9f0b46",
+      "message": "scalar filter rhs of type (%v) not yet supported",
+      "class": "rejection",
+      "trigger_query": "{ resource.service.name =~ \".+\" } | max(duration) \u003e avg(duration)",
+      "evidence": {
+        "guard": [
+          "past returning if err := validateScalarExpr(f.LHS); err != nil",
+          "past returning if err := validateScalarExpr(f.RHS); err != nil",
+          "past returning if !isAggregateOperand(f.LHS)",
+          "if !isStaticOperand(f.RHS)"
+        ],
+        "callers": [
+          "validatePipelineElement",
+          "validateSpansetExpr"
+        ]
+      }
+    }
+  ]
+}

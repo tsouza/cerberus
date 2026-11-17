@@ -352,20 +352,7 @@ func (s *server) harmLogRow(ctx context.Context, t *testing.T, qid string, logTy
 // reads. It returns the traces schema the handler reads them under.
 func seedHarmProbe(ctx context.Context, t *testing.T, s *server) schema.Traces {
 	t.Helper()
-	traces := schema.DefaultOTelTraces()
-	traces.MaterializedSpanAttributeColumns = schema.DefaultMaterializedSpanAttributeColumns()
-	traces.MaterializedResourceAttributeColumns = schema.DefaultMaterializedResourceAttributeColumns()
-	if err := ddl.ApplyWithConfig(ctx, s.admin.Conn(), ddl.Config{
-		TraceMaterializedAttributesEnabled:   true,
-		MaterializedSpanAttributeColumns:     traces.MaterializedSpanAttributeColumns,
-		MaterializedResourceAttributeColumns: traces.MaterializedResourceAttributeColumns,
-	}, []ddl.Signal{ddl.Traces}); err != nil {
-		t.Fatalf("%s: apply DDL: %v", s.image, err)
-	}
-	// unique renders the row's own value, tagged so no two columns share one.
-	unique := func(tag string) string {
-		return fmt.Sprintf("leftPad(toString(number), %d, '%s')", harmValueBytes, tag)
-	}
+	traces := applyMaterializedTracesDDL(ctx, t, s)
 	s.exec(ctx, t, fmt.Sprintf(`
 INSERT INTO otel_traces
     (Timestamp, TraceId, SpanId, ParentSpanId, SpanName, SpanKind, ServiceName,
@@ -386,11 +373,35 @@ SELECT
     '' AS StatusMessage, '' AS ScopeName, '' AS ScopeVersion, '' AS TraceState
 FROM numbers(%[11]d)`,
 		metadataSpillWindowStart.Unix(),
-		unique("n"), unique("k"),
-		harmResourceKey, unique("r"), unique("R"),
-		harmSpanKey, unique("m"), unique("S"),
-		unique("s"),
+		harmUniqueValue("n"), harmUniqueValue("k"),
+		harmResourceKey, harmUniqueValue("r"), harmUniqueValue("R"),
+		harmSpanKey, harmUniqueValue("m"), harmUniqueValue("S"),
+		harmUniqueValue("s"),
 		harmSpans))
 	s.exec(ctx, t, "OPTIMIZE TABLE otel_traces FINAL")
 	return traces
+}
+
+// applyMaterializedTracesDDL applies cerberus's traces DDL with the default
+// materialized attribute columns and returns the traces schema the handler
+// reads it under.
+func applyMaterializedTracesDDL(ctx context.Context, t *testing.T, s *server) schema.Traces {
+	t.Helper()
+	traces := schema.DefaultOTelTraces()
+	traces.MaterializedSpanAttributeColumns = schema.DefaultMaterializedSpanAttributeColumns()
+	traces.MaterializedResourceAttributeColumns = schema.DefaultMaterializedResourceAttributeColumns()
+	if err := ddl.ApplyWithConfig(ctx, s.admin.Conn(), ddl.Config{
+		TraceMaterializedAttributesEnabled:   true,
+		MaterializedSpanAttributeColumns:     traces.MaterializedSpanAttributeColumns,
+		MaterializedResourceAttributeColumns: traces.MaterializedResourceAttributeColumns,
+	}, []ddl.Signal{ddl.Traces}); err != nil {
+		t.Fatalf("%s: apply DDL: %v", s.image, err)
+	}
+	return traces
+}
+
+// harmUniqueValue renders a seeded row's own harmValueBytes-long value,
+// tagged so no two columns share one.
+func harmUniqueValue(tag string) string {
+	return fmt.Sprintf("leftPad(toString(number), %d, '%s')", harmValueBytes, tag)
 }

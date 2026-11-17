@@ -1,0 +1,38 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/ast/validate.go:validateNilComparison#e7b75dd7",
+      "message": "%s=nil is not valid because resource.service.name cannot be nil",
+      "class": "rejection",
+      "trigger_query": "{ resource.service.name = nil }",
+      "evidence": {
+        "guard": [
+          "past returning if o.Op != OpNotExists",
+          "past returning if !ok",
+          "case attr.Scope == resourceServiceNameAttribute.Scope \u0026\u0026 attr.Name == resourceServiceNameAttribute.Name of switch"
+        ],
+        "callers": [
+          "validateUnaryOperand"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/ast/validate.go:validateNilComparison#f7072f1c",
+      "message": "%s=nil is not valid because intrinsics cannot be nil",
+      "class": "rejection",
+      "trigger_query": "{ duration = nil }",
+      "evidence": {
+        "guard": [
+          "past returning if o.Op != OpNotExists",
+          "past returning if !ok",
+          "case attr.Intrinsic != IntrinsicNone of switch"
+        ],
+        "callers": [
+          "validateUnaryOperand"
+        ]
+      }
+    }
+  ]
+}

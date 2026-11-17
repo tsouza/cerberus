@@ -474,7 +474,9 @@ real bug rather than a silent wrong-rejection:
 
 1. **Catalogue** — `test/rejection-parity/catalogue/` is the
    machine-readable inventory of every prefixed error-construction
-   site in the three lowerings, derived by a go/ast scan
+   site in the three lowerings and of every TraceQL static-validation
+   rejection (`internal/traceql/ast`, answered `400` as Tempo does),
+   derived by a go/ast scan
    (`test/rejection-parity`). Every site is classified into one of
    three classes: `rejection` (reachable from a parseable query, and the
    reference rejects it too; carries a minimal trigger query),
@@ -499,7 +501,9 @@ real bug rather than a silent wrong-rejection:
    (regenerable via `CERBERUS_UPDATE_INVENTORY=1`, mirroring
    `test/oracle/inventory`), every entry must be classified, every
    `rejection` trigger must parse with the head's reference parser
-   AND fail the head's lowering with the catalogued message, and the
+   AND fail the head's lowering with the catalogued message (a TraceQL
+   validation site instead fails `ast.Parse` with its
+   `*ValidationError`), and the
    parity corpus is derived 1:1 from the `rejection` and `divergence`
    entries. Adding a new rejection to a lowering therefore *requires* a
    catalogue entry, a trigger query, and — by construction — a parity

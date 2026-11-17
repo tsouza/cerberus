@@ -98,8 +98,7 @@ func TestParseAcceptsCompatibleOperands(t *testing.T) {
 		// (TestParseRejectsBareAggregateStage).
 		`{ } | count() > 2`,
 		`{ } | avg(duration) > 1s`,
-		`{ } | max(duration) + 1 > 2`,
-		`{ } | 1 + max(duration) > 2`,
+		`{ } | count() > -1`,
 		// Parenthesised pipelines as the operands of a spanset operation.
 		// Both operands are parenthesised
 		// (TestParseRejectsMixedSpansetOperands), and one followed by `|`
@@ -524,6 +523,82 @@ func TestParseRejectsWhatReferenceRejects(t *testing.T) {
 	}
 }
 
+// TestParseRejectsUnsupportedScalarFilterOperands pins the operand shapes a
+// scalar filter admits: a single aggregate on the left and a literal on the
+// right. Every other shape is rejected at validation with the reference's
+// message for the side at fault, the left side first, after each operand's
+// own rules and in pipeline order.
+func TestParseRejectsUnsupportedScalarFilterOperands(t *testing.T) {
+	const (
+		lhs = "invalid TraceQL query: scalar filter lhs of type (%v) not yet supported"
+		rhs = "invalid TraceQL query: scalar filter rhs of type (%v) not yet supported"
+	)
+	cases := []struct{ query, want string }{
+		{`{ } | count() + 1 > 2`, lhs},
+		{`{ } | count() * 2 > 1`, lhs},
+		{`{ } | 1 > count()`, lhs},
+		{`{ } | 1 = 1`, lhs},
+		{`{ } | 1 + 1 > count()`, lhs},
+		{`{ } | max(duration) - min(duration) >= 0`, lhs},
+		{`{ } | count() > 1 + 1`, rhs},
+		{`{ } | count() > (1 + 1)`, rhs},
+		{`{ } | count() > count()`, rhs},
+		{`{ } | max(duration) > avg(duration)`, rhs},
+		{`{ } | (1) = count()`, lhs},
+		{`{ } | (-1) < count()`, lhs},
+		{`{ } | (count() + 1) > 2`, lhs},
+		{`{ } | (2s) < avg(duration)`, lhs},
+		{`{ } | (count()) > (count())`, rhs},
+		{`({ } | 1 > count()) && ({ } | count() > 1)`, lhs},
+		{`({ } | count() > 1) >> ({ } | count() + 1 > 1)`, lhs},
+		{`{ } | count() > 1 | count() + 1 > 2`, lhs},
+		{`{ } | count() + 1 > 2 | rate()`, lhs},
+		{`{ } | count() + 1 > 1 | by(1)`, lhs},
+		{`{ } | count() + 1 > avg(1)`, "invalid TraceQL query: aggregate field expressions must reference the span: avg(1)"},
+		{`{ } | by(1) | count() + 1 > 1`, "invalid TraceQL query: grouping field expressions must reference the span: by(1)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			_, err := Parse(tc.query)
+			var verr *ValidationError
+			if !errors.As(err, &verr) {
+				t.Fatalf("Parse(%q) error = %T (%v), want *ValidationError", tc.query, err, err)
+			}
+			if got := verr.Error(); got != tc.want {
+				t.Fatalf("Parse(%q) = %q, want %q", tc.query, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseRejectsNonPositiveSecondStageLimit pins the topk / bottomk limit
+// rule, alone and anywhere in a chain of second stages, and its place after
+// the pipeline's and the first stage's rules.
+func TestParseRejectsNonPositiveSecondStageLimit(t *testing.T) {
+	const limit = "invalid TraceQL query: limit must be greater than 0"
+	cases := []struct{ query, want string }{
+		{`{ } | rate() | topk(0)`, limit},
+		{`{ } | rate() | bottomk(0)`, limit},
+		{`{ } | rate() | topk(1) | bottomk(0)`, limit},
+		{`{ } | rate() by(.a) | topk(0) > 2`, limit},
+		{`{ } | compare({ .a = 1 }) | topk(0)`, limit},
+		{`{ } | quantile_over_time(duration, 2) | topk(0)`, "invalid TraceQL query: quantile must be between 0 and 1: 2"},
+		{`{ } | count() + 1 > 2 | rate() | topk(0)`, "invalid TraceQL query: scalar filter lhs of type (%v) not yet supported"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			_, err := Parse(tc.query)
+			var verr *ValidationError
+			if !errors.As(err, &verr) {
+				t.Fatalf("Parse(%q) error = %T (%v), want *ValidationError", tc.query, err, err)
+			}
+			if got := verr.Error(); got != tc.want {
+				t.Fatalf("Parse(%q) = %q, want %q", tc.query, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestParseAcceptsWhatReferenceAccepts is the ratchet on the rules above: a
 // rule that rejected more than the reference does would be its own
 // wrong-rejection divergence. Each case sits one step inside a boundary the
@@ -557,6 +632,14 @@ func TestParseAcceptsWhatReferenceAccepts(t *testing.T) {
 		// …and four for the two that reserve a slot.
 		{"quantile_four_group_bys", `{} | quantile_over_time(duration, 0.9) by (span.a, span.b, span.c, span.d)`},
 		{"avg_over_time_four_group_bys", `{} | avg_over_time(duration) by (span.a, span.b, span.c, span.d)`},
+		// A scalar filter's literal may be negative or parenthesised.
+		{"scalar_filter_negative_literal", `{} | count() > -1`},
+		{"scalar_filter_parenthesised_literal", `{} | count() = (1)`},
+		{"scalar_filter_parenthesised_aggregate", `{} | (count()) > 1`},
+		// A limit of one is the smallest topk / bottomk accepts.
+		{"topk_one", `{} | rate() | topk(1)`},
+		{"bottomk_one", `{} | rate() | bottomk(1)`},
+		{"chained_second_stages", `{} | rate() | topk(1) | bottomk(2)`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

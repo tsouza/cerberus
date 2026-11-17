@@ -83,11 +83,14 @@ const CANCELLATION_PREFIX = `${KIND_CANCELLATION}-`;
 // CI runner, and in one shard they approach the recipe's 1,200 s timeout.
 // TestDistinctSpill_WithheldShapesAnswer drives seven statements over 1M
 // unique 256-byte values, each measured several times, and takes four to six
-// minutes there.
+// minutes there. TestDistinctSpill_StampedShapesAnswer seeds 1M unique
+// 256-byte values and runs two statements eight times each, about 160 s on a
+// developer host.
 export const FAMILY_SHARDS = [
   { id: 'classic-histogram', prefix: 'TestClassicBucket' },
   { id: 'classic-histogram-window', prefix: 'TestClassicWindow' },
   { id: 'distinct-spill-harm', prefix: 'TestDistinctSpill_WithheldShapesAnswer' },
+  { id: 'distinct-spill-stamped', prefix: 'TestDistinctSpill_StampedShapesAnswer' },
 ];
 
 // cancellationImages — the images of the `cancellationBuilds` table in the
