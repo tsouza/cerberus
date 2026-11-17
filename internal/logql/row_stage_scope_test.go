@@ -41,7 +41,6 @@ func TestRangeAggregationFiltersRunWhereTheTableIsRead(t *testing.T) {
 		reads []string
 	}{
 		{`sum(count_over_time({job="wide"} |= "orders/5 " [5m]))`, []string{"position(`Body`", "AS `_logql_level_source`"}},
-		{`sum(count_over_time({job="wide"} | tenant="tenant-7" [5m]))`, []string{"`ResourceAttributes`[?]) = ?)", "AS `_logql_level_source`"}},
 		{`sum(count_over_time({job="wide"} | detected_level="fatal" [5m]))`, []string{"AS `_logql_level_source`"}},
 		{`sum_over_time({job="api"} | logfmt | unwrap duration(latency) [5m])`, []string{"AS `_logql_unwrap_source`", "(`_logql_unwrap_source` != ?)"}},
 		{`sum by (level) (count_over_time({service_name="api"} | logfmt | level=~"error|warn" [1h]))`, []string{"AS `_logql_labels_0`", "mapContains(`_logql_labels_0`"}},
@@ -94,6 +93,25 @@ func TestRangeAggregationMultiplyingValuesStayNested(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRangeAggregationWholeMapReadsStayAboveTheScan pins that a label
+// filter on a stored label, which reads LogAttributes as a whole through
+// mapContains, stays above the scan, and that the detected_level source
+// then reads LogAttributes there too: a key subcolumn read in the scan's
+// scope would read the map a second time.
+func TestRangeAggregationWholeMapReadsStayAboveTheScan(t *testing.T) {
+	t.Parallel()
+	sql, _ := rangeAggregationSQL(t, `sum(count_over_time({job="wide"} | tenant="tenant-7" [5m]))`)
+	scope := scopeAround(t, sql, "FROM `otel_logs`")
+	for _, absent := range []string{"mapContains(`LogAttributes`", "AS `_logql_level_source`"} {
+		if strings.Contains(scope, absent) {
+			t.Errorf("the SELECT reading otel_logs contains %s: %s", absent, scope)
+		}
+	}
+	if !strings.Contains(sql, "mapContains(`LogAttributes`") {
+		t.Fatalf("the label filter is missing: %s", sql)
 	}
 }
 

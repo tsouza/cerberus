@@ -205,7 +205,7 @@ func TestRowLayersGatherAtScan(t *testing.T) {
 	rows.filter(eq(pick, "1"))
 	unfiltered := rows.define("_unfiltered", &chplan.FuncCall{Fn: chplan.FnConcat, Args: []chplan.Expr{parsed, source}})
 	rows.filter(eq(wide, "w"))
-	rows.gatherAtScan()
+	rows.gatherAtScan(nil)
 
 	consumer := &chplan.Project{
 		Input: rows.node,

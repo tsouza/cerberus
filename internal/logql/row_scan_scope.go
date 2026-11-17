@@ -4,6 +4,7 @@ import (
 	"slices"
 
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // maxScanScopeExpansion bounds how much of a range aggregation's stack
@@ -22,16 +23,18 @@ const maxScanScopeExpansion = 3
 // [rowLayers.seal], on a stack whose layers still hold their value alone;
 // seal marks the Project that reads the moved part
 // [chplan.Project.OneScopeRows], which the emitter renders as one SELECT
-// over the table.
+// over the table. maps names the table's map columns, and consumer the
+// expressions the Project sealed over the stack reads.
 //
 // Walking the stack from the bottom:
 //
 //   - a filter conjunct that reads no layer is folded into the stream
-//     scan's own filter;
+//     scan's own filter, unless it reads a map column as a whole;
 //   - a layer whose value reads only the table's columns and the values
 //     already moved, and a filter conjunct that reads only those values,
 //     moves into the scan's scope while the scope stays within
-//     [maxScanScopeExpansion];
+//     [maxScanScopeExpansion], unless it reads a key of a map column the
+//     stage reads as a whole anywhere;
 //   - a moved layer that reads another value goes back to its place
 //     unless a moved filter reads it.
 //
@@ -41,12 +44,15 @@ const maxScanScopeExpansion = 3
 // another value multiply its expression — the detected_level
 // normalisation reads its source once per level it compares, and an
 // unwrap conversion reads its parts many times — in its own SELECT, where
-// it reads the value below it as a column.
+// it reads the value below it as a column. A map the stage reads as a
+// whole is read whole wherever it is read; a key subcolumn read of it in
+// the scan's scope only reads it a second time, and a predicate on the
+// whole map in the scan's scope reads it ahead of the rows it filters.
 //
 // Moving a value below the layers it does not read changes nothing it
 // computes: every layer is a pure per-row value, and an AND of predicates
 // over the same row keeps the same rows wherever each of them runs.
-func (r *rowLayers) gatherAtScan() {
+func (r *rowLayers) gatherAtScan(maps []string, consumer ...chplan.Expr) {
 	var items []chplan.Node
 	base := r.node
 	for r.stackNode(base) {
@@ -60,6 +66,43 @@ func (r *rowLayers) gatherAtScan() {
 		aliases[layer.Projections[0].Alias] = true
 	}
 	scope := scanScope{aliases: aliases, defs: map[string]chplan.Expr{}, expanded: map[string]int{}}
+
+	// whole holds the map columns some expression of the stage reads as a
+	// whole.
+	whole := map[string]bool{}
+	readsWhole := func(e chplan.Expr) bool {
+		w, _ := mapReads(e, maps)
+		return len(w) > 0
+	}
+	readsWholeKey := func(e chplan.Expr) bool {
+		_, keyed := mapReads(e, maps)
+		for name := range keyed {
+			if whole[name] {
+				return true
+			}
+		}
+		return false
+	}
+	note := func(e chplan.Expr) {
+		w, _ := mapReads(e, maps)
+		for name := range w {
+			whole[name] = true
+		}
+	}
+	for _, e := range consumer {
+		note(e)
+	}
+	for _, item := range items {
+		switch n := item.(type) {
+		case *chplan.Project:
+			note(n.Projections[0].Expr)
+		case *chplan.Filter:
+			note(n.Predicate)
+		}
+	}
+	movable := func(e chplan.Expr) bool {
+		return !readsWholeKey(e) && scope.admits(e)
+	}
 
 	// rest is a layer, or a filter's remaining conjuncts, left above the
 	// scope, at its place in the stack.
@@ -76,7 +119,7 @@ func (r *rowLayers) gatherAtScan() {
 		switch n := item.(type) {
 		case *chplan.Project:
 			value := n.Projections[0]
-			if scope.admits(value.Expr) {
+			if movable(value.Expr) {
 				scope.add(value.Expr)
 				scope.defs[value.Alias] = value.Expr
 				layers = append(layers, n)
@@ -88,9 +131,9 @@ func (r *rowLayers) gatherAtScan() {
 			var kept []chplan.Expr
 			for _, conjunct := range conjuncts(n.Predicate) {
 				switch {
-				case !scope.readsLayer(conjunct):
+				case !scope.readsLayer(conjunct) && !readsWhole(conjunct):
 					base = andFilter(base, conjunct)
-				case scope.admits(conjunct):
+				case scope.readsLayer(conjunct) && movable(conjunct):
 					scope.add(conjunct)
 					filtered = append(filtered, conjunct)
 				default:
@@ -251,4 +294,46 @@ func conjunction(preds []chplan.Expr) chplan.Expr {
 		out = &chplan.Binary{Op: chplan.OpAnd, Left: out, Right: p}
 	}
 	return out
+}
+
+// mapReads splits the columns of maps that e reads into those it reads as
+// a whole and those it reads only through a constant key.
+func mapReads(e chplan.Expr, maps []string) (whole, keyed map[string]bool) {
+	whole, keyed = map[string]bool{}, map[string]bool{}
+	chplan.InspectExpr(e, func(sub chplan.Expr) bool {
+		switch v := sub.(type) {
+		case *chplan.MapAccess:
+			ref, isColumn := v.Map.(*chplan.ColumnRef)
+			if _, constant := v.Key.(*chplan.LitString); isColumn && constant && slices.Contains(maps, ref.Name) {
+				keyed[ref.Name] = true
+				return false
+			}
+		case *chplan.ColumnRef:
+			if slices.Contains(maps, v.Name) {
+				whole[v.Name] = true
+			}
+		}
+		return true
+	})
+	return whole, keyed
+}
+
+// logMapColumns names the map columns of the logs table s.
+func logMapColumns(s schema.Logs) []string {
+	var maps []string
+	for _, name := range []string{s.ResourceAttributesColumn, s.AttributesColumn, s.ScopeAttributesColumn} {
+		if name != "" {
+			maps = append(maps, name)
+		}
+	}
+	return maps
+}
+
+// projectionExprs returns the expression of each projection.
+func projectionExprs(projections []chplan.Projection) []chplan.Expr {
+	exprs := make([]chplan.Expr, len(projections))
+	for i, p := range projections {
+		exprs[i] = p.Expr
+	}
+	return exprs
 }

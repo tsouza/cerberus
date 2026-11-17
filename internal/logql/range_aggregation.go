@@ -161,7 +161,7 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
 		{Expr: value, Alias: rangeAggSynthValueColumn},
 	}
-	rows.gatherAtScan()
+	rows.gatherAtScan(logMapColumns(s), projectionExprs(projections)...)
 	projected := &chplan.Project{
 		Roles:       logRoles(s),
 		Input:       rows.node,
@@ -310,7 +310,7 @@ func lowerAbsentOverTime(e *syntax.RangeAggregationExpr, s schema.Logs, lc lower
 		return nil, err
 	}
 
-	rows.gatherAtScan()
+	rows.gatherAtScan(logMapColumns(s))
 	const tsAlias = sampleTimeUnixCol
 	timestamps := &chplan.Project{
 		Roles: logRoles(s),
