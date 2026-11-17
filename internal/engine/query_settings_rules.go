@@ -295,7 +295,7 @@ type SettingsRules struct {
 	// since cerberus issue #2829, Loki log-line queries whose pipeline
 	// stages [internal/logql.pipelineCanDropRowsInGo] proves cannot still
 	// drop a row in Go after SQL executes — see
-	// internal/logql/lower.go's maybePushLogLineLimit. Driven by the
+	// internal/logql/lower.go's logLineLimit. Driven by the
 	// lazy_materialization registry feature, which only resolves in on
 	// server >= 25.11; below that the feature is absent from the resolved
 	// set, so this flag is false and nothing is stamped (a no-op on every

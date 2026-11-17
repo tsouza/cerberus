@@ -101,7 +101,7 @@ func TestDetectedLevelIdentityExpr_ProjectionOutcomes(t *testing.T) {
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			t.Parallel()
-			got := classify(t, detectedLevelIdentityExpr(s, parseProjectionExpr(t, tc.query)))
+			got := classify(t, detectedLevelIdentityExpr(parseProjectionExpr(t, tc.query), detectedLevelExpr(s)))
 			if got != tc.want {
 				t.Errorf("detectedLevelIdentityExpr(%q) = %s, want %s — %s", tc.query, got, tc.want, tc.why)
 			}
@@ -119,7 +119,7 @@ func TestDetectedLevelIdentityExpr_MultipleKeepEntriesOr(t *testing.T) {
 	s := schema.DefaultOTelLogs()
 	expr := parseProjectionExpr(t, `{job="api"} | keep detected_level="info", detected_level="warn"`)
 
-	got, ok := detectedLevelIdentityExpr(s, expr).(*chplan.FuncCall)
+	got, ok := detectedLevelIdentityExpr(expr, detectedLevelExpr(s)).(*chplan.FuncCall)
 	if !ok || got.Fn != chplan.FnIf {
 		t.Fatalf("detectedLevelIdentityExpr -> %#v, want an if(...) FuncCall", got)
 	}
@@ -144,7 +144,7 @@ func TestDetectedLevelIdentityExpr_TwoDropMatchersAnd(t *testing.T) {
 	s := schema.DefaultOTelLogs()
 	expr := parseProjectionExpr(t, `{job="api"} | drop detected_level="info", detected_level="warn"`)
 
-	got, ok := detectedLevelIdentityExpr(s, expr).(*chplan.FuncCall)
+	got, ok := detectedLevelIdentityExpr(expr, detectedLevelExpr(s)).(*chplan.FuncCall)
 	if !ok || got.Fn != chplan.FnIf {
 		t.Fatalf("detectedLevelIdentityExpr -> %#v, want an if(...) FuncCall", got)
 	}

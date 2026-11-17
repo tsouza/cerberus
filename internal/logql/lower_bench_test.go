@@ -72,7 +72,7 @@ func TestAllocs_Lower(t *testing.T) {
 		query  string
 		maxAvg float64
 	}{
-		// Baselines: 15 / 21 / 25 — ceilings = baseline × ~3.
+		// Baselines for the metric form: ceilings = baseline × ~3 at first.
 		// `metric_form` was lifted from 80 → 100 when detected_level was
 		// added as a synthesised identity dimension on bare range
 		// aggregations (mapConcat + mapFilter + multiIf nodes added to
@@ -89,8 +89,14 @@ func TestAllocs_Lower(t *testing.T) {
 		// columns of their own (two Project layers, each with its
 		// projection list and alias reference — see rowLayers). Current
 		// observed value is 165; the 180 ceiling keeps ~9% slack.
-		{"stream_matcher", `{job="api"}`, 45},
-		{"line_filter_chain", `{job="api"} |= "error" |~ "5[0-9]{2}"`, 70},
+		//
+		// The two log shapes lower to the whole log-row projection —
+		// the stream filter, the detected_level source and value layers
+		// and the output columns (see lowerLogQuery) — so their counts
+		// include what the projection allocates. Observed 172 / 188; the
+		// ceilings keep ~15% slack.
+		{"stream_matcher", `{job="api"}`, 200},
+		{"line_filter_chain", `{job="api"} |= "error" |~ "5[0-9]{2}"`, 215},
 		{"metric_form", `count_over_time({job="api"}[5m])`, 180},
 	}
 	for _, tc := range cases {

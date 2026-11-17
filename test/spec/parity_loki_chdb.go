@@ -76,7 +76,7 @@ func evaluateLokiParity(
 	// before the seed is read: a log query's answer (lines, not samples)
 	// can never be compared here whatever the seed holds, and that
 	// query-level fact must not be pre-empted by a seed-shape refusal —
-	// most log fixtures seed only the columns their own `SELECT *` needs.
+	// a log fixture's seed need not carry what the reference reads.
 	isLog, err := oracle.IsLogQuery(q.Expr)
 	if err != nil {
 		return nil, parityRefusal(refusalReferenceRejectedQuery, fmt.Errorf("fixture %s: %w", c.Name, err))

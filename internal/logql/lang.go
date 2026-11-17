@@ -2,6 +2,7 @@ package logql
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -68,7 +69,7 @@ type Lang struct {
 	// Go-side clamp in internal/api/loki/handler.go stays authoritative.
 	// Metric queries thread these fields too (the handler doesn't know
 	// in advance whether a query is metric or log form), but
-	// [maybePushLogLineLimit] only ever wraps a genuine log-line plan —
+	// [logLineLimit] only ever wraps a genuine log-line plan —
 	// see its doc comment.
 	LogLineLimit    int64
 	LogLineBackward bool
@@ -282,104 +283,21 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) (chplan.Node, 
 			},
 		}, nil
 	}
-	// Log-stream query: the positional row the chclient cursor scans is
-	// (<String>, Attributes, TimeUnix[, Metadata]). A log line is a String,
-	// so it takes the first column — the slot a metric query fills with the
-	// metric name — under the [LogLineColumn] alias, and there is NO fourth
-	// Float64 column: a log stream has no numeric value, so projecting a
-	// placeholder would be width every log query pays for and then discards
-	// (issue #1430). The chclient cursor recognises the shape by this
-	// leading alias and binds a scan with no numeric destination.
-	// chclient.DecodeLogRows turns that row into the named
-	// chclient.LogRow the Loki streams pivot consumes.
-	//
-	// The Attributes column is wrapped in [withDetectedLevel] so the
-	// emitted stream identity carries the synthesized severity label.
-	// Reference Loki surfaces `detected_level` on every log query that
-	// returns rows whose severity can be detected from stream /
-	// structured-metadata labels, parser-stage extraction, or content
-	// scan (see [detectedLevelIdentityExpr]'s doc comment for the
-	// upstream detection sources cerberus mirrors, and for how a
-	// `| drop` / `| keep` stage projects the label away again).
-	//
-	// The earlier restrictive gate (only when the user explicitly
-	// named `detected_level` / `level` in a matcher / filter /
-	// grouping) caused the `fast/basic-selectors.yaml` regressions —
-	// reference Loki splits bare selector queries into one Stream per
-	// detected_level value, but cerberus collapsed them into a single
-	// Stream because the gate never fired. The broadened predicate
-	// restores stream-identity parity for bare selectors, line
-	// filters, label filters on unrelated keys, and parser-stage
-	// queries (`| logfmt`, `| json`, `| regexp ...`).
-	//
-	// When the parsed pipeline carries a SQL-side parser stage
-	// (`| logfmt`, `| json`, `| regexp ...`, typed-variants), the
-	// projection swaps the bare `ResourceAttributes` column for the
-	// pipeline's final labels-map expression (see [PipelineLabelsExpr])
-	// so each row carries the union of stream-selector labels and
-	// parser-extracted keys. [toStreamsWithTransform] groups by the
-	// projected label set, so unique (resource-label, extracted-key)
-	// tuples land in distinct Streams — matching reference Loki's
-	// stream-identity contract. Without this swap the projection only
-	// surfaces ResourceAttributes and a query like
-	// `{cluster="c"} | logfmt` collapses hundreds of upstream-Loki
-	// streams into a single one, regressing the loki-compat diff.
-	expr, _ := meta.Extra["expr"].(syntax.Expr)
-	attrsExpr := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
-	if HasLabelMutatingStage(expr) {
-		// A nil-error result is always a usable expression here: both of
-		// [HasLabelMutatingStage]'s true-returning paths require expr to be a
-		// *syntax.PipelineExpr, and on one of those [PipelineLabelsExpr]
-		// returns either an error or a labels expression that starts non-nil
-		// and is only ever replaced by a non-nil merge. The error arm is the
-		// live one — the projection walk re-derives stages the lowering was
-		// allowed to skip (see [lowerPipelineWithLabels]'s dynamicLabels
-		// gate), so it can reject a pipeline that lowered fine, and the bare
-		// ResourceAttributes column is the right fallback when it does.
-		if parsed, err := PipelineLabelsExpr(expr, s); err == nil {
-			attrsExpr = parsed
-		}
+	// A log query's rows are already in the log-row shape: [lowerLogQuery]
+	// builds the projection with the per-row stage it reads, so the labels
+	// maps and the level it reads are the columns the filters read.
+	if !isLogRowProjection(plan) {
+		return nil, fmt.Errorf("logql: log query plan is %T, not the log-row projection the lowering builds", plan)
 	}
-	if levelValue := detectedLevelIdentityExpr(s, expr); levelValue != nil {
-		attrsExpr = withDetectedLevel(s, attrsExpr, levelValue)
-	}
-	// `| unpack` replaces the line with the payload's `_entry` member, and
-	// it does so in SQL alongside the labels it extracts from the same
-	// payload (see [PipelineLineExpr]). Projecting the bare body column
-	// here would hand callers the packed JSON under labels that describe
-	// its contents.
-	lineExpr := chplan.Expr(&chplan.ColumnRef{Name: s.BodyColumn})
-	if rewritten, err := PipelineLineExpr(expr, s); err == nil && rewritten != nil {
-		lineExpr = rewritten
-	}
-	projections := []chplan.Projection{
-		{Expr: lineExpr, Alias: LogLineColumn},
-		{Expr: attrsExpr, Alias: sampleAttributesCol},
-		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: sampleTimeUnixCol},
-	}
-	// Surface the OTel-CH LogAttributes map as Loki structured metadata —
-	// the third element of each `[ts, line, {metadata}]` value tuple. The
-	// stream identity (Attributes) stays the low-cardinality
-	// ResourceAttributes + detected_level set so streams don't fragment;
-	// the genuinely per-line keys (duration / bytes / query_id / …) ride
-	// here instead, which is exactly the shape Grafana's Logs Drilldown
-	// reads to render clean, well-formed columns. The chclient cursor
-	// detects this trailing `Metadata` column and binds a four-destination
-	// log-row scan; the four-column metric / prom / tempo paths are
-	// untouched. Schemas without a structured-metadata column
-	// (AttributesColumn == "") skip the projection entirely, leaving the
-	// bare three-column log-row shape.
-	if s.AttributesColumn != "" {
-		projections = append(projections, chplan.Projection{
-			Expr:  structuredMetadataExpr(s),
-			Alias: "Metadata",
-		})
-	}
-	return &chplan.Project{
-		Roles:       logSampleRoles(),
-		Input:       plan,
-		Projections: projections,
-	}, nil
+	return plan, nil
+}
+
+// isLogRowProjection reports whether plan is the projection
+// [lowerLogQuery] ends a log query with: a Project leading with the
+// [LogLineColumn] alias.
+func isLogRowProjection(plan chplan.Node) bool {
+	p, ok := plan.(*chplan.Project)
+	return ok && len(p.Projections) > 0 && p.Projections[0].Alias == LogLineColumn
 }
 
 // IsMetricQuery reports whether the parsed LogQL expression produces a

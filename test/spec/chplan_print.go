@@ -184,9 +184,12 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 			printChild(b, visited, lookup, depth+1)
 		}
 	case *chplan.Project:
-		grid := ""
+		marks := ""
 		if v.SubqueryGrid {
-			grid = " subqueryGrid"
+			marks = " subqueryGrid"
+		}
+		if v.OneScopeRows {
+			marks += " oneScopeRows"
 		}
 		parts := make([]string, len(v.Projections))
 		for i, p := range v.Projections {
@@ -202,12 +205,12 @@ func printNodeArm(b *strings.Builder, n chplan.Node, depth int, visited *[]chpla
 				reps[i] = fmt.Sprintf("%s AS %s", printExpr(p.Expr), p.Alias)
 			}
 			if len(reps) == 0 {
-				fmt.Fprintf(b, "%sProject *%s\n", indent, grid)
+				fmt.Fprintf(b, "%sProject *%s\n", indent, marks)
 			} else {
-				fmt.Fprintf(b, "%sProject * REPLACE [%s]%s\n", indent, strings.Join(reps, ", "), grid)
+				fmt.Fprintf(b, "%sProject * REPLACE [%s]%s\n", indent, strings.Join(reps, ", "), marks)
 			}
 		} else {
-			fmt.Fprintf(b, "%sProject [%s]%s\n", indent, strings.Join(parts, ", "), grid)
+			fmt.Fprintf(b, "%sProject [%s]%s\n", indent, strings.Join(parts, ", "), marks)
 		}
 		printChild(b, visited, v.Input, depth+1)
 	case *chplan.Aggregate:

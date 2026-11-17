@@ -13,11 +13,12 @@ import (
 // TestLogLineLimitPushdown_ShapeAndGating is the pipeline-shape
 // characterization proof for cerberus issue #2829: for every LogQL
 // pipeline shape the lowering supports, a positive LogLineLimit either
-// pushes a real `Limit(OrderBy(Timestamp))` on top of the EXACT plan
-// [logql.Lower] would otherwise build (proven via chplan.Node.Equal, not
-// merely "a plan came back" — the wrap must be purely additive, changing
-// no existing node), or leaves the plan byte-identical to the
-// LogLineLimit==0 case.
+// pushes a real `Limit(OrderBy(Timestamp))` into the EXACT plan
+// [logql.Lower] would otherwise build, between its filtered rows and the
+// values only the log-row projection reads (proven via chplan.Node.Equal
+// once the Limit(OrderBy) is spliced out, not merely "a plan came back" —
+// the wrap must be purely additive, changing no existing node), or leaves
+// the plan byte-identical to the LogLineLimit==0 case.
 //
 // The unsafe cases (a `| pattern` stage followed by a `__error__` /
 // `__error_details__` label filter) are the ONLY shapes gated off — see
@@ -128,9 +129,9 @@ func TestLogLineLimitPushdown_ShapeAndGating(t *testing.T) {
 				return
 			}
 
-			lim, ok := pushedPlan.(*chplan.Limit)
-			if !ok {
-				t.Fatalf("shape %q: top node = %T, want *chplan.Limit", tc.name, pushedPlan)
+			lim := logLineLimitOf(pushedPlan)
+			if lim == nil {
+				t.Fatalf("shape %q: no Limit under the log-row projection's layers", tc.name)
 			}
 			if lim.Count != pushLimit {
 				t.Errorf("shape %q: Limit.Count = %d, want %d", tc.name, lim.Count, pushLimit)
@@ -150,13 +151,88 @@ func TestLogLineLimitPushdown_ShapeAndGating(t *testing.T) {
 				t.Errorf("shape %q: OrderBy.Keys[0].Expr = %#v, want ColumnRef{Name: %q}", tc.name, ob.Keys[0].Expr, s.TimestampColumn)
 			}
 
-			// The wrap must be PURELY additive: peeling off Limit(OrderBy(...))
-			// must land on the exact plan Lower() builds without the option —
-			// same Scan, same Filter predicate, nothing rewritten underneath.
-			if !ob.Input.Equal(basePlan) {
-				t.Errorf("shape %q: Limit(OrderBy(...)).Input is not the unmodified base plan:\nbase:  %#v\ninner: %#v", tc.name, basePlan, ob.Input)
+			// The limit must not change which rows survive: every filter of
+			// the plan Lower() builds without the option sits below the sort,
+			// over the same scan, and none is added or rewritten.
+			basePreds, baseScan := rowFilters(basePlan)
+			belowPreds, belowScan := rowFilters(ob.Input)
+			allPreds, _ := rowFilters(pushedPlan)
+			if !baseScan.Equal(belowScan) {
+				t.Errorf("shape %q: the rows below the sort scan %#v, want the base plan's %#v", tc.name, belowScan, baseScan)
+			}
+			if !sameExprs(basePreds, belowPreds) || !sameExprs(basePreds, allPreds) {
+				t.Errorf("shape %q: filters below the sort %v and in the whole plan %v, want exactly the base plan's %v",
+					tc.name, belowPreds, allPreds, basePreds)
 			}
 		})
+	}
+}
+
+// rowFilters returns the AND-ed conjuncts of every Filter on the spine
+// below n, down to its Scan, and that Scan.
+func rowFilters(n chplan.Node) ([]chplan.Expr, *chplan.Scan) {
+	var preds []chplan.Expr
+	for {
+		switch v := n.(type) {
+		case *chplan.Filter:
+			preds = append(preds, splitAnd(v.Predicate)...)
+			n = v.Input
+		case *chplan.Project:
+			n = v.Input
+		case *chplan.OrderBy:
+			n = v.Input
+		case *chplan.Limit:
+			n = v.Input
+		case *chplan.Scan:
+			return preds, v
+		default:
+			return preds, nil
+		}
+	}
+}
+
+func splitAnd(e chplan.Expr) []chplan.Expr {
+	if b, ok := e.(*chplan.Binary); ok && b.Op == chplan.OpAnd {
+		return append(splitAnd(b.Left), splitAnd(b.Right)...)
+	}
+	return []chplan.Expr{e}
+}
+
+// sameExprs reports whether a and b hold structurally equal expressions,
+// each as many times, in any order.
+func sameExprs(a, b []chplan.Expr) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	used := make([]bool, len(b))
+	for _, x := range a {
+		found := false
+		for i, y := range b {
+			if !used[i] && x.Equal(y) {
+				used[i], found = true, true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// logLineLimitOf returns the Limit a log query's plan carries below the
+// log-row projection and the value layers above the limit; nil when the
+// walk down those Projects meets no Limit.
+func logLineLimitOf(plan chplan.Node) *chplan.Limit {
+	for n := plan; ; {
+		switch v := n.(type) {
+		case *chplan.Limit:
+			return v
+		case *chplan.Project:
+			n = v.Input
+		default:
+			return nil
+		}
 	}
 }
 
@@ -190,9 +266,9 @@ func TestLogLineLimitPushdown_DirectionMapsToOrderDirection(t *testing.T) {
 			if err != nil {
 				t.Fatalf("LowerAtRangeOpts: %v", err)
 			}
-			lim, ok := plan.(*chplan.Limit)
-			if !ok {
-				t.Fatalf("top node = %T, want *chplan.Limit", plan)
+			lim := logLineLimitOf(plan)
+			if lim == nil {
+				t.Fatal("no Limit under the log-row projection's layers")
 			}
 			ob := lim.Input.(*chplan.OrderBy)
 			if ob.Keys[0].Desc != tc.wantDesc {
@@ -208,7 +284,7 @@ func TestLogLineLimitPushdown_DirectionMapsToOrderDirection(t *testing.T) {
 //   - LogLineLimit<=0 (every non-Opts entry point, and every caller that
 //     hasn't parsed a request `limit`) never pushes.
 //   - A metric query (RangeAggregationExpr et al.) never pushes even
-//     when LogLineLimit is positive. [maybePushLogLineLimit] guards this
+//     when LogLineLimit is positive. logLineLimit guards this
 //     explicitly with [logql.IsMetricQuery] — NOT merely by the
 //     TOP-level expr failing the `syntax.LogSelectorExpr` assertion, since
 //     `*syntax.LiteralExpr` and `*syntax.VectorExpr` are both genuine
