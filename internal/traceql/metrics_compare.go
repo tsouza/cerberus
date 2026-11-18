@@ -109,7 +109,7 @@ func lowerMetricsCompare(prev chplan.Node, mc *traceql.MetricsCompare, s schema.
 	// A selection reading a trace-scoped intrinsic against a span operand
 	// (`{ rootName = name }`) compares each span's own trace's value, joined
 	// onto the spans compare() splits into selection and baseline.
-	sel, err := lowerFieldExpr(f.Expression, s)
+	sel, err := lowerFieldExpr(f.Expression, materializedCarriedBy(prev.RowType(), s))
 	if err != nil {
 		return nil, err
 	}
