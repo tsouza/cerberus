@@ -1,8 +1,8 @@
 {
   "fixture": "logql/sum_count_over_time_line_filter_pattern_empty",
   "fan_factor": 1,
-  "scan_rows": 5,
-  "peak_intermediate": 5,
+  "scan_rows": 2,
+  "peak_intermediate": 2,
   "has_cross_join": false,
   "has_array_join": false,
   "has_recursive_cte": false,
