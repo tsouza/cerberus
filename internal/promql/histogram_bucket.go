@@ -49,8 +49,9 @@ func isClassicBucketSelector(metricName string, s schema.Metrics) (bare string, 
 //     `__name__` is rewritten to the bare base name so the scan filter
 //     resolves against the OTel-CH row's MetricName.
 //   - leMatchers: matchers naming the synthetic `le` label, which only
-//     exists post-fanout. These are applied as a Filter on the canonical
-//     Sample shape AFTER the fan-out Project synthesises `Attributes['le']`.
+//     exists once the fan-out synthesises each bucket's bound string.
+//     [wrapHistogramBucketFanout] applies them to the per-row
+//     `(le, cumulative count)` pairs before arrayJoin expands them.
 //
 // Copy-on-write semantics mirror stripBucketSuffix / rewriteMetricName:
 // the input slice + entries are never mutated.
@@ -131,8 +132,8 @@ func splitBucketMatchers(matchers []*labels.Matcher, bareName string) (scanMatch
 // and every row it fans into carries the encoded marker as Value, so the
 // downstream latest-sample pick ends each `le` series at the marker.
 func wrapHistogramBucketFanout(
-	scanOrFilter chplan.Node, suffixedName string, s schema.Metrics, cat *metadataCatalog,
-	mode staleMarkerMode, layout staleLayoutWindow,
+	scanOrFilter chplan.Node, suffixedName string, leMatchers []*labels.Matcher, s schema.Metrics,
+	cat *metadataCatalog, mode staleMarkerMode, layout staleLayoutWindow,
 ) chplan.Node {
 	// Inner Project — pass the histogram row's identity columns through
 	// and add the fanned bucket pair via arrayJoin. Every output row
@@ -207,13 +208,11 @@ func wrapHistogramBucketFanout(
 		},
 		&chplan.FuncCall{Fn: chplan.FnArrayCumSum, Args: []chplan.Expr{counts}},
 	}}
+	pairs := keepBucketPairs(&chplan.FuncCall{Fn: chplan.FnArrayZip, Args: []chplan.Expr{leStrs, cumCounts}}, leMatchers)
 	fanoutProjections := append(
 		rowProjections,
 		chplan.Projection{
-			Expr: &chplan.FuncCall{
-				Fn:   chplan.FnArrayJoin,
-				Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnArrayZip, Args: []chplan.Expr{leStrs, cumCounts}}},
-			},
+			Expr:  &chplan.FuncCall{Fn: chplan.FnArrayJoin, Args: []chplan.Expr{pairs}},
 			Alias: bucketPairAlias,
 		},
 	)
@@ -252,8 +251,7 @@ func wrapHistogramBucketFanout(
 	}
 	outer := []chplan.Projection{{Expr: metricNameExpr, Alias: s.MetricNameColumn}}
 	// The synthesised `le` key rides on Attributes in both modes: it is the
-	// only place a bucket bound exists as a label, and the post-fan-out
-	// `le=<bound>` matcher filter reads it back out of the map.
+	// only place a bucket bound exists as a label once the row is fanned.
 	outer = append(outer, catalogAttributesProjections(cat, s, mergedAttrs)...)
 	outer = append(
 		outer,
@@ -278,10 +276,44 @@ const (
 	bucketPairCount int64 = 2
 )
 
+// bucketPairCandidateParam is the lambda parameter naming one zipped
+// `(le, cumulative count)` pair while [keepBucketPairs] tests it. It is
+// distinct from [bucketPairAlias] so the lambda never shadows the fanned
+// column.
+const bucketPairCandidateParam = "le_candidate"
+
+// keepBucketPairs narrows the zipped `(le, cumulative count)` pairs of one
+// histogram row to the ones every `le` matcher selects, so arrayJoin
+// expands only the selected buckets instead of fanning every bucket and
+// discarding most of the rows afterwards. Multiple matchers AND together,
+// as PromQL's do for repeated matchers on one label. Regex values pass
+// through as-is: the emitter anchors every OpMatch / OpNotMatch pattern.
+// Returns pairs unchanged when there is no `le` matcher.
+func keepBucketPairs(pairs chplan.Expr, leMatchers []*labels.Matcher) chplan.Expr {
+	var keep chplan.Expr
+	for _, m := range leMatchers {
+		keep = andExpr(keep, &chplan.Binary{
+			Op: matchOp(m.Type),
+			Left: &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{
+				&chplan.BareIdent{Name: bucketPairCandidateParam}, &chplan.LitInt{V: bucketPairLe},
+			}},
+			Right: &chplan.LitString{V: m.Value},
+		})
+	}
+	if keep == nil {
+		return pairs
+	}
+	return &chplan.FuncCall{Fn: chplan.FnArrayFilter, Args: []chplan.Expr{
+		&chplan.Lambda{Params: []string{bucketPairCandidateParam}, Body: keep},
+		pairs,
+	}}
+}
+
 // isClassicBucketFanoutProject recognizes the row expansion produced above.
 // It changes one stored histogram into independent cumulative bucket counters,
 // not evaluation anchors. Native rate grids can consume those counters after
-// the enclosing canonical sample projection (and any synthetic le filter).
+// the enclosing canonical sample projection. An `le` matcher narrows the
+// zipped pairs inside the arrayJoin ([keepBucketPairs]) and is looked through.
 func isClassicBucketFanoutProject(p *chplan.Project, s schema.Metrics) bool {
 	for _, projection := range p.Projections {
 		if projection.Alias != bucketPairAlias {
@@ -292,6 +324,9 @@ func isClassicBucketFanoutProject(p *chplan.Project, s schema.Metrics) bool {
 			return false
 		}
 		zip, ok := join.Args[0].(*chplan.FuncCall)
+		if ok && zip.Fn == chplan.FnArrayFilter && len(zip.Args) == 2 {
+			zip, ok = zip.Args[1].(*chplan.FuncCall)
+		}
 		if !ok || zip.Fn != chplan.FnArrayZip || len(zip.Args) == 0 {
 			return false
 		}
