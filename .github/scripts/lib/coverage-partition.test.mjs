@@ -183,21 +183,22 @@ test('a shard past the argument budget runs one go test per selector, folds thei
     // profile whose block is that run's own.
     const go = join(dir, 'fake-go.mjs');
     writeFileSync(go, `#!/usr/bin/env node
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync, writeSync } from 'node:fs';
 const args = process.argv.slice(2);
 const tests = JSON.parse(readFileSync(${JSON.stringify(join(dir, 'tests.json'))}, 'utf8'));
-const event = (fields) => process.stdout.write(JSON.stringify(fields) + '\\n');
-if (args[0] === 'list') { console.log(${JSON.stringify(packages.join('\n'))}); process.exit(0); }
-if (args.includes('-list')) { for (const t of tests) event({ Action: 'output', Package: t.package, Output: t.name + '\\n' }); process.exit(0); }
+// One synchronous write each: process.exit after an asynchronous write to
+// a pipe drops the part of the output still buffered.
+const events = (list) => writeSync(1, list.map((fields) => JSON.stringify(fields) + '\\n').join(''));
+if (args[0] === 'list') { writeSync(1, ${JSON.stringify(packages.join('\n') + '\n')}); process.exit(0); }
+if (args.includes('-list')) { events(tests.map((t) => ({ Action: 'output', Package: t.package, Output: t.name + '\\n' }))); process.exit(0); }
 const pattern = new RegExp(args[args.indexOf('-run') + 1]);
 const targets = args.slice(args.indexOf('-run') + 2);
 const profile = args[args.indexOf('-coverprofile') + 1];
 appendFileSync(${JSON.stringify(join(dir, 'runs.log'))}, JSON.stringify(targets) + '\\n');
 const run = readFileSync(${JSON.stringify(join(dir, 'runs.log'))}, 'utf8').split('\\n').filter(Boolean).length;
 writeFileSync(profile, 'mode: set\\nexample.test/a/run.go:' + run + '.1,' + run + '.2 1 1\\n');
-for (const t of tests) {
-  if (pattern.test(t.name) && (targets.includes('./...') || targets.includes(t.package))) event({ Action: 'pass', Package: t.package, Test: t.name, Elapsed: 0 });
-}
+events(tests.filter((t) => pattern.test(t.name) && (targets.includes('./...') || targets.includes(t.package)))
+  .map((t) => ({ Action: 'pass', Package: t.package, Test: t.name, Elapsed: 0 })));
 `);
     chmodSync(go, 0o755);
     const lib = join(dir, 'libchdb.so');
