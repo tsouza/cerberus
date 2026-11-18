@@ -97,16 +97,7 @@
 //      the matcher's map read first. On 26.6 rate_by_route_matcher_stock_key
 //      measured 296 MB against 40 MB and goes red on its committed ceiling.
 //
-//   5. aggregation-in-order-stamp-lost — internal/engine/
-//      query_settings_rules.go's optimize_aggregation_in_order stamp,
-//      disabled. ClickHouse then hash-aggregates the instant selector the
-//      nightly instant_selector_in_order sentinel issues; peak memory does
-//      not separate the two plans beyond run-to-run noise, so that
-//      sentinel goes red on its pipeline prong, which requires
-//      AggregatingInOrderTransform in EXPLAIN PIPELINE of the dispatched
-//      statement.
-//
-//   6. plural-native-quantile-analyzer-hazard-lost — internal/engine/
+//   5. plural-native-quantile-analyzer-hazard-lost — internal/engine/
 //      plan_shape.go's native-histogram analyzer hazard, blind to the plural
 //      chplan.HistogramQuantilesNative node again. histogram_quantiles over
 //      rate() of a native histogram then reaches ClickHouse under the analyzer
@@ -125,7 +116,7 @@
 //
 // The mechanisms are ORTHOGONAL (a resource-bound throwIf, a
 // disk-spill fallback, a chopt-gated per-query stamp, the PREWHERE split, the
-// in-order aggregation stamp, the native-histogram analyzer stamp) exercising
+// native-histogram analyzer stamp) exercising
 // different sentinels in different corpora — proving one still works says
 // nothing about the others. Per #2437's own scope, this is deliberately NOT
 // exhaustive: one representative injected regression per mechanism is the
@@ -261,19 +252,6 @@ export const MUTATIONS = [
     sentinels: ['rate_by_route_matcher_stock_key'],
     find: 'AutoRange:  VersionRange{From: Version{Major: 24, Minor: 11}, Until: Version{Major: 26, Minor: 2}},\n',
     replace: 'AutoRange:  VersionRange{From: Version{Major: 24, Minor: 11}, Until: Version{Major: 99, Minor: 0}},\n',
-  },
-  {
-    id: 'aggregation-in-order-stamp-lost',
-    clickhouse: ['25.9'],
-    description:
-      "Disable internal/engine/query_settings_rules.go's optimize_aggregation_in_order stamp, so ClickHouse " +
-      'hash-aggregates a GROUP BY over a sorting-key prefix. The nightly instant_selector_in_order sentinel ' +
-      'must go red on its pipeline prong (AggregatingInOrderTransform in EXPLAIN PIPELINE).',
-    recipe: 'perf-nightly-integration',
-    file: 'internal/engine/query_settings_rules.go',
-    sentinels: ['instant_selector_in_order'],
-    find: 'if r.OptimizeAggregationInOrder && r.eligibleForAggregationInOrder(f, strategies) {\n',
-    replace: 'if false && r.OptimizeAggregationInOrder && r.eligibleForAggregationInOrder(f, strategies) {\n',
   },
   {
     id: 'plural-native-quantile-analyzer-hazard-lost',

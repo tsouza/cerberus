@@ -66,7 +66,7 @@ jobs:
         # mutations whose `clickhouse` lines include its server's.
         clickhouse: ['24.8', '25.9', '26.8', '26.9']
     # One full gate run per mutation of the leg (the 25.9 leg carries the
-    # most: six `just perf-nightly-integration` runs and two `just
+    # most: four `just perf-nightly-integration` runs and two `just
     # perf-smoke-integration`, which boots three ClickHouse containers) plus
     # setup — generous headroom over the few-minutes-each measured locally.
     timeout-minutes: 60

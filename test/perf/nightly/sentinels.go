@@ -128,9 +128,9 @@ const (
 	// = 1.21x cushion on the noisiest line).
 	rateByRouteBaselineHeadroom = 1.50
 	// instantSelectorBaselineHeadroom (instant_selector_in_order, n=7):
-	// 49.5M-58.1M bytes, max/min = 1.175x (CV 5.44%). Its memory prong is
-	// a backstop — the pipeline prong is what separates the plan it guards
-	// — so it keeps the conservative 1.5x (1.5x / 1.175x = 1.28x cushion).
+	// 49.5M-58.1M bytes, max/min = 1.175x (CV 5.44%), measured while the
+	// engine still stamped optimize_aggregation_in_order on the selector.
+	// It keeps the conservative 1.5x (1.5x / 1.175x = 1.28x cushion).
 	instantSelectorBaselineHeadroom = 1.50
 	// nativeQuantilesBaselineHeadroom (native_histogram_quantiles_rate, n=7
 	// replays of its dispatched statement on a 2-CPU server): 143.3M-193.8M
@@ -201,12 +201,6 @@ type Sentinel struct {
 	// sentinel (chclient.WithQuerySetting), on top of the ones the
 	// production wiring stamps.
 	QuerySettings map[string]any
-	// WantPipelineStep, when set, names a processor that EXPLAIN PIPELINE of
-	// the statement cerberus dispatched — its text and settings, read back
-	// from system.query_log — must contain. It is the check for a mechanism
-	// that changes the plan without moving peak memory beyond run-to-run
-	// noise.
-	WantPipelineStep string
 	// PlanningPeer, when set, is the request parameters of the sentinel's
 	// planning peer: a query over the same data whose statement plans in a
 	// comparable time. The planning prong requires the time ClickHouse takes
@@ -360,10 +354,6 @@ var (
 	matcherWindowStart = time.Date(2026, 8, 18, 12, 25, 0, 0, time.UTC)
 	matcherWindowEnd   = time.Date(2026, 8, 18, 12, 30, 0, 0, time.UTC)
 )
-
-// pipelineAggregatingInOrder is the processor ClickHouse runs a GROUP BY
-// with when optimize_aggregation_in_order reads the table in its sort order.
-const pipelineAggregatingInOrder = "AggregatingInOrderTransform"
 
 // Sentinels is PR A's "prove the mechanism, print the numbers" corpus — no
 // baseline/gate yet (see realch_perfnightly_integration_test.go's doc
@@ -658,21 +648,22 @@ var Sentinels = []Sentinel{
 		},
 	},
 	{
-		// An instant selector groups by (MetricName, Attributes), a prefix of
-		// the sorting key cerberus provisions, so the engine stamps
-		// optimize_aggregation_in_order and ClickHouse aggregates in the
-		// key's order. Losing the stamp changes the plan but not peak memory
-		// beyond run-to-run noise, so the sentinel also requires the
-		// in-order processor in the dispatched statement's pipeline.
+		// An instant selector's lookback groups by MetricName, read from the
+		// stored column, and by the Attributes the label-normalisation
+		// Project rebuilds: resource attributes merged in, keys sanitised,
+		// service_name added. The rebuilt Attributes is not the stored
+		// column the sorting key orders by, so the GROUP BY is not a
+		// sorting-key prefix and the engine does not stamp
+		// optimize_aggregation_in_order. The sentinel gates the selection's
+		// peak memory on cerberus's sorting key.
 		Name:             "instant_selector_in_order",
-		Family:           "instant selector on cerberus's sorting key — GROUP BY a sort-key prefix aggregated in order",
+		Family:           "instant selector on cerberus's sorting key — GROUP BY MetricName and the rebuilt Attributes",
 		Path:             "/api/v1/query",
 		ExpectedStatus:   http.StatusOK,
 		WindowStart:      matcherWindowEnd,
 		WindowEnd:        matcherWindowEnd,
 		BaselineHeadroom: instantSelectorBaselineHeadroom,
 		QuerySettings:    map[string]any{settingUseQueryConditionCache: 0},
-		WantPipelineStep: pipelineAggregatingInOrder,
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{"query": {sumMetric}}
 		},

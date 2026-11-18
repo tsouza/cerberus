@@ -1284,11 +1284,19 @@ peaks leaves no memory ceiling that separates the split), bypassing the emitter'
 attribute matcher on 24.8, 26.6 and 26.9 (rate by route 696 MB, 416 MB and
 389 MB against 58 MB, 40 MB and 34 MB unmutated), and widening the auto range past 26.6 (rate by
 route 296 MB against 40 MB). The
-in-order aggregation stamp is a neighbouring decision that peak memory does
-not separate: on cerberus's key a hash aggregation of the instant selector
-measured 116–124 MB against 101–116 MB in order, so its nightly sentinel
-asserts `AggregatingInOrderTransform` in `EXPLAIN PIPELINE` of the
-dispatched statement instead. On the exporter's key the stamp, right or
+in-order aggregation stamp is a neighbouring decision. The instant
+selector's lookback groups by `MetricName` and by the `Attributes` the
+label-normalisation Project rebuilds with `mapConcat` (resource attributes
+merged in, keys sanitised, `service_name` added), which is not the stored
+`Attributes` the sorting key orders by. Stamped, ClickHouse aggregated it in
+order by the `MetricName` prefix alone (`Order: MetricName ASC` in
+`EXPLAIN PLAN`). On 100,000 counter series × 120 samples that peaked at
+159 MiB on 26.8 and 167–179 MiB on 24.8, against 66–68 MiB and 68–73 MiB
+hash-aggregated, for the same answer and the same bytes read. The engine
+therefore matches a GROUP BY key by the stored column it reads and does not
+stamp the selector, and its nightly sentinel gates peak memory only. An
+`AggregatingInOrderTransform` requirement on it would assert a plan the
+selector never had in sorting-key order. On the exporter's key the stamp, right or
 wrong, changes nothing: `EXPLAIN PIPELINE` is identical stamped and
 unstamped (no `AggregatingInOrderTransform` either way, since `ServiceName`
 leads the key) and peak memory overlaps (131.8–138.9 MB against

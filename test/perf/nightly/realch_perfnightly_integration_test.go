@@ -415,20 +415,6 @@ func TestPerfNightlyRealCH(t *testing.T) {
 								sentinel.Name, i, version, sentinel.Family, statement)
 						}
 					}
-
-					// The plan prong, on every repeat like the status check: a
-					// mechanism that fires intermittently is as broken as one
-					// that never fires.
-					if sentinel.WantPipelineStep != "" {
-						pipeline, err := pipelineSteps(ctx, pipelineConns[sentinel.Deployment], queryID)
-						if err != nil {
-							t.Fatalf("%s repeat %d: %v", sentinel.Name, i, err)
-						}
-						if !strings.Contains(pipeline, sentinel.WantPipelineStep) {
-							t.Fatalf("%s repeat %d: EXPLAIN PIPELINE of the dispatched statement has no %s — %s may have regressed:\n%s",
-								sentinel.Name, i, sentinel.WantPipelineStep, sentinel.Family, pipeline)
-						}
-					}
 				}
 				// Every repeat above matched sentinel.ExpectedStatus exactly, or
 				// this point is never reached (a mismatch is fatal).
@@ -804,31 +790,6 @@ func dispatchedStatement(ctx context.Context, conn driver.Conn, queryID string) 
 		stamped[name] = value
 	}
 	return query, stamped, nil
-}
-
-// pipelineSteps returns EXPLAIN PIPELINE of the statement cerberus
-// dispatched under queryID, rebuilt from system.query_log: its text and the
-// settings it ran with.
-func pipelineSteps(ctx context.Context, conn driver.Conn, queryID string) (string, error) {
-	query, stamped, err := dispatchedStatement(ctx, conn, queryID)
-	if err != nil {
-		return "", err
-	}
-	rows, err := conn.Query(clickhouse.Context(ctx, clickhouse.WithSettings(stamped)), "EXPLAIN PIPELINE "+query)
-	if err != nil {
-		return "", fmt.Errorf("EXPLAIN PIPELINE of %q: %w", queryID, err)
-	}
-	defer rows.Close()
-	var pipeline strings.Builder
-	for rows.Next() {
-		var line string
-		if err := rows.Scan(&line); err != nil {
-			return "", err
-		}
-		pipeline.WriteString(line)
-		pipeline.WriteByte('\n')
-	}
-	return pipeline.String(), rows.Err()
 }
 
 // planningStatement is the EXPLAIN form the planning prong times. EXPLAIN
