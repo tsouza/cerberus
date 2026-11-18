@@ -4,16 +4,18 @@
       "head": "traceql",
       "site": "internal/traceql/lower.go:lowerFollowingElement#2dc247dc",
       "message": "traceql: pipeline tail element %T is unsupported",
-      "class": "internal",
-      "rationale": "type-switch default: every pipeline-tail element type the pinned grammar produces is handled",
+      "class": "divergence",
+      "trigger_query": "{ } | { status = error }",
+      "tracking_issue": 4365,
       "evidence": {
         "guard": [
-          "past exhaustive switch v := elem.(type) over [case traceql.Aggregate; case *traceql.Aggregate; case traceql.ScalarFilter; case *traceql.ScalarFilter; case traceql.SelectOperation; case *traceql.SelectOperation; case traceql.GroupOperation; case *traceql.GroupOperation; case traceql.CoalesceOperation; case *traceql.CoalesceOperation]"
+          "past exhaustive switch v := elem.(type) over [case traceql.Aggregate; case *traceql.Aggregate; case traceql.ScalarFilter; case *traceql.ScalarFilter; case traceql.SelectOperation; case *traceql.SelectOperation]"
         ],
         "callers": [
-          "lowerPipeline"
+          "lowerFollowingStage"
         ]
-      }
+      },
+      "since": "2026-11-18"
     }
   ]
 }

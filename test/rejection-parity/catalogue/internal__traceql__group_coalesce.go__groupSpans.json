@@ -2,7 +2,7 @@
   "entries": [
     {
       "head": "traceql",
-      "site": "internal/traceql/group_coalesce.go:lowerGroup#7f6c3db0",
+      "site": "internal/traceql/group_coalesce.go:groupSpans#7f6c3db0",
       "message": "traceql: `| group(...)` requires a field expression",
       "class": "internal",
       "rationale": "the grammar requires an expression inside by(...); a missing field expression is a parse error",
@@ -11,7 +11,7 @@
           "if g.Expression == nil"
         ],
         "callers": [
-          "lowerFollowingElement"
+          "lowerFollowingStage"
         ]
       }
     }

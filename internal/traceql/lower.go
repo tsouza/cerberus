@@ -127,16 +127,17 @@ func lowerRoot(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 		pipeline = dropGroupByBeforeMetrics(pipeline)
 	}
 
-	plan, err := lowerPipeline(pipeline, s)
+	stage, err := lowerPipeline(pipeline, s)
 	if err != nil {
 		return nil, err
 	}
 
+	plan := stage.node
 	if mp != nil {
-		// A metrics function observes spans, so a trailing spanset aggregate
-		// (`{ } | count() > 1 | rate()`) feeds it the spans of each spanset
-		// that passed, never the per-trace row (spanGranularOperand).
-		plan, err = lowerMetricsPipeline(spanGranularOperand(plan, s), mp, s)
+		// A metrics function observes spans, so the last stage feeds it the
+		// spans of each spanset that stage returns (pipelineStage.spans),
+		// never a per-trace or per-group row.
+		plan, err = lowerMetricsPipeline(stage.spans, mp, s)
 		if err != nil {
 			return nil, err
 		}
@@ -157,31 +158,32 @@ func lowerRoot(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 // lowerSpansetExpr, which lowers a parenthesised sub-pipeline operand of
 // a spanset set operation (`({…} | count() > 1) && ({…} | count() > 1)`).
 //
-// A stage reads the spans of the spansets the stage before it passed, so a
-// spanset aggregate with another stage after it (`{ } | count() > 1 |
-// count() > 2`) hands that stage its spans rather than its per-trace row
-// (spanGranularOperand). Only the last stage may stay per trace, where the
-// /api/search envelope reads it.
+// A stage reads the spans of the spansets the stage before it returned, so a
+// spanset aggregate, by() or coalesce() with another stage after it (`{ } |
+// count() > 1 | count() > 2`) hands that stage its spans rather than its
+// per-trace or per-group row (lowerFollowingStage). Only the last stage's
+// node may stay per trace or per group, where the /api/search envelope reads
+// it.
 //
 // A pipeline that opens with a scalar filter, `by(...)` or `select(...)`
 // lowers as if `{ }` came first (withImplicitSpansetFilter).
-func lowerPipeline(p traceql.Pipeline, s schema.Traces) (chplan.Node, error) {
+func lowerPipeline(p traceql.Pipeline, s schema.Traces) (pipelineStage, error) {
 	if len(p.Elements) == 0 {
-		return nil, fmt.Errorf("traceql: empty pipeline")
+		return pipelineStage{}, fmt.Errorf("traceql: empty pipeline")
 	}
 	p = withImplicitSpansetFilter(p)
 	plan, err := lowerPipelineElement(p.Elements[0], s)
 	if err != nil {
-		return nil, err
+		return pipelineStage{}, err
 	}
+	stage := pipelineStage{node: plan, spans: spanGranularOperand(plan, s)}
 	for _, el := range p.Elements[1:] {
-		next, err := lowerFollowingElement(spanGranularOperand(plan, s), el, s)
+		stage, err = lowerFollowingStage(stage, el, s)
 		if err != nil {
-			return nil, err
+			return pipelineStage{}, err
 		}
-		plan = next
 	}
-	return plan, nil
+	return stage, nil
 }
 
 // withImplicitSpansetFilter returns p with a `{ }` spanset filter in front
@@ -442,9 +444,10 @@ func isThresholdBinaryOp(op chplan.BinaryOp) bool {
 	return false
 }
 
-// lowerFollowingElement layers a pipeline element onto the previous
-// stage's plan. Aggregate / ScalarFilter / SelectOperation /
-// GroupOperation / CoalesceOperation are supported.
+// lowerFollowingElement layers an Aggregate, ScalarFilter or SelectOperation
+// onto the spans of the previous stage. lowerFollowingStage lowers
+// GroupOperation and CoalesceOperation itself, since each changes how the
+// spans split into spansets.
 func lowerFollowingElement(prev chplan.Node, elem traceql.PipelineElement, s schema.Traces) (chplan.Node, error) {
 	switch v := elem.(type) {
 	case traceql.Aggregate:
@@ -459,14 +462,6 @@ func lowerFollowingElement(prev chplan.Node, elem traceql.PipelineElement, s sch
 		return lowerSelect(prev, v, s)
 	case *traceql.SelectOperation:
 		return lowerSelect(prev, *v, s)
-	case traceql.GroupOperation:
-		return lowerGroup(prev, v, s)
-	case *traceql.GroupOperation:
-		return lowerGroup(prev, *v, s)
-	case traceql.CoalesceOperation:
-		return lowerCoalesce(prev, s)
-	case *traceql.CoalesceOperation:
-		return lowerCoalesce(prev, s)
 	}
 	return nil, fmt.Errorf("traceql: pipeline tail element %T is unsupported", elem)
 }
@@ -862,16 +857,16 @@ func lowerSpansetExpr(e traceql.SpansetExpression, s schema.Traces) (chplan.Node
 }
 
 // lowerSpansetOperand lowers a parenthesised sub-pipeline operand of a
-// spanset operation (`({…} | count() > 1) || ({…})`), then re-expresses
-// a trailing spanset aggregate as the spans it stands for — every
-// operator downstream of here combines spans, not per-trace rows. See
-// spanGranularOperand for the Tempo semantics that fixes.
+// spanset operation (`({…} | count() > 1) || ({…})`) to the spans of the
+// spansets its last stage returns — every operator downstream of here
+// combines spans, not per-trace or per-group rows. See spanGranularOperand
+// for the Tempo semantics that fixes.
 func lowerSpansetOperand(p traceql.Pipeline, s schema.Traces) (chplan.Node, error) {
-	plan, err := lowerPipeline(p, s)
+	stage, err := lowerPipeline(p, s)
 	if err != nil {
 		return nil, err
 	}
-	return spanGranularOperand(plan, s), nil
+	return stage.spans, nil
 }
 
 // mapStructuralOp translates Tempo's structural Operator enum to the

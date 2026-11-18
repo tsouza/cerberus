@@ -3,6 +3,7 @@
   "head": "tempo-grpc",
   "bucket": "02",
   "cases": [
-    "metrics_range | metrics_count_over_time_groupby_service"
+    "metrics_range | metrics_count_over_time_groupby_service",
+    "metrics_range | metrics_rate_after_coalesce"
   ]
 }
