@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/tsouza/cerberus/internal/chclient"
@@ -1178,9 +1179,11 @@ func isTraceIDColumnRef(e chplan.Expr, traceIDColumn string) bool {
 	return ok && ref.Qualifier == "" && ref.Name == traceIDColumn
 }
 
-// bareGroupByColumns returns the GROUP BY keys of agg as bare column names,
-// in order. ok is false (and the slice nil) if ANY key is not a bare,
-// unqualified chplan.ColumnRef.
+// bareGroupByColumns returns the GROUP BY keys of agg as the stored column
+// names they read, in order. ok is false (and the slice nil) if ANY key is
+// not a bare, unqualified chplan.ColumnRef, or names a column the plan below
+// the Aggregate computes rather than passes through from the Scan
+// (storedColumnBelow).
 func bareGroupByColumns(agg *chplan.Aggregate) (cols []string, ok bool) {
 	cols = make([]string, 0, len(agg.GroupBy))
 	for _, e := range agg.GroupBy {
@@ -1188,9 +1191,62 @@ func bareGroupByColumns(agg *chplan.Aggregate) (cols []string, ok bool) {
 		if !isRef || ref.Qualifier != "" {
 			return nil, false
 		}
-		cols = append(cols, ref.Name)
+		stored, isStored := storedColumnBelow(agg.Input, ref.Name)
+		if !isStored {
+			return nil, false
+		}
+		cols = append(cols, stored)
 	}
 	return cols, true
+}
+
+// storedColumnBelow follows the column name down through the Filters and
+// Projects under an Aggregate to the Scan, and returns the stored column it
+// reads. A Project that renames a bare column is followed through the
+// rename. ok is false when a Project computes the column (an
+// `Attributes` rebuilt by mapConcat is not the stored `Attributes` the
+// sorting key orders by, however it is aliased), replaces it, or does not
+// carry it, and for any other node between the Aggregate and the Scan.
+func storedColumnBelow(n chplan.Node, name string) (stored string, ok bool) {
+	for {
+		switch v := n.(type) {
+		case *chplan.Scan:
+			return name, true
+		case *chplan.Filter:
+			n = v.Input
+		case *chplan.Project:
+			if len(v.Projections) == 0 {
+				if slices.ContainsFunc(v.Replacements, func(p chplan.Projection) bool { return p.Alias == name }) {
+					return "", false
+				}
+				n = v.Input
+				continue
+			}
+			i := slices.IndexFunc(v.Projections, func(p chplan.Projection) bool { return projectionOutputName(p) == name })
+			if i < 0 {
+				return "", false
+			}
+			ref, isRef := v.Projections[i].Expr.(*chplan.ColumnRef)
+			if !isRef || ref.Qualifier != "" {
+				return "", false
+			}
+			name, n = ref.Name, v.Input
+		default:
+			return "", false
+		}
+	}
+}
+
+// projectionOutputName is the column name a projection yields: its alias,
+// or, unaliased, the name of the column it selects.
+func projectionOutputName(p chplan.Projection) string {
+	if p.Alias != "" {
+		return p.Alias
+	}
+	if ref, ok := p.Expr.(*chplan.ColumnRef); ok {
+		return ref.Name
+	}
+	return ""
 }
 
 // sortingKeyPrefixFor maps a scanned table name to its bare-column

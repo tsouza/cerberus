@@ -61,6 +61,91 @@ func TestEligibleForAggregationInOrder_Positive(t *testing.T) {
 	}
 }
 
+// groupByOver builds Aggregate(GROUP BY cols) over input.
+func groupByOver(input chplan.Node, cols ...string) *chplan.Aggregate {
+	agg := aggOverScan("", cols...)
+	agg.Input = input
+	return agg
+}
+
+// TestEligibleForAggregationInOrder_FollowsColumnsToTheScan pins that a
+// GROUP BY key is matched against the sorting key by the stored column it
+// reads, followed down through the Filters and Projects under the
+// Aggregate: a pass-through or a rename keeps the key eligible, and a
+// column a Project computes under a stored column's name does not.
+func TestEligibleForAggregationInOrder_FollowsColumnsToTheScan(t *testing.T) {
+	t.Parallel()
+	r := defaultRules()
+	scan := &chplan.Scan{Table: "otel_metrics_histogram"}
+	ref := func(name string) chplan.Expr { return &chplan.ColumnRef{Name: name} }
+	rebuilt := &chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{ref("Attributes"), ref("ResourceAttributes")}}
+	cases := []struct {
+		name string
+		plan chplan.Node
+		want bool
+	}{
+		{
+			"filter and pass-through project",
+			groupByOver(&chplan.Project{Input: &chplan.Filter{Input: scan, Predicate: &chplan.LitBool{V: true}}}, "MetricName", "Attributes"),
+			true,
+		},
+		{
+			"aliased and unaliased bare columns",
+			groupByOver(&chplan.Project{Input: scan, Projections: []chplan.Projection{
+				{Expr: ref("MetricName")},
+				{Expr: ref("Attributes"), Alias: "Attributes"},
+			}}, "MetricName", "Attributes"),
+			true,
+		},
+		{
+			"renamed bare column",
+			groupByOver(&chplan.Project{Input: scan, Projections: []chplan.Projection{
+				{Expr: ref("MetricName"), Alias: "metric"},
+			}}, "metric"),
+			true,
+		},
+		{
+			"computed column under a stored column's name",
+			groupByOver(&chplan.Project{Input: scan, Projections: []chplan.Projection{
+				{Expr: ref("MetricName"), Alias: "MetricName"},
+				{Expr: rebuilt, Alias: "Attributes"},
+			}}, "MetricName", "Attributes"),
+			false,
+		},
+		{
+			"computed column below a pass-through project",
+			groupByOver(&chplan.Project{Input: &chplan.Project{Input: scan, Projections: []chplan.Projection{
+				{Expr: ref("MetricName")},
+				{Expr: rebuilt, Alias: "Attributes"},
+			}}}, "MetricName", "Attributes"),
+			false,
+		},
+		{
+			"replaced column",
+			groupByOver(&chplan.Project{Input: scan, Replacements: []chplan.Projection{{Expr: rebuilt, Alias: "Attributes"}}}, "MetricName", "Attributes"),
+			false,
+		},
+		{
+			"column the project does not carry",
+			groupByOver(&chplan.Project{Input: scan, Projections: []chplan.Projection{{Expr: ref("Attributes")}}}, "MetricName"),
+			false,
+		},
+		{
+			"aggregate between the group by and the scan",
+			groupByOver(aggOverScan("otel_metrics_histogram", "MetricName"), "MetricName"),
+			false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := r.eligibleForAggregationInOrder(shapeOf(tc.plan), chsql.SchemaStrategies{}); got != tc.want {
+				t.Errorf("eligible = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestEligibleForAggregationInOrder_Negative(t *testing.T) {
 	r := defaultRules()
 	cases := []struct {

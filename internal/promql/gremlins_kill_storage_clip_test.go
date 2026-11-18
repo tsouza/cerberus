@@ -8,6 +8,7 @@ import (
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // TestCutSelector_InDomainLookbackIsKept pins that a selector whose
@@ -53,10 +54,16 @@ func TestStaleLayoutWindowFor_RangeOffset(t *testing.T) {
 // subquery's Identity window that bounds the stale-marker layouts below
 // it: the outer range, the range and a step back from its end.
 func TestBoundStaleMarkerLayoutsToIdentity(t *testing.T) {
-	filter := &chplan.Filter{Input: &chplan.Scan{Table: "otel_metrics_histogram"}, Predicate: staleLayoutPendingBound()}
-	layout := &chplan.Project{
-		Input:       &chplan.Project{Input: filter},
-		Projections: []chplan.Projection{{Expr: &chplan.LitInt{V: 0}, Alias: staleLayoutCountsAlias}},
+	s := schema.DefaultOTelMetrics()
+	s.FlagsColumnProbed = true
+	var rows []chplan.Projection
+	for _, col := range []string{s.MetricNameColumn, s.AttributesColumn, s.TimestampColumn, s.StaleMarkerFlagsColumn()} {
+		rows = append(rows, chplan.Projection{Expr: &chplan.ColumnRef{Name: col}, Alias: col})
+	}
+	layout := staleMarkerBucketLayout(&chplan.Scan{Table: s.HistogramTable}, rows, staleLayoutPendingBound(), s).(*chplan.Project)
+	filter, ok := staleMarkerLayoutBoundFilter(layout)
+	if !ok {
+		t.Fatal("staleMarkerLayoutBoundFilter does not find the bound Filter of the layout staleMarkerBucketLayout builds")
 	}
 	end := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	rw := &chplan.RangeWindow{Input: layout, TimestampColumn: "TimeUnix", OuterRange: 10 * time.Minute, Range: 5 * time.Minute, Step: time.Minute, End: end}

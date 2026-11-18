@@ -956,13 +956,10 @@ func lowerMatrixSelector(ms *parser.MatrixSelector, s schema.Metrics, ctx lowerC
 // resource attributes at the selector seam.
 //
 //   - `_bucket` (bucketSuffixed != ""): the scan-side filter feeds into
-//     the fan-out Project, then a post-fan-out Filter applies any
-//     `le=<bound>` matcher against the synthesized `Attributes['le']` key.
-//     That key lives ONLY in the (already resource-merged) Attributes map,
-//     so the `le` predicate is built against a schema view with the
-//     resource column cleared to keep it a bare Attributes match. `pred`
-//     is baked into the fan-out's input Filter and returned nil so the
-//     downstream wrapper doesn't re-apply it.
+//     the fan-out Project, which applies any `le=<bound>` matcher to each
+//     row's synthesised bucket bounds before arrayJoin expands them
+//     ([keepBucketPairs]). `pred` is baked into the fan-out's input Filter
+//     and returned nil so the downstream wrapper doesn't re-apply it.
 //   - `_count` / `_sum` (companionValueColumn != ""): wrap the scan in the
 //     companion Project that aliases the source Count / Sum column as
 //     `Value`. pred passes through to the downstream wrapper.
@@ -989,13 +986,7 @@ func lowerHistogramSelectorInput(
 		if pred = withStaleMarkerDrop(pred, mode, s); pred != nil {
 			fanInput = &chplan.Filter{Input: scan, Predicate: pred}
 		}
-		selectorInput := wrapHistogramBucketFanout(fanInput, bucketSuffixed, s, cat, mode, layout)
-		leSchema := s
-		leSchema.ResourceAttributesColumn = ""
-		if lePred := buildPredicate(bucketLeMatchers, leSchema); lePred != nil {
-			selectorInput = &chplan.Filter{Input: selectorInput, Predicate: lePred}
-		}
-		return selectorInput, nil, true
+		return wrapHistogramBucketFanout(fanInput, bucketSuffixed, bucketLeMatchers, s, cat, mode, layout), nil, true
 	case companionValueColumn != "":
 		return wrapHistogramCompanionProject(scan, companionValueColumn, s, cat, mode), pred, true
 	}
@@ -1285,9 +1276,9 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// For the `_bucket` companion path the fan-out is more involved —
 	// arrayJoin over BucketCounts × ExplicitBounds produces N+1 rows per
 	// source row with the synthetic `le` label baked into Attributes.
-	// Any user-supplied `le` matcher applies AFTER the fan-out as an
-	// outer Filter on `Attributes['le']` (the column doesn't exist on
-	// the raw scan row).
+	// Any user-supplied `le` matcher narrows each row's synthesised
+	// bucket pairs before arrayJoin (the label doesn't exist on the raw
+	// scan row).
 	staleMode := ctx.staleMarkerMode(s)
 	// Its one error is selectorAnchor's, which the anchor resolution below
 	// returns for the same selector anyway.

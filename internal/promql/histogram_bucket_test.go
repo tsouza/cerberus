@@ -2,8 +2,10 @@ package promql
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
 
@@ -84,9 +86,10 @@ func TestLower_HistogramBucket_RoutesToHistogramTable(t *testing.T) {
 				t.Fatalf("Emit: %v", err)
 			}
 			for _, want := range []string{
-				"arrayJoin(arrayEnumerate(`BucketCounts`))",
+				"arrayZip(arrayMap(le_idx -> ",
+				"arrayEnumerate(`BucketCounts`)",
 				"mapConcat(`Attributes`, map(",
-				"arraySlice(`BucketCounts`",
+				"arrayCumSum(`BucketCounts`)",
 				"if((le_idx > length(`ExplicitBounds`))",
 			} {
 				if !strings.Contains(sql, want) {
@@ -137,8 +140,8 @@ func TestLower_HistogramBucket_NoHistogramTable(t *testing.T) {
 // TestLower_HistogramBucket_EmittedShape_CumulativeAndPlusInf pins the
 // emitted plan's bucket fan-out expressions structurally — the `le`
 // label is built from `if(le_idx > length(ExplicitBounds), '+Inf',
-// toString(ExplicitBounds[le_idx]))` and the cumulative count is
-// `toFloat64(arraySum(arraySlice(BucketCounts, 1, le_idx)))`. The
+// <Prometheus spelling of ExplicitBounds[le_idx]>)` and the cumulative count from
+// `arrayMap(c -> toFloat64(c), arrayCumSum(BucketCounts))`. The
 // Prom wire-shape contract for `_bucket` series requires both: the
 // trailing `+Inf` bucket, and CUMULATIVE counts (per Prom's
 // classic-histogram convention) — OTel-CH stores per-bucket counts.
@@ -178,11 +181,11 @@ func TestLower_HistogramBucket_EmittedShape_CumulativeAndPlusInf(t *testing.T) {
 	if strings.Contains(sql, "toString(`ExplicitBounds`[le_idx])") {
 		t.Errorf("emitted SQL spells `le` with ClickHouse's toString; Prometheus stamps it with strconv.FormatFloat(bound, 'f', -1, 64)\nSQL: %s", sql)
 	}
-	// Pin the cumulative-count Value expression. `arraySlice(arr, 1, n)`
-	// returns the first n elements; `arraySum` of that gives the
+	// Pin the cumulative-count Value expression. Element n of
+	// `arrayCumSum(arr)` is the sum of the first n elements: the
 	// cumulative count for observations with value ≤ the bucket's upper
 	// edge — matching Prom's `_bucket{le=X}` cumulative-counter shape.
-	if !strings.Contains(sql, "toFloat64(arraySum(arraySlice(`BucketCounts`, ?, le_idx)))") {
+	if !strings.Contains(sql, "arrayMap(c -> toFloat64(c), arrayCumSum(`BucketCounts`))") {
 		t.Errorf("emitted SQL missing cumulative-count expression\nSQL: %s", sql)
 	}
 }
@@ -238,32 +241,305 @@ func TestLower_HistogramBucket_PlanShape(t *testing.T) {
 	}
 
 	// The canonical Project's Input must itself be a Project (the
-	// arrayJoin fan-out layer). That inner Project must reference
-	// `arrayJoin(arrayEnumerate(BucketCounts))` aliased as `le_idx`.
+	// arrayJoin fan-out layer), and isClassicBucketFanoutProject must
+	// recognise it: its `arrayJoin(arrayZip(...)) AS le_pair` projection
+	// zips the per-bucket `le` strings with the cumulative counts.
 	inner, ok := canonical.Input.(*chplan.Project)
 	if !ok {
 		t.Fatalf("canonical Project Input is %T; want *chplan.Project (the fan-out layer)", canonical.Input)
 	}
-	found := false
-	for _, proj := range inner.Projections {
-		if proj.Alias != bucketIdxAlias {
-			continue
-		}
-		fc, ok := proj.Expr.(*chplan.FuncCall)
-		if !ok || fc.Fn != chplan.FnArrayJoin {
-			continue
-		}
-		if len(fc.Args) != 1 {
-			continue
-		}
-		inner2, ok := fc.Args[0].(*chplan.FuncCall)
-		if !ok || inner2.Fn != chplan.FnArrayEnumerate {
-			continue
-		}
-		found = true
-		break
-	}
+	found := isClassicBucketFanoutProject(inner, s)
 	if !found {
-		t.Fatalf("fan-out Project has no arrayJoin(arrayEnumerate(BucketCounts)) AS le_idx projection: %+v", inner.Projections)
+		t.Fatalf("fan-out Project has no arrayJoin(arrayZip(...)) AS le_pair projection over BucketCounts: %+v", inner.Projections)
+	}
+}
+
+// TestLower_HistogramBucket_InstantSelectionIsNotRowSorted pins the memory
+// shape of an instant `_bucket` selection, the input histogram_quantile's
+// float-domain reassembly reads under arithmetic such as `m_bucket * 2`.
+// Two things there grow with every histogram row the selection reads:
+//
+//   - the stale-marker layout's per-series bound union, which must come
+//     from an aggregate rather than a window function, because ClickHouse
+//     evaluates a window by sorting every input row with all its columns;
+//   - the fan-out's arrayJoin, which copies every column of the row it
+//     expands, so the fanned rows must not carry the bucket arrays.
+//
+// Both are checked in instant and range mode.
+func TestLower_HistogramBucket_InstantSelectionIsNotRowSorted(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+	// An established Flags column is what turns the stale-marker layout on.
+	s.FlagsColumnProbed = true
+	if s.StaleMarkerFlagsColumn() == "" {
+		t.Fatal("the default schema names no Flags column, so the stale-marker layout cannot be built")
+	}
+	expr, err := parser.NewParser(parser.Options{}).ParseExpr(`histogram_quantile(0.9, http_server_request_duration_bucket * 2)`)
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	end := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	instant, err := LowerAt(context.Background(), expr, s, end, end)
+	if err != nil {
+		t.Fatalf("LowerAt: %v", err)
+	}
+	ranged, err := LowerAtRange(context.Background(), expr, s, end.Add(-6*time.Hour), end, time.Minute)
+	if err != nil {
+		t.Fatalf("LowerAtRange: %v", err)
+	}
+	bucketArrays := []string{s.ExplicitBoundsColumn, s.BucketCountsColumn, staleLayoutBoundsAlias, staleLayoutCountsAlias}
+	for mode, plan := range map[string]chplan.Node{"instant": instant, "range": ranged} {
+		sql, _, err := chsql.Emit(context.Background(), plan)
+		if err != nil {
+			t.Fatalf("%s: Emit: %v", mode, err)
+		}
+		if strings.Contains(sql, " OVER (") {
+			t.Errorf("%s: emitted SQL evaluates a window function:\n%s", mode, sql)
+		}
+		if !strings.Contains(sql, staleLayoutCountsAlias) {
+			t.Fatalf("%s: emitted SQL builds no stale-marker layout, so the check below proves nothing:\n%s", mode, sql)
+		}
+		fanouts := 0
+		chplan.Walk(plan, func(n chplan.Node) bool {
+			p, ok := n.(*chplan.Project)
+			if !ok || !slices.ContainsFunc(p.Projections, func(pr chplan.Projection) bool { return pr.Alias == bucketPairAlias }) {
+				return true
+			}
+			fanouts++
+			for _, pr := range p.Projections {
+				if slices.Contains(bucketArrays, pr.Alias) {
+					t.Errorf("%s: the bucket fan-out carries %s through its arrayJoin", mode, pr.Alias)
+				}
+			}
+			return true
+		})
+		if fanouts != 1 {
+			t.Errorf("%s: found %d bucket fan-outs, want 1", mode, fanouts)
+		}
+	}
+}
+
+// TestLower_HistogramBucket_LeMatcherNarrowsPairsBeforeArrayJoin pins where
+// an `le` matcher on a `_bucket` selection is applied: to each histogram
+// row's zipped `(le, cumulative count)` pairs, inside the arrayJoin, so the
+// fan-out only ever expands the buckets the matcher selects. A Filter on the
+// synthesised `Attributes['le']` above the fan-out answers the same rows but
+// materialises every bucket of every row first.
+func TestLower_HistogramBucket_LeMatcherNarrowsPairsBeforeArrayJoin(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		query string
+		flags bool
+		want  []leTest
+	}{
+		{name: "equality", query: `http_server_request_duration_bucket{le="0.5"}`, want: []leTest{{chplan.OpEq, "0.5"}}},
+		{
+			name:  "regex_and_negations",
+			query: `http_server_request_duration_bucket{le=~"0.5|1|2", le!="+Inf", le!~"2"}`,
+			want:  []leTest{{chplan.OpMatch, "0.5|1|2"}, {chplan.OpNe, "+Inf"}, {chplan.OpNotMatch, "2"}},
+		},
+		{name: "stale_marker_layout", query: `http_server_request_duration_bucket{le="2"}`, flags: true, want: []leTest{{chplan.OpEq, "2"}}},
+		{name: "regex_name", query: `{__name__=~"http_server_request_duration_bucket", le="0.5"}`, want: []leTest{{chplan.OpEq, "0.5"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := schema.DefaultOTelMetrics()
+			s.FlagsColumnProbed = tc.flags
+			expr, err := parser.NewParser(parser.Options{}).ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
+			}
+			plan, err := Lower(context.Background(), expr, s)
+			if err != nil {
+				t.Fatalf("Lower(%q): %v", tc.query, err)
+			}
+			fanouts := 0
+			chplan.Walk(plan, func(n chplan.Node) bool {
+				switch n := n.(type) {
+				case *chplan.Filter:
+					// The regex-name union's gauge / sum arm reads a stored
+					// `le` attribute off its own scan, which is correct; only a
+					// Filter over the fan-out reads the synthesised one.
+					if !containsBucketFanout(n.Input) {
+						return true
+					}
+					chplan.InspectExpr(n.Predicate, func(e chplan.Expr) bool {
+						if m, ok := e.(*chplan.MapAccess); ok {
+							if key, ok := m.Key.(*chplan.LitString); ok && key.V == bucketBoundLabel {
+								t.Errorf("a Filter reads the synthesised %q label after the fan-out", bucketBoundLabel)
+							}
+						}
+						return true
+					})
+				case *chplan.Project:
+					for _, pr := range n.Projections {
+						if pr.Alias != bucketPairAlias {
+							continue
+						}
+						fanouts++
+						join, ok := pr.Expr.(*chplan.FuncCall)
+						if !ok || join.Fn != chplan.FnArrayJoin || len(join.Args) != 1 {
+							t.Fatalf("%s is not an arrayJoin: %#v", bucketPairAlias, pr.Expr)
+						}
+						keep, ok := join.Args[0].(*chplan.FuncCall)
+						if !ok || keep.Fn != chplan.FnArrayFilter || len(keep.Args) != 2 {
+							t.Fatalf("the arrayJoin expands unfiltered pairs: %#v", join.Args[0])
+						}
+						if zip, ok := keep.Args[1].(*chplan.FuncCall); !ok || zip.Fn != chplan.FnArrayZip {
+							t.Fatalf("the arrayFilter does not narrow the zipped pairs: %#v", keep.Args[1])
+						}
+						lambda, ok := keep.Args[0].(*chplan.Lambda)
+						if !ok || len(lambda.Params) != 1 {
+							t.Fatalf("the pair filter is not a one-parameter lambda: %#v", keep.Args[0])
+						}
+						if got := pairTests(t, lambda.Body, lambda.Params[0]); !slices.Equal(got, tc.want) {
+							t.Errorf("the pair filter tests %v, want %v ANDed", got, tc.want)
+						}
+						if !tc.flags && !isClassicBucketFanoutProject(n, s) {
+							t.Errorf("isClassicBucketFanoutProject does not recognise the narrowed fan-out")
+						}
+					}
+				}
+				return true
+			})
+			if fanouts != 1 {
+				t.Errorf("found %d bucket fan-outs, want 1", fanouts)
+			}
+		})
+	}
+}
+
+// containsBucketFanout reports whether the plan below n holds the bucket
+// fan-out Project.
+func containsBucketFanout(n chplan.Node) bool {
+	found := false
+	chplan.Walk(n, func(n chplan.Node) bool {
+		if p, ok := n.(*chplan.Project); ok && slices.ContainsFunc(p.Projections, func(pr chplan.Projection) bool { return pr.Alias == bucketPairAlias }) {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
+// leTest is one `le` comparison the fan-out's pair filter applies.
+type leTest struct {
+	op    chplan.BinaryOp
+	value string
+}
+
+// pairTests flattens an AND fold of comparisons, each of which must test
+// the `le` element of the lambda parameter param against a string literal.
+func pairTests(t *testing.T, body chplan.Expr, param string) []leTest {
+	t.Helper()
+	b, ok := body.(*chplan.Binary)
+	if !ok {
+		t.Fatalf("the pair filter body is not a comparison: %#v", body)
+	}
+	if b.Op == chplan.OpAnd {
+		return append(pairTests(t, b.Left, param), pairTests(t, b.Right, param)...)
+	}
+	elem, ok := b.Left.(*chplan.FuncCall)
+	if !ok || elem.Fn != chplan.FnTupleElement || len(elem.Args) != 2 {
+		t.Fatalf("the pair filter compares %#v, not a pair element", b.Left)
+	}
+	if id, ok := elem.Args[0].(*chplan.BareIdent); !ok || id.Name != param {
+		t.Errorf("the pair filter reads %#v, not its parameter %q", elem.Args[0], param)
+	}
+	if pos, ok := elem.Args[1].(*chplan.LitInt); !ok || pos.V != bucketPairLe {
+		t.Errorf("the pair filter reads pair element %#v, want the le element %d", elem.Args[1], bucketPairLe)
+	}
+	lit, ok := b.Right.(*chplan.LitString)
+	if !ok {
+		t.Fatalf("the pair filter compares against %#v, not a string literal", b.Right)
+	}
+	return []leTest{{b.Op, lit.V}}
+}
+
+// TestIsClassicBucketFanoutProject_RejectsNearMisses pins every guard of
+// the fan-out recogniser: starting from a real fan-out, each case breaks
+// exactly one part of the `arrayJoin([arrayFilter(...,] arrayZip(arrayMap(
+// ..., arrayEnumerate(BucketCounts)), ...)[)])` shape, and the recogniser
+// must refuse it, while the untouched fan-out, with and without an `le`
+// pair filter, is recognised.
+func TestIsClassicBucketFanoutProject_RejectsNearMisses(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+	join := func(p *chplan.Project) *chplan.FuncCall {
+		for _, pr := range p.Projections {
+			if pr.Alias == bucketPairAlias {
+				return pr.Expr.(*chplan.FuncCall)
+			}
+		}
+		t.Fatal("the fan-out has no le_pair projection")
+		return nil
+	}
+	zip := func(p *chplan.Project) *chplan.FuncCall {
+		inner := join(p).Args[0].(*chplan.FuncCall)
+		if inner.Fn == chplan.FnArrayFilter {
+			inner = inner.Args[1].(*chplan.FuncCall)
+		}
+		return inner
+	}
+	les := func(p *chplan.Project) *chplan.FuncCall { return zip(p).Args[0].(*chplan.FuncCall) }
+	enumerate := func(p *chplan.Project) *chplan.FuncCall { return les(p).Args[1].(*chplan.FuncCall) }
+	other := &chplan.FuncCall{Fn: chplan.FnArrayConcat}
+	cases := []struct {
+		name  string
+		query string
+		edit  func(p *chplan.Project)
+		want  bool
+	}{
+		{name: "fan-out", query: `http_server_request_duration_bucket`, edit: func(*chplan.Project) {}, want: true},
+		{name: "le-filtered fan-out", query: `http_server_request_duration_bucket{le="2"}`, edit: func(*chplan.Project) {}, want: true},
+		{name: "not arrayJoin", query: `http_server_request_duration_bucket`, edit: func(p *chplan.Project) { join(p).Fn = chplan.FnArrayFlatten }},
+		{name: "arrayJoin with two arguments", query: `http_server_request_duration_bucket`, edit: func(p *chplan.Project) {
+			j := join(p)
+			j.Args = append(j.Args, other)
+		}},
+		{name: "pairs not zipped", query: `http_server_request_duration_bucket`, edit: func(p *chplan.Project) { zip(p).Fn = chplan.FnArrayConcat }},
+		{name: "filtered pairs not zipped", query: `http_server_request_duration_bucket{le="2"}`, edit: func(p *chplan.Project) { zip(p).Fn = chplan.FnArrayConcat }},
+		{name: "le strings not mapped", query: `http_server_request_duration_bucket`, edit: func(p *chplan.Project) { les(p).Fn = chplan.FnArrayFilter }},
+		{name: "le map with three arguments", query: `http_server_request_duration_bucket`, edit: func(p *chplan.Project) {
+			l := les(p)
+			l.Args = append(l.Args, other)
+		}},
+		{name: "indices not enumerated", query: `http_server_request_duration_bucket`, edit: func(p *chplan.Project) { enumerate(p).Fn = chplan.FnArrayCumSum }},
+		{name: "enumerate with two arguments", query: `http_server_request_duration_bucket`, edit: func(p *chplan.Project) {
+			e := enumerate(p)
+			e.Args = append(e.Args, other)
+		}},
+		{name: "enumerates another column", query: `http_server_request_duration_bucket`, edit: func(p *chplan.Project) {
+			enumerate(p).Args[0] = &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := parser.NewParser(parser.Options{}).ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
+			}
+			plan, err := Lower(context.Background(), expr, s)
+			if err != nil {
+				t.Fatalf("Lower(%q): %v", tc.query, err)
+			}
+			var fanout *chplan.Project
+			chplan.Walk(plan, func(n chplan.Node) bool {
+				if p, ok := n.(*chplan.Project); ok && fanout == nil && slices.ContainsFunc(p.Projections, func(pr chplan.Projection) bool { return pr.Alias == bucketPairAlias }) {
+					fanout = p
+				}
+				return fanout == nil
+			})
+			if fanout == nil {
+				t.Fatalf("%q lowers to no bucket fan-out", tc.query)
+			}
+			tc.edit(fanout)
+			if got := isClassicBucketFanoutProject(fanout, s); got != tc.want {
+				t.Errorf("isClassicBucketFanoutProject = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

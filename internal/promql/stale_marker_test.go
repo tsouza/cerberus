@@ -137,12 +137,12 @@ func TestStaleMarkers_MetadataIgnoresFlags(t *testing.T) {
 }
 
 // TestStaleMarkers_BucketLayoutIsTimeBounded pins the scan contract of the
-// `_bucket` stale-marker layout window: on every instant-selection shape
-// the window's input is filtered on the timestamp from both sides — beneath
-// the window, where ClickHouse can still prune on it — and the window
-// aggregate is the flat `groupUniqArrayArray`, never a per-row
-// `groupArray` of every array in the partition. For a range-mode subquery
-// the bound is the subquery's widened input window.
+// `_bucket` stale-marker layout: on every instant-selection shape the
+// layout's input is filtered on the timestamp from both sides — beneath the
+// per-series aggregate, where ClickHouse can still prune on it — the
+// series' bound union is the flat `groupUniqArrayArray` of that aggregate,
+// and no window function evaluates it. For a range-mode subquery the bound
+// is the subquery's widened input window.
 func TestStaleMarkers_BucketLayoutIsTimeBounded(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -188,16 +188,28 @@ func TestStaleMarkers_BucketLayoutIsTimeBounded(t *testing.T) {
 			if err != nil {
 				t.Fatalf("lower %q: %v", tc.query, err)
 			}
-			layouts := 0
+			layouts, unions := 0, 0
 			chplan.Walk(plan, func(n chplan.Node) bool {
+				if agg, ok := n.(*chplan.Aggregate); ok {
+					for _, fn := range agg.AggFuncs {
+						if fn.Alias != staleLayoutUnionAlias {
+							continue
+						}
+						unions++
+						if fn.Fn != chplan.FnGroupUniqArrayArray {
+							t.Errorf("layout union aggregate is %s, want %s", fn.Fn, chplan.FnGroupUniqArrayArray)
+						}
+					}
+					return true
+				}
 				proj, ok := n.(*chplan.Project)
 				if !ok {
 					return true
 				}
 				for _, pr := range proj.Projections {
 					chplan.InspectExpr(pr.Expr, func(e chplan.Expr) bool {
-						if w, ok := e.(*chplan.WindowExpr); ok && w.Fn != chplan.FnGroupUniqArrayArray {
-							t.Errorf("layout window aggregate is %s, want %s", w.Fn, chplan.FnGroupUniqArrayArray)
+						if w, ok := e.(*chplan.WindowExpr); ok {
+							t.Errorf("plan evaluates a %s window function", w.Fn)
 						}
 						return true
 					})
@@ -223,6 +235,9 @@ func TestStaleMarkers_BucketLayoutIsTimeBounded(t *testing.T) {
 			})
 			if layouts == 0 {
 				t.Fatalf("no time-bounded stale-marker layout in the plan of %q", tc.query)
+			}
+			if unions != layouts {
+				t.Errorf("found %d layout union aggregates for %d layouts", unions, layouts)
 			}
 		})
 	}
