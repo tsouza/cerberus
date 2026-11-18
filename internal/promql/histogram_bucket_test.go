@@ -328,15 +328,19 @@ func TestLower_HistogramBucket_InstantSelectionIsNotRowSorted(t *testing.T) {
 func TestLower_HistogramBucket_LeMatcherNarrowsPairsBeforeArrayJoin(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name   string
-		query  string
-		flags  bool
-		values []string
+		name  string
+		query string
+		flags bool
+		want  []leTest
 	}{
-		{name: "equality", query: `http_server_request_duration_bucket{le="0.5"}`, values: []string{"0.5"}},
-		{name: "regex_and_negation", query: `http_server_request_duration_bucket{le=~"0.5|1", le!="+Inf"}`, values: []string{"0.5|1", "+Inf"}},
-		{name: "stale_marker_layout", query: `http_server_request_duration_bucket{le="2"}`, flags: true, values: []string{"2"}},
-		{name: "regex_name", query: `{__name__=~"http_server_request_duration_bucket", le="0.5"}`, values: []string{"0.5"}},
+		{name: "equality", query: `http_server_request_duration_bucket{le="0.5"}`, want: []leTest{{chplan.OpEq, "0.5"}}},
+		{
+			name:  "regex_and_negations",
+			query: `http_server_request_duration_bucket{le=~"0.5|1|2", le!="+Inf", le!~"2"}`,
+			want:  []leTest{{chplan.OpMatch, "0.5|1|2"}, {chplan.OpNe, "+Inf"}, {chplan.OpNotMatch, "2"}},
+		},
+		{name: "stale_marker_layout", query: `http_server_request_duration_bucket{le="2"}`, flags: true, want: []leTest{{chplan.OpEq, "2"}}},
+		{name: "regex_name", query: `{__name__=~"http_server_request_duration_bucket", le="0.5"}`, want: []leTest{{chplan.OpEq, "0.5"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -386,17 +390,12 @@ func TestLower_HistogramBucket_LeMatcherNarrowsPairsBeforeArrayJoin(t *testing.T
 						if zip, ok := keep.Args[1].(*chplan.FuncCall); !ok || zip.Fn != chplan.FnArrayZip {
 							t.Fatalf("the arrayFilter does not narrow the zipped pairs: %#v", keep.Args[1])
 						}
-						var seen []string
-						chplan.InspectExpr(keep.Args[0], func(e chplan.Expr) bool {
-							if lit, ok := e.(*chplan.LitString); ok {
-								seen = append(seen, lit.V)
-							}
-							return true
-						})
-						for _, v := range tc.values {
-							if !slices.Contains(seen, v) {
-								t.Errorf("the pair filter does not test le against %q (tests %q)", v, seen)
-							}
+						lambda, ok := keep.Args[0].(*chplan.Lambda)
+						if !ok || len(lambda.Params) != 1 {
+							t.Fatalf("the pair filter is not a one-parameter lambda: %#v", keep.Args[0])
+						}
+						if got := pairTests(t, lambda.Body, lambda.Params[0]); !slices.Equal(got, tc.want) {
+							t.Errorf("the pair filter tests %v, want %v ANDed", got, tc.want)
 						}
 						if !tc.flags && !isClassicBucketFanoutProject(n, s) {
 							t.Errorf("isClassicBucketFanoutProject does not recognise the narrowed fan-out")
@@ -423,4 +422,38 @@ func containsBucketFanout(n chplan.Node) bool {
 		return !found
 	})
 	return found
+}
+
+// leTest is one `le` comparison the fan-out's pair filter applies.
+type leTest struct {
+	op    chplan.BinaryOp
+	value string
+}
+
+// pairTests flattens an AND fold of comparisons, each of which must test
+// the `le` element of the lambda parameter param against a string literal.
+func pairTests(t *testing.T, body chplan.Expr, param string) []leTest {
+	t.Helper()
+	b, ok := body.(*chplan.Binary)
+	if !ok {
+		t.Fatalf("the pair filter body is not a comparison: %#v", body)
+	}
+	if b.Op == chplan.OpAnd {
+		return append(pairTests(t, b.Left, param), pairTests(t, b.Right, param)...)
+	}
+	elem, ok := b.Left.(*chplan.FuncCall)
+	if !ok || elem.Fn != chplan.FnTupleElement || len(elem.Args) != 2 {
+		t.Fatalf("the pair filter compares %#v, not a pair element", b.Left)
+	}
+	if id, ok := elem.Args[0].(*chplan.BareIdent); !ok || id.Name != param {
+		t.Errorf("the pair filter reads %#v, not its parameter %q", elem.Args[0], param)
+	}
+	if pos, ok := elem.Args[1].(*chplan.LitInt); !ok || pos.V != bucketPairLe {
+		t.Errorf("the pair filter reads pair element %#v, want the le element %d", elem.Args[1], bucketPairLe)
+	}
+	lit, ok := b.Right.(*chplan.LitString)
+	if !ok {
+		t.Fatalf("the pair filter compares against %#v, not a string literal", b.Right)
+	}
+	return []leTest{{b.Op, lit.V}}
 }

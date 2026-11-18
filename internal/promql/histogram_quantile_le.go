@@ -135,23 +135,8 @@ func classicBucketLeRestriction(input chplan.Node, leMatchers []*labels.Matcher,
 	}
 
 	// lePred(i) ANDs every `le` matcher against the position-`i` bucket's
-	// synthesised le string — matchOp covers all four labels.MatchType
-	// values (=, !=, =~, !~), same routing matcherToExpr uses for every
-	// other label. Regex values are passed through as-is: the chsql
-	// emitter's anchoredRegexPattern (builder.go, #1741) wraps every
-	// chplan.OpMatch/OpNotMatch pattern with `^(?:...)$` at the one SQL
-	// emission site both render paths share, so an unanchored "1" here
-	// would still only match bucket "1", never "0.1" or "21" — wrapping
-	// again here would double-anchor to `^(?:^(?:1)$)$`.
-	var lePred chplan.Expr
-	for _, m := range leMatchers {
-		cmp := &chplan.Binary{
-			Op:    matchOp(m.Type),
-			Left:  classicBucketLeStringExpr(&chplan.BareIdent{Name: "i"}, eb),
-			Right: &chplan.LitString{V: m.Value},
-		}
-		lePred = andExpr(lePred, cmp)
-	}
+	// synthesised le string ([leMatchersPredicate]).
+	lePred := leMatchersPredicate(leMatchers, classicBucketLeStringExpr(&chplan.BareIdent{Name: "i"}, eb))
 
 	// keptIdx = the 1-based bucket positions the `le` matcher set selects,
 	// in ascending order (arrayFilter preserves source order).

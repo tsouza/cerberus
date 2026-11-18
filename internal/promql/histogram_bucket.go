@@ -110,11 +110,13 @@ func splitBucketMatchers(matchers []*labels.Matcher, bareName string) (scanMatch
 //
 //	Project [MetricName='<base>_bucket', Attributes+le, TimeUnix, Value]
 //	  Project [MetricName, Attributes, TimeUnix,
-//	           arrayJoin(arrayZip(le strings, cumulative counts)) AS le_pair]
+//	           arrayJoin([arrayFilter(<le matchers>,]
+//	                     arrayZip(le strings, cumulative counts)[)]) AS le_pair]
 //	    Scan(otel_metrics_histogram)
 //
 // The inner arrayJoin fans the row into one `(le, cumulative count)` pair
-// per bucket; the outer Project rewrites the canonical Sample columns from
+// per bucket — per selected bucket when the selector carries `le`
+// matchers ([keepBucketPairs]); the outer Project rewrites the canonical Sample columns from
 // the fanned pair. CH's `arrayJoin` in a SELECT position is the lateral
 // fan-out idiom — equivalent to an ARRAY JOIN clause but expressed at the
 // expression level so we can reuse the existing Project node without
@@ -287,19 +289,11 @@ const bucketPairCandidateParam = "le_candidate"
 // expands only the selected buckets instead of fanning every bucket and
 // discarding most of the rows afterwards. Multiple matchers AND together,
 // as PromQL's do for repeated matchers on one label. Regex values pass
-// through as-is: the emitter anchors every OpMatch / OpNotMatch pattern.
 // Returns pairs unchanged when there is no `le` matcher.
 func keepBucketPairs(pairs chplan.Expr, leMatchers []*labels.Matcher) chplan.Expr {
-	var keep chplan.Expr
-	for _, m := range leMatchers {
-		keep = andExpr(keep, &chplan.Binary{
-			Op: matchOp(m.Type),
-			Left: &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{
-				&chplan.BareIdent{Name: bucketPairCandidateParam}, &chplan.LitInt{V: bucketPairLe},
-			}},
-			Right: &chplan.LitString{V: m.Value},
-		})
-	}
+	keep := leMatchersPredicate(leMatchers, &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{
+		&chplan.BareIdent{Name: bucketPairCandidateParam}, &chplan.LitInt{V: bucketPairLe},
+	}})
 	if keep == nil {
 		return pairs
 	}
@@ -307,6 +301,22 @@ func keepBucketPairs(pairs chplan.Expr, leMatchers []*labels.Matcher) chplan.Exp
 		&chplan.Lambda{Params: []string{bucketPairCandidateParam}, Body: keep},
 		pairs,
 	}}
+}
+
+// leMatchersPredicate ANDs every `le` matcher against bound, the
+// synthesised `le` string of one bucket, as PromQL ANDs repeated matchers
+// on one label; nil when there is no matcher. matchOp covers all four
+// labels.MatchType values. Regex values pass through as-is: the chsql
+// emitter's anchoredRegexPattern wraps every OpMatch / OpNotMatch pattern
+// in `^(?:...)$`, so an unanchored "1" only ever matches bucket "1", never
+// "0.1" or "21". Both bucket consumers — the fan-out's pair filter and
+// histogram_quantile's ladder restriction — select buckets through it.
+func leMatchersPredicate(leMatchers []*labels.Matcher, bound chplan.Expr) chplan.Expr {
+	var pred chplan.Expr
+	for _, m := range leMatchers {
+		pred = andExpr(pred, &chplan.Binary{Op: matchOp(m.Type), Left: bound, Right: &chplan.LitString{V: m.Value}})
+	}
+	return pred
 }
 
 // isClassicBucketFanoutProject recognizes the row expansion produced above.
@@ -323,14 +333,14 @@ func isClassicBucketFanoutProject(p *chplan.Project, s schema.Metrics) bool {
 		if !ok || join.Fn != chplan.FnArrayJoin || len(join.Args) != 1 {
 			return false
 		}
-		zip, ok := join.Args[0].(*chplan.FuncCall)
-		if ok && zip.Fn == chplan.FnArrayFilter && len(zip.Args) == 2 {
-			zip, ok = zip.Args[1].(*chplan.FuncCall)
+		pairs, ok := join.Args[0].(*chplan.FuncCall)
+		if ok && pairs.Fn == chplan.FnArrayFilter && len(pairs.Args) == 2 {
+			pairs, ok = pairs.Args[1].(*chplan.FuncCall)
 		}
-		if !ok || zip.Fn != chplan.FnArrayZip || len(zip.Args) == 0 {
+		if !ok || pairs.Fn != chplan.FnArrayZip || len(pairs.Args) == 0 {
 			return false
 		}
-		les, ok := zip.Args[0].(*chplan.FuncCall)
+		les, ok := pairs.Args[0].(*chplan.FuncCall)
 		if !ok || les.Fn != chplan.FnArrayMap || len(les.Args) != 2 {
 			return false
 		}
