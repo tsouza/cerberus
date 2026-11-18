@@ -170,6 +170,8 @@ func TestLowerGroupKey_MaterializedAttributeReads(t *testing.T) {
 		{`{ } >> { } | by(span.rpc.method)`, []string{""}},
 		// A key that compares keeps the numeric column its comparison reads.
 		{`{ } | by(span.http.status_code > 400)`, []string{"__cerberus_materialized_http.status_code"}},
+		// Over rows that do not carry the column, it reads the map instead.
+		{`{ } >> { } | by(span.http.status_code > 400)`, []string{""}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.query, func(t *testing.T) {

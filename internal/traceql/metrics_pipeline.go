@@ -87,7 +87,7 @@ func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s sc
 		return nil, err
 	}
 
-	attr, nullable, err := metricsAggregateAttr(op, agg.Attribute(), s)
+	attr, nullable, err := metricsAggregateAttr(op, agg.Attribute(), materializedCarriedBy(prev.RowType(), s))
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +155,7 @@ func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s sc
 // — so we just unwrap the accessor fields and produce the same
 // chplan.MetricsAggregate node.
 func lowerAverageOverTime(prev chplan.Node, agg *traceql.AverageOverTimeAggregator, s schema.Traces) (chplan.Node, error) {
-	attr, nullable, err := metricsAggregateAttr(traceql.MetricsAggregateAvgOverTime, agg.Attribute(), s)
+	attr, nullable, err := metricsAggregateAttr(traceql.MetricsAggregateAvgOverTime, agg.Attribute(), materializedCarriedBy(prev.RowType(), s))
 	if err != nil {
 		return nil, err
 	}
@@ -351,7 +351,7 @@ func lowerMetricsHistogramOverTime(prev chplan.Node, agg *traceql.MetricsAggrega
 	if attr == (traceql.Attribute{}) {
 		return nil, fmt.Errorf("traceql: histogram_over_time requires an attribute operand")
 	}
-	attrExpr, err := lowerAttribute(attr, s)
+	attrExpr, err := lowerAttribute(attr, materializedCarriedBy(prev.RowType(), s))
 	if err != nil {
 		return nil, err
 	}

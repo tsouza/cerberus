@@ -86,7 +86,7 @@ const (
 // correct the case where the arbitrarily-`any()`-picked row isn't
 // actually the trace's root (see anyAggFunc's doc comment, issue #1481).
 func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, s schema.Traces) (chplan.Node, error) {
-	leaf, err := scalarAggLeaf(agg, s, aggValueAlias)
+	leaf, err := scalarAggLeaf(agg, materializedCarriedBy(prev.RowType(), s), aggValueAlias)
 	if err != nil {
 		return nil, err
 	}

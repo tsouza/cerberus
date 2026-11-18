@@ -30,7 +30,8 @@ import (
 // attribute columns in their production shape (internal/schema/ddl's
 // renderAddMaterializedAttrColumns): String keys as LowCardinality(String)
 // DEFAULT <map>[key], http.status_code as Nullable(Int32) DEFAULT
-// toInt32OrNull(<map>[key]).
+// toInt32OrNull(<map>[key]). ServiceName is the OTel-CH exporter's own
+// column, derived here from the resource map the seeds write.
 const materializedSelectDDL = `CREATE TABLE otel_traces (
     TraceId String,
     SpanId String,
@@ -43,6 +44,7 @@ const materializedSelectDDL = `CREATE TABLE otel_traces (
     StatusMessage String,
     ScopeName String,
     ScopeVersion String,
+    ServiceName LowCardinality(String) DEFAULT ResourceAttributes['service.name'],
     SpanAttributes Map(String, String),
     ResourceAttributes Map(String, String),
     ` + "`__cerberus_materialized_rpc.method`" + ` LowCardinality(String) DEFAULT SpanAttributes['rpc.method'],
@@ -363,25 +365,41 @@ func TestMetricsByNumericMaterializedKey_ChDB(t *testing.T) {
 	})
 }
 
-// TestMetricsByMaterializedKeyPastClosedRows_ChDB groups a metrics query by
-// a materialized attribute over the structural-join span envelope, which
-// carries the attribute maps but no materialized column. The group key must
-// read the attribute map there, and the answer must equal the map-only one.
-func TestMetricsByMaterializedKeyPastClosedRows_ChDB(t *testing.T) {
+// TestMaterializedAttributeReadsPastClosedRows_ChDB reads a materialized
+// attribute in each stage that can follow a structural operator: a metrics
+// by() key, a metrics function's operand, a compare() selection, a search
+// by() key that compares, and a spanset aggregate. The structural-join span
+// envelope carries the attribute maps but no materialized column, so each
+// read must go through the attribute map, and the answer must equal the
+// map-only one.
+func TestMaterializedAttributeReadsPastClosedRows_ChDB(t *testing.T) {
 	materialized := newMaterializedServer(t, true, materializedSelectSeed)
 	mapOnly := newMaterializedServer(t, false, materializedSelectSeed)
-	path := func(q string) string {
+	metrics := func(q string) string {
 		return "/api/metrics/query_range?" + url.Values{
 			"q": {q}, "start": {"1777633200"}, "end": {"1777636800"}, "step": {"3600s"},
 		}.Encode()
 	}
-	for _, tc := range []struct{ query, carries string }{
-		{`{ } >> { } | rate() by (span.rpc.method)`, "ChildA"},
-		{`{ kind = server } >> { kind = client } | count_over_time() by (span.http.status_code)`, "503"},
+	search := func(q string) string {
+		return "/api/search?q=" + url.QueryEscape(q) + "&start=1777593600&end=1777680000&limit=20&spss=20"
+	}
+	for _, tc := range []struct {
+		query   string
+		path    func(string) string
+		carries string // a grouped value, sample or matched trace the answer must hold
+	}{
+		{`{ } >> { } | rate() by (span.rpc.method)`, metrics, "ChildA"},
+		{`{ kind = server } >> { kind = client } | count_over_time() by (span.http.status_code)`, metrics, "503"},
+		{`{ kind = server } >> { kind = client } | max_over_time(span.http.status_code)`, metrics, `"value":503`},
+		{`{ kind = server } >> { kind = client } | quantile_over_time(span.http.status_code, .5)`, metrics, `"samples"`},
+		{`{ kind = server } >> { kind = client } | compare({ span.rpc.method = "ChildA" })`, metrics, "ChildA"},
+		{`{ } >> { } | by(span.rpc.method = "ChildA")`, search, "c0000000000000000000000000000001"},
+		{`{ } >> { } | by(span.http.status_code = 503)`, search, "c0000000000000000000000000000001"},
+		{`{ kind = server } >> { kind = client } | max(span.http.status_code) > 500`, search, "c0000000000000000000000000000001"},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
-			got := materializedAttributeBody(t, materialized, path(tc.query))
-			if want := materializedAttributeBody(t, mapOnly, path(tc.query)); got != want {
+			got := materializedAttributeBody(t, materialized, tc.path(tc.query))
+			if want := materializedAttributeBody(t, mapOnly, tc.path(tc.query)); got != want {
 				t.Errorf("materialized answer differs from the map-only answer\n materialized: %s\n map-only:     %s", got, want)
 			}
 			if !strings.Contains(got, tc.carries) {

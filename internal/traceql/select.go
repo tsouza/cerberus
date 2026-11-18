@@ -90,9 +90,10 @@ func readSelectedAttributesFrom(projections []chplan.Projection, row chplan.Sche
 //     (FieldAccess.MaterializedColumnNumeric) holds toInt32OrNull of the
 //     cell — NULL for a malformed value, and not the cell's own spelling. A
 //     group key read from it folds a malformed value into the absent one.
-//   - The column must be one of row's columns. An open row type is the
-//     span table itself — a Scan, under any Filter, trace-scoped lookup or
-//     nested-set annotation — which carries every column. A closed one
+//   - The column must be one of row's columns. An open row type carries
+//     every column of the span table: a Scan, under any Filter,
+//     trace-scoped lookup or nested-set annotation, and a set operation
+//     over two such arms. A closed one
 //     carries only the columns it names: the structural-join span envelope
 //     and a set operation's aligned arms name the attribute maps but no
 //     materialized column.
@@ -108,6 +109,39 @@ func readAttributeOutputFrom(e chplan.Expr, row chplan.Schema) {
 		}
 		return true
 	})
+}
+
+// materializedCarriedBy returns s with its materialized attribute
+// registries narrowed to the columns rows of type row carry. A stage that
+// lowers attribute reads over its input's rows lowers them with this
+// schema, so a read over a closed row type that does not carry the
+// materialized column (the structural-join span envelope, a set
+// operation's aligned arms) reads the attribute map from the start: the
+// numeric coercion a comparison or a metrics operand chooses then matches
+// the map's String cell. An open row type is the span table itself and
+// carries every column, so s is returned unchanged.
+func materializedCarriedBy(row chplan.Schema, s schema.Traces) schema.Traces {
+	if row.Open {
+		return s
+	}
+	s.MaterializedSpanAttributeColumns = carriedColumns(row, s.MaterializedSpanAttributeColumns)
+	s.MaterializedResourceAttributeColumns = carriedColumns(row, s.MaterializedResourceAttributeColumns)
+	return s
+}
+
+// carriedColumns returns the entries of registry (attribute key → column)
+// whose column is one of row's columns.
+func carriedColumns(row chplan.Schema, registry map[string]string) map[string]string {
+	if len(registry) == 0 {
+		return registry
+	}
+	carried := make(map[string]string, len(registry))
+	for key, column := range registry {
+		if _, ok := row.ByName(column); ok {
+			carried[key] = column
+		}
+	}
+	return carried
 }
 
 // selectsNestedSet reports whether any selected attribute is one of

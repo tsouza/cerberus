@@ -69,14 +69,15 @@ func lowerGroup(prev chplan.Node, g traceql.GroupOperation, s schema.Traces) (ch
 	// A key reading a trace-scoped intrinsic (`by(rootName)`,
 	// `by(rootName = name)`) groups by each span's own trace's value, joined
 	// onto the spans.
-	key, err := lowerFieldExpr(g.Expression, s)
+	// The key reads only the materialized columns the grouped rows carry
+	// (materializedCarriedBy). A bare attribute key is also the group's
+	// value, so a numeric-kind column in it is read through the attribute
+	// map as well (readAttributeOutputFrom). A key that compares or computes
+	// keeps the numeric column its comparison reads.
+	key, err := lowerFieldExpr(g.Expression, materializedCarriedBy(prev.RowType(), s))
 	if err != nil {
 		return nil, err
 	}
-	// A bare attribute key is the group's value, so a materialized read in
-	// it follows readAttributeOutputFrom: a numeric-kind column, or one the
-	// grouped rows do not carry, is read through the attribute map. A key
-	// that compares or computes keeps the operand types its lowering chose.
 	if _, bare := fieldExprAttribute(g.Expression); bare {
 		readAttributeOutputFrom(key, prev.RowType())
 	}
