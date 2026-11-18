@@ -2362,13 +2362,14 @@ const (
 	// FeatureCanonicalMapTypeCast casts every canonical series key — the
 	// mapSort-ordered label Map a GROUP BY, ORDER BY, PARTITION BY or match
 	// key binds to — back to the type ClickHouse parses from its operand's
-	// type name (chsql.SchemaStrategies.CanonicalMapTypeCast). Below 25.1
-	// mapSort returns a Map whose inner Tuple is unnamed, a type unequal to
-	// the one an aggregation or sort that spills reads its blocks back as,
-	// so without the cast a spilled GROUP BY over the key fails with
-	// TYPE_MISMATCH; from 25.1 mapSort returns the parsed type and the cast
-	// is the identity, so auto picks it only below 25.1 (Feature.AutoRange).
-	// Result-equivalent on every server.
+	// type name, and every mapConcat or mapApply result back to the type
+	// parsed from its own (chsql.SchemaStrategies.CanonicalMapTypeCast).
+	// Below 25.1 those functions return a Map whose inner Tuple is unnamed, a
+	// type unequal to the one an aggregation or sort that spills reads its
+	// blocks back as, so without the cast a spilled GROUP BY over such a Map
+	// fails with TYPE_MISMATCH; from 25.1 they return the parsed type and the
+	// cast is the identity, so auto picks it only below 25.1
+	// (Feature.AutoRange). Result-equivalent on every server.
 	FeatureCanonicalMapTypeCast = "canonical_map_type_cast"
 )
 
@@ -3032,9 +3033,9 @@ var registry = []Feature{
 		Stability:  Stable,
 		AutoSelect: true,
 		AutoRange:  VersionRange{Until: Version{Major: 25, Minor: 1}},
-		Doc: "cast the mapSort-ordered series key back to its operand's parsed type so a GROUP BY or sort over it " +
-			"that spills reads its blocks back (result-equivalent; auto picks it on server < 25.1, where mapSort " +
-			"returns a type the spilled read-back rejects)",
+		Doc: "cast the mapSort-ordered series key, and every mapConcat or mapApply result, back to its parsed type so " +
+			"a GROUP BY or sort over it that spills reads its blocks back (result-equivalent; auto picks it on server " +
+			"< 25.1, where those functions return a type the spilled read-back rejects)",
 	},
 }
 

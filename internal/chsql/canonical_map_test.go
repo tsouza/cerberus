@@ -124,3 +124,78 @@ func TestCanonicalMap_TypeCastReplaysOperandScans(t *testing.T) {
 		t.Fatalf("physical scans: bare=%d cast=%d, want 1 and 2", bare, cast)
 	}
 }
+
+func TestParsedMapType_FollowsStrategies(t *testing.T) {
+	t.Parallel()
+
+	merged := Call("mapConcat", Col("Attributes"), Call("map", Lit("le"), Col("le")))
+	bare, args := Render(ParsedMapType(merged))
+	if want := "mapConcat(`Attributes`, map(?, `le`))"; bare != want {
+		t.Errorf("zero strategies: rendered %q, want %q", bare, want)
+	}
+	if len(args) != 1 {
+		t.Errorf("zero strategies: bound %v, want one argument", args)
+	}
+	cast, args := Render(UnderSchemaStrategies(typeCastStrategies, ParsedMapType(merged)))
+	inner := "mapConcat(`Attributes`, map(?, `le`))"
+	if want := "CAST(" + inner + ", toTypeName(" + inner + "))"; cast != want {
+		t.Errorf("CanonicalMapTypeCast: rendered %q, want %q", cast, want)
+	}
+	if len(args) != 2 || args[0] != "le" || args[1] != "le" {
+		t.Errorf("CanonicalMapTypeCast: bound %v, want the operand's argument once per copy", args)
+	}
+}
+
+// Every plan-IR Map function in parsedMapTypeFns renders through
+// ParsedMapType, so the statement's strategies decide its cast; a Map
+// function that returns the parsed type renders bare under either.
+func TestExprParsedMapType_FollowsStrategies(t *testing.T) {
+	t.Parallel()
+
+	attrs := &chplan.ColumnRef{Name: "Attributes"}
+	le := &chplan.FuncCall{Fn: chplan.FnMap, Args: []chplan.Expr{&chplan.LitString{V: "le"}, &chplan.ColumnRef{Name: "le"}}}
+	identity := &chplan.Lambda{Params: []string{"k", "v"}, Body: &chplan.FuncCall{Fn: chplan.FnTuple, Args: []chplan.Expr{&chplan.ColumnRef{Name: "k"}, &chplan.ColumnRef{Name: "v"}}}}
+	cases := []struct {
+		name string
+		expr chplan.Expr
+		bare string
+		cast bool
+	}{
+		{"mapConcat", &chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{attrs, le}}, "mapConcat(`Attributes`, map(?, `le`))", true},
+		{"mapApply", &chplan.FuncCall{Fn: chplan.FnMapApply, Args: []chplan.Expr{identity, attrs}}, "mapApply((k, v) -> tuple(`k`, `v`), `Attributes`)", true},
+		{"mapUpdate", &chplan.FuncCall{Fn: chplan.FnMapUpdate, Args: []chplan.Expr{attrs, le}}, "mapUpdate(`Attributes`, map(?, `le`))", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			render := func(s SchemaStrategies) string {
+				sql, _ := Render(UnderSchemaStrategies(s, func(b *Builder) { _ = b.Expr(tc.expr) }))
+				return sql
+			}
+			if got := render(SchemaStrategies{}); got != tc.bare {
+				t.Errorf("zero strategies: rendered %q, want %q", got, tc.bare)
+			}
+			want := tc.bare
+			if tc.cast {
+				want = "CAST(" + tc.bare + ", toTypeName(" + tc.bare + "))"
+			}
+			if got := render(typeCastStrategies); got != want {
+				t.Errorf("CanonicalMapTypeCast: rendered %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// A canonical key over a mapConcat casts once: the key's own cast gives the
+// column the parsed type, so its operand renders without a second cast.
+func TestExprCanonicalMap_OperandCastOnce(t *testing.T) {
+	t.Parallel()
+
+	merged := &chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}, &chplan.ColumnRef{Name: "Extra"}}}
+	key := chplan.CanonicalAttributesExpr(merged)
+	sql, _ := Render(UnderSchemaStrategies(typeCastStrategies, func(b *Builder) { _ = b.Expr(key) }))
+	inner := "mapConcat(`Attributes`, `Extra`)"
+	if want := "CAST(mapSort(" + inner + "), toTypeName(" + inner + "))"; sql != want {
+		t.Errorf("rendered %q, want %q", sql, want)
+	}
+}

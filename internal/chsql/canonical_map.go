@@ -22,6 +22,18 @@ import (
 // header and the block agree. From 25.1 mapSort returns the parsed type
 // itself, and chopt.FeatureCanonicalMapTypeCast leaves the cast off there.
 //
+// Every Map function that derives its result type that way returns the
+// same unequal Map on those servers: mapConcat and mapApply among the ones
+// cerberus emits, as well as mapSort. mapFilter keeps its operand's type,
+// and mapUpdate, mapFromArrays and map() return the parsed type. Under the
+// same strategy, a mapConcat or mapApply result is cast back to its parsed
+// type wherever it is rendered ([ParsedMapType]): a bucket fan-out's
+// Attributes, merged with mapConcat, is the key of the range lookback's
+// GROUP BY, and a spilled block of that GROUP BY fails the same way. The
+// direct operand of a canonical key renders without that cast, because
+// the key's own cast already gives the column it feeds the parsed type,
+// and casting both would render the operand four times.
+//
 // The type comes from the operand rather than a literal, so a
 // LowCardinality key type, or any value type, passes through unchanged. The
 // operand appears twice rather than being named once by an inline alias:
@@ -40,6 +52,25 @@ func (b *Builder) exprCanonicalMap(args []chplan.Expr) error {
 	if len(args) != 1 {
 		return fmt.Errorf("%w: chplan.FnMapSort takes exactly one Map argument, got %d", ErrUnsupported, len(args))
 	}
-	CanonicalMap(func(b *Builder) { _ = b.Expr(args[0]) })(b)
+	var err error
+	CanonicalMap(func(b *Builder) {
+		if f, ok := args[0].(*chplan.FuncCall); ok && parsedMapTypeFns[f.Fn] {
+			err = b.exprFuncCall(f)
+			return
+		}
+		_ = b.Expr(args[0])
+	})(b)
+	if err != nil {
+		return err
+	}
 	return b.err
+}
+
+// parsedMapTypeFns are the Map functions, among the ones cerberus emits,
+// that derive their result type from the underlying Array(Tuple(key,
+// value)) the way mapSort does; exprFunc renders them through
+// [ParsedMapType].
+var parsedMapTypeFns = map[chplan.Fn]bool{
+	chplan.FnMapMerge: true,
+	chplan.FnMapApply: true,
 }
