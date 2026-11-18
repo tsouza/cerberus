@@ -202,10 +202,12 @@ func sortedNames(dst []string, set map[string]bool) []string {
 // stays and that the consumer reads is passed through the sort.
 //
 // A filter conjunct that reads no layer is folded into the stream scan's
-// own filter, where it sat before any layer existed: the layers are pure
-// per-row values, so where an AND of predicates over the same row runs
-// does not change which rows survive.
-func (r *rowLayers) hoist(order *chplan.OrderBy, limit *chplan.Limit) {
+// own filter when [foldScanConjuncts] finds it reads no column for more
+// rows there; any other keeps its place in the pipeline's order. The
+// layers are pure per-row values, so where an AND of predicates over the
+// same row runs does not change which rows survive, only which columns
+// ClickHouse reads for them.
+func (r *rowLayers) hoist(maps []string, order *chplan.OrderBy, limit *chplan.Limit) {
 	var items []chplan.Node
 	base := r.node
 	for r.stackNode(base) {
@@ -213,21 +215,6 @@ func (r *rowLayers) hoist(order *chplan.OrderBy, limit *chplan.Limit) {
 		base = inputOf(base)
 	}
 	slices.Reverse(items)
-
-	aliases := map[string]bool{}
-	for _, layer := range r.layers {
-		aliases[layer.Projections[0].Alias] = true
-	}
-	readsLayer := func(e chplan.Expr) bool {
-		read := map[string]bool{}
-		addColumnsRead(read, e)
-		for name := range read {
-			if aliases[name] {
-				return true
-			}
-		}
-		return false
-	}
 
 	needed := map[string]bool{}
 	stays := map[*chplan.Project]bool{}
@@ -243,24 +230,14 @@ func (r *rowLayers) hoist(order *chplan.OrderBy, limit *chplan.Limit) {
 		}
 	}
 
-	for _, item := range items {
-		if f, ok := item.(*chplan.Filter); ok {
-			for _, conjunct := range conjuncts(f.Predicate) {
-				if !readsLayer(conjunct) {
-					base = andFilter(base, conjunct)
-				}
-			}
-		}
-	}
+	base, kept := foldScanConjuncts(base, items, r.values(maps))
 	node := base
 	var above []*chplan.Project
 	for _, item := range items {
 		switch n := item.(type) {
 		case *chplan.Filter:
-			for _, conjunct := range conjuncts(n.Predicate) {
-				if readsLayer(conjunct) {
-					node = andFilter(node, conjunct)
-				}
+			for _, conjunct := range kept[n] {
+				node = andFilter(node, conjunct)
 			}
 		case *chplan.Project:
 			if !stays[n] {
@@ -295,6 +272,145 @@ func (r *rowLayers) hoist(order *chplan.OrderBy, limit *chplan.Limit) {
 		top = layer
 	}
 	r.node = top
+}
+
+// foldScanConjuncts AND-folds onto base, the stream scan's filter, the
+// conjuncts of the filters among items that can run there, and returns the
+// new base with each filter's remaining conjuncts, in order.
+//
+// ClickHouse runs a multi-step PREWHERE in the order of the WHERE conjuncts
+// and reads each column at the first step that needs it, for the rows the
+// steps ahead of that one keep. Every conjunct the pipeline runs ahead of
+// the first one that reads a layer folds. After that first one, a conjunct
+// that reads no layer folds only when base and the first one, through the
+// layers it reads, already read every table column it reads: run ahead of
+// the first one it then reads no column for more rows, and the first one
+// reads its other columns for fewer. Any other conjunct keeps its place;
+// ahead of the first one it would read its own columns for rows that one
+// drops.
+func foldScanConjuncts(base chplan.Node, items []chplan.Node, values layerValues) (chplan.Node, map[*chplan.Filter][]chplan.Expr) {
+	early := tableReads{}
+	if f, ok := base.(*chplan.Filter); ok {
+		values.addTableReads(early, f.Predicate)
+	}
+	kept := map[*chplan.Filter][]chplan.Expr{}
+	behind := false
+	for _, item := range items {
+		f, ok := item.(*chplan.Filter)
+		if !ok {
+			continue
+		}
+		for _, conjunct := range conjuncts(f.Predicate) {
+			switch {
+			case values.reads(conjunct):
+				if !behind {
+					values.addTableReads(early, conjunct)
+					behind = true
+				}
+				kept[f] = append(kept[f], conjunct)
+			case !behind || early.covers(values.tableReads(conjunct)):
+				values.addTableReads(early, conjunct)
+				base = andFilter(base, conjunct)
+			default:
+				kept[f] = append(kept[f], conjunct)
+			}
+		}
+	}
+	return base, kept
+}
+
+// layerValues is what [foldScanConjuncts] reads of a stack: the value each
+// layer's alias defines, and the table's map columns.
+type layerValues struct {
+	defs map[string]chplan.Expr
+	maps []string
+}
+
+// values returns the values r's layers define over a table whose map
+// columns are maps.
+func (r *rowLayers) values(maps []string) layerValues {
+	defs := map[string]chplan.Expr{}
+	for _, layer := range r.layers {
+		value := layer.Projections[0]
+		defs[value.Alias] = value.Expr
+	}
+	return layerValues{defs: defs, maps: maps}
+}
+
+// reads reports whether expr reads a layer's value.
+func (v layerValues) reads(expr chplan.Expr) bool {
+	return readsAlias(expr, v.defs)
+}
+
+// tableRead is one read of a table column: the whole column, or the value
+// of one constant key of a map column, which ClickHouse can read apart from
+// the rest of the map (a JSON-typed attribute's subcolumn, a bucketed map's
+// bucket).
+type tableRead struct {
+	column string
+	key    string
+	keyed  bool
+}
+
+// tableReads is a set of table reads.
+type tableReads map[tableRead]bool
+
+// covers reports whether t already reads everything in reads: each read is
+// in t, or is a key of a column t reads whole.
+func (t tableReads) covers(reads tableReads) bool {
+	for read := range reads {
+		if !t[read] && !(read.keyed && t[tableRead{column: read.column}]) {
+			return false
+		}
+	}
+	return true
+}
+
+// tableReads returns the table reads of expr.
+func (v layerValues) tableReads(expr chplan.Expr) tableReads {
+	reads := tableReads{}
+	v.addTableReads(reads, expr)
+	return reads
+}
+
+// addTableReads records into set every table read of expr, directly or
+// through the values of the layers it reads.
+func (v layerValues) addTableReads(set tableReads, expr chplan.Expr) {
+	expanded := map[string]bool{}
+	for pending := []chplan.Expr{expr}; len(pending) > 0; {
+		e := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		forEachMapRead(e, v.maps, func(name, key string, keyed bool) {
+			set[tableRead{column: name, key: key, keyed: keyed}] = true
+		})
+		read := map[string]bool{}
+		addColumnsRead(read, e)
+		for name := range read {
+			value, isLayer := v.defs[name]
+			switch {
+			case slices.Contains(v.maps, name):
+			case !isLayer:
+				set[tableRead{column: name}] = true
+			case !expanded[name]:
+				expanded[name] = true
+				pending = append(pending, value)
+			}
+		}
+	}
+}
+
+// readsAlias reports whether e reads a column named by a key of aliases.
+func readsAlias[V any](e chplan.Expr, aliases map[string]V) bool {
+	found := false
+	chplan.InspectExpr(e, func(sub chplan.Expr) bool {
+		if ref, ok := sub.(*chplan.ColumnRef); ok {
+			if _, alias := aliases[ref.Name]; alias {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
 }
 
 // conjuncts splits pred into the operands of its top-level ANDs, in order.

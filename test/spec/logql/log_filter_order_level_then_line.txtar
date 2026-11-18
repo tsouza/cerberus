@@ -1,0 +1,19 @@
+-- query.logql --
+{job="api"} | detected_level="error" |~ "(?i)failed"
+-- seed --
+CREATE TABLE otel_logs (
+    LogAttributes Map(String, String) DEFAULT map(),
+    Body String,
+    ResourceAttributes Map(String, String) DEFAULT map('job', 'api'),
+    SeverityNumber UInt8 DEFAULT 0,
+    SeverityText LowCardinality(String) DEFAULT '',
+    Timestamp DateTime64(9) DEFAULT 0
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body, SeverityText) VALUES
+    ('e1 request FAILED upstream', 'ERROR'),
+    ('e2 request retried', 'ERROR'),
+    ('i1 request failed but info', 'INFO'),
+    ('w1 failed to warm cache', 'WARN'),
+    ('e3 failed opening db', 'error');
+-- expected_rows --
+[]

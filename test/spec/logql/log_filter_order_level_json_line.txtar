@@ -1,0 +1,19 @@
+-- query.logql --
+{job="api"} | detected_level="error" | json | status >= 400 |= "request"
+-- seed --
+CREATE TABLE otel_logs (
+    LogAttributes Map(String, String) DEFAULT map(),
+    Body String,
+    ResourceAttributes Map(String, String) DEFAULT map('job', 'api'),
+    SeverityNumber UInt8 DEFAULT 0,
+    SeverityText LowCardinality(String) DEFAULT '',
+    Timestamp DateTime64(9) DEFAULT 0
+) ENGINE = Memory;
+INSERT INTO otel_logs (Body, SeverityText) VALUES
+    ('{"msg":"request failed","status":503}', 'ERROR'),
+    ('{"msg":"request ok","status":200}', 'ERROR'),
+    ('{"msg":"cache miss","status":500}', 'ERROR'),
+    ('{"msg":"request failed","status":502}', 'INFO'),
+    ('{"msg":"request denied","status":403}', 'error');
+-- expected_rows --
+[]

@@ -13,8 +13,8 @@ const logsScanWhere = "FROM `otel_logs` WHERE "
 // the WHERE of the SELECT that reads the table. ClickHouse runs a multi-step
 // PREWHERE in the order of the WHERE conjuncts and reads each column at the
 // first step that needs it, so a filter belongs ahead of one the pipeline
-// runs first only when it reads no column the earlier steps do not already
-// read. A line filter moved ahead of a `detected_level` filter reads the body
+// runs first only when it reads no column, and no key of a map column, the
+// earlier steps do not already read. A line filter moved ahead of a `detected_level` filter reads the body
 // of every row the level filter would have dropped; one behind a parser's
 // label filter, or behind a line filter the scan already runs, reads nothing
 // new.
@@ -27,6 +27,9 @@ func TestLogQueryFilterConjunctOrder(t *testing.T) {
 		request = "(position(`Body`, ?) > 0)"
 		// A label filter after `| json` reads the parsed labels map.
 		parsed = "mapContains(`_logql_labels_"
+		// A structured-metadata filter with no parser reads the attribute
+		// map as a whole; the level filter reads only some of its keys.
+		metadata = "if(mapContains(`LogAttributes`, ?)"
 	)
 	for _, tc := range []struct {
 		name  string
@@ -54,6 +57,11 @@ func TestLogQueryFilterConjunctOrder(t *testing.T) {
 			order: []string{request, parsed},
 		},
 		{
+			name:  "level_then_metadata",
+			query: `{service_name="tempo"} | detected_level="error" | foo="bar"`,
+			order: []string{level, metadata},
+		},
+		{
 			name:  "line_ahead_of_level_behind_a_line",
 			query: `{service_name="tempo"} |= "request" | detected_level="error" |~ "(?i)failed"`,
 			order: []string{request, failed, level},
@@ -61,12 +69,8 @@ func TestLogQueryFilterConjunctOrder(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			sql := logQuerySQL(t, tc.query)
-			at := strings.Index(sql, logsScanWhere)
-			if at < 0 {
-				t.Fatalf("no SELECT reads the logs table with a WHERE: %s", sql)
-			}
-			where := sql[at+len(logsScanWhere):]
+			scan := scopeAround(t, logQuerySQL(t, tc.query), logsScanWhere)
+			where := scan[strings.Index(scan, logsScanWhere)+len(logsScanWhere):]
 			prev, prevAt := "", -1
 			for _, conjunct := range tc.order {
 				i := strings.Index(where, conjunct)
@@ -79,5 +83,22 @@ func TestLogQueryFilterConjunctOrder(t *testing.T) {
 				prev, prevAt = conjunct, i
 			}
 		})
+	}
+}
+
+// TestNestedLogQueryRunsLineFilterAtScan pins the nested form's side: past
+// the statement bound the stage renders one SELECT per layer, where a filter
+// reads the subquery below it and ClickHouse cannot run it as the table is
+// read. A line filter there joins the scan's own filter, wherever the
+// pipeline runs it.
+func TestNestedLogQueryRunsLineFilterAtScan(t *testing.T) {
+	t.Parallel()
+	const request = "(position(`Body`, ?) > 0)"
+	sql := logQuerySQL(t, `{service_name="tempo"} | detected_level="error" | json | status >= 400 | duration > 10ms |= "request"`)
+	if definingScopeReads(t, sql, "_logql_labels_1") {
+		t.Fatalf("the stage renders fused, not nested: %s", sql)
+	}
+	if scan := scopeAround(t, sql, logsScanWhere); !strings.Contains(scan, request) {
+		t.Errorf("the SELECT that reads the table does not run the line filter: %s", scan)
 	}
 }

@@ -119,7 +119,7 @@ func TestRowLayersHoist(t *testing.T) {
 	})
 	order := &chplan.OrderBy{Keys: []chplan.OrderKey{{Expr: &chplan.ColumnRef{Name: "Timestamp"}, Desc: true}}}
 	limit := &chplan.Limit{Count: 100}
-	rows.hoist(order, limit)
+	rows.hoist(nil, order, limit)
 	consumer := &chplan.Project{
 		Input: rows.node,
 		Projections: []chplan.Projection{

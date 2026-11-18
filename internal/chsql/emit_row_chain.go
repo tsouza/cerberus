@@ -223,8 +223,16 @@ func (e *emitter) fusedRowChain(c rowChain) (*QueryBuilder, error) {
 // false otherwise.
 func (e *emitter) rowChainFrag(input chplan.Node) (Frag, bool, error) {
 	c, ok := rowChainOf(input)
-	if !ok || e.fusionExpandsPastBound(c) {
+	if !ok {
 		return nil, false, nil
+	}
+	if e.fusionExpandsPastBound(c) {
+		nested, moved := c.nestedOverScan()
+		if !moved {
+			return nil, false, nil
+		}
+		sub, err := e.subqueryFrag(nested)
+		return sub, err == nil, err
 	}
 	sb, err := e.fusedRowChain(c)
 	if err != nil {
@@ -240,6 +248,67 @@ func (e *emitter) rowChainFrag(input chplan.Node) (Frag, bool, error) {
 		return nil, false, err
 	}
 	return Subquery(PreRenderedSQL{SQL: sql, Args: args, PhysicalScans: sb.physicalScans()}), true, nil
+}
+
+// nestedOverScan returns c as the nested stack it renders as past the
+// bound, with every filter conjunct that reads no alias the chain defines
+// moved into the scan's own filter, after its predicates; moved reports
+// whether any conjunct moved. Nested, each filter reads the subquery below
+// it, where ClickHouse can no longer run it ahead of the values the layers
+// below compute; in the scan's filter it runs as the table is read. The
+// fused form keeps such a conjunct where the stage put it, in the one
+// WHERE, in order. The layers are pure per-row values, so moving a
+// conjunct below them keeps the same rows.
+func (c rowChain) nestedOverScan() (chplan.Node, bool) {
+	defined := map[string]bool{}
+	for _, layer := range c.layers {
+		for _, pr := range layer.Projections {
+			if pr.Alias != "" {
+				defined[pr.Alias] = true
+			}
+		}
+	}
+	scanPreds := flattenAnd(c.scanFilter.Predicate)
+	kept := make([][]chplan.Expr, len(c.filters))
+	for i, f := range c.filters {
+		for _, conjunct := range flattenAnd(f.predicate) {
+			if readsAnyColumn(conjunct, defined) {
+				kept[i] = append(kept[i], conjunct)
+				continue
+			}
+			scanPreds = append(scanPreds, conjunct)
+		}
+	}
+	if len(scanPreds) == len(flattenAnd(c.scanFilter.Predicate)) {
+		return nil, false
+	}
+	var node chplan.Node = &chplan.Filter{Input: c.scan, Predicate: conjoinExprs(scanPreds)}
+	next := 0
+	for placed := 0; placed <= len(c.layers); placed++ {
+		for ; next < len(c.filters) && c.filters[next].above == placed; next++ {
+			if len(kept[next]) > 0 {
+				node = &chplan.Filter{Input: node, Predicate: conjoinExprs(kept[next])}
+			}
+		}
+		if placed < len(c.layers) {
+			layer := *c.layers[placed]
+			layer.Input = node
+			node = &layer
+		}
+	}
+	return node, true
+}
+
+// readsAnyColumn reports whether expr reads a column named in names.
+func readsAnyColumn(expr chplan.Expr, names map[string]bool) bool {
+	found := false
+	chplan.InspectExpr(expr, func(e chplan.Expr) bool {
+		if ref, ok := e.(*chplan.ColumnRef); ok && names[ref.Name] {
+			found = true
+		}
+		return !found
+	})
+	return found
 }
 
 // fusionExpandsPastBound reports whether c, rendered as one SELECT, would
