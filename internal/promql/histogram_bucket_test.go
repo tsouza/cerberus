@@ -457,3 +457,89 @@ func pairTests(t *testing.T, body chplan.Expr, param string) []leTest {
 	}
 	return []leTest{{b.Op, lit.V}}
 }
+
+// TestIsClassicBucketFanoutProject_RejectsNearMisses pins every guard of
+// the fan-out recogniser: starting from a real fan-out, each case breaks
+// exactly one part of the `arrayJoin([arrayFilter(...,] arrayZip(arrayMap(
+// ..., arrayEnumerate(BucketCounts)), ...)[)])` shape, and the recogniser
+// must refuse it, while the untouched fan-out, with and without an `le`
+// pair filter, is recognised.
+func TestIsClassicBucketFanoutProject_RejectsNearMisses(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+	join := func(p *chplan.Project) *chplan.FuncCall {
+		for _, pr := range p.Projections {
+			if pr.Alias == bucketPairAlias {
+				return pr.Expr.(*chplan.FuncCall)
+			}
+		}
+		t.Fatal("the fan-out has no le_pair projection")
+		return nil
+	}
+	zip := func(p *chplan.Project) *chplan.FuncCall {
+		inner := join(p).Args[0].(*chplan.FuncCall)
+		if inner.Fn == chplan.FnArrayFilter {
+			inner = inner.Args[1].(*chplan.FuncCall)
+		}
+		return inner
+	}
+	les := func(p *chplan.Project) *chplan.FuncCall { return zip(p).Args[0].(*chplan.FuncCall) }
+	enumerate := func(p *chplan.Project) *chplan.FuncCall { return les(p).Args[1].(*chplan.FuncCall) }
+	other := &chplan.FuncCall{Fn: chplan.FnArrayConcat}
+	cases := []struct {
+		name  string
+		query string
+		edit  func(p *chplan.Project)
+		want  bool
+	}{
+		{name: "fan-out", query: `http_server_request_duration_bucket`, edit: func(*chplan.Project) {}, want: true},
+		{name: "le-filtered fan-out", query: `http_server_request_duration_bucket{le="2"}`, edit: func(*chplan.Project) {}, want: true},
+		{name: "not arrayJoin", query: `http_server_request_duration_bucket`, edit: func(p *chplan.Project) { join(p).Fn = chplan.FnArrayFlatten }},
+		{name: "arrayJoin with two arguments", query: `http_server_request_duration_bucket`, edit: func(p *chplan.Project) {
+			j := join(p)
+			j.Args = append(j.Args, other)
+		}},
+		{name: "pairs not zipped", query: `http_server_request_duration_bucket`, edit: func(p *chplan.Project) { zip(p).Fn = chplan.FnArrayConcat }},
+		{name: "filtered pairs not zipped", query: `http_server_request_duration_bucket{le="2"}`, edit: func(p *chplan.Project) { zip(p).Fn = chplan.FnArrayConcat }},
+		{name: "le strings not mapped", query: `http_server_request_duration_bucket`, edit: func(p *chplan.Project) { les(p).Fn = chplan.FnArrayFilter }},
+		{name: "le map with three arguments", query: `http_server_request_duration_bucket`, edit: func(p *chplan.Project) {
+			l := les(p)
+			l.Args = append(l.Args, other)
+		}},
+		{name: "indices not enumerated", query: `http_server_request_duration_bucket`, edit: func(p *chplan.Project) { enumerate(p).Fn = chplan.FnArrayCumSum }},
+		{name: "enumerate with two arguments", query: `http_server_request_duration_bucket`, edit: func(p *chplan.Project) {
+			e := enumerate(p)
+			e.Args = append(e.Args, other)
+		}},
+		{name: "enumerates another column", query: `http_server_request_duration_bucket`, edit: func(p *chplan.Project) {
+			enumerate(p).Args[0] = &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := parser.NewParser(parser.Options{}).ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
+			}
+			plan, err := Lower(context.Background(), expr, s)
+			if err != nil {
+				t.Fatalf("Lower(%q): %v", tc.query, err)
+			}
+			var fanout *chplan.Project
+			chplan.Walk(plan, func(n chplan.Node) bool {
+				if p, ok := n.(*chplan.Project); ok && fanout == nil && slices.ContainsFunc(p.Projections, func(pr chplan.Projection) bool { return pr.Alias == bucketPairAlias }) {
+					fanout = p
+				}
+				return fanout == nil
+			})
+			if fanout == nil {
+				t.Fatalf("%q lowers to no bucket fan-out", tc.query)
+			}
+			tc.edit(fanout)
+			if got := isClassicBucketFanoutProject(fanout, s); got != tc.want {
+				t.Errorf("isClassicBucketFanoutProject = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
