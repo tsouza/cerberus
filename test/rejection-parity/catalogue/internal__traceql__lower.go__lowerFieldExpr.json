@@ -11,9 +11,9 @@
           "past exhaustive switch v := e.(type) over [case *traceql.BinaryOperation; case *traceql.UnaryOperation; case traceql.UnaryOperation; case *traceql.Attribute; case traceql.Attribute; case *traceql.Static; case traceql.Static]"
         ],
         "callers": [
+          "groupSpans",
           "lowerBinaryOperation",
           "lowerBooleanFieldExpr",
-          "lowerGroup",
           "lowerMetricsCompare",
           "lowerNestedAttrBinary",
           "lowerNestedIntrinsicBinary",

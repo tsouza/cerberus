@@ -8,6 +8,7 @@ package traceql
 
 import (
 	"fmt"
+	"slices"
 
 	traceql "github.com/tsouza/cerberus/internal/traceql/ast"
 
@@ -22,39 +23,109 @@ const (
 	groupKeyAlias = "GroupKey"
 )
 
-// lowerGroup handles `| group(<field-expr>)` — the TraceQL grouping
-// pipeline element that collapses results into one representative span
-// per (trace, group key).
+// pipelineStage is one lowered pipeline stage in the two forms its readers
+// take it in.
 //
-// SQL shape: Aggregate { Input: prev, GroupBy: [TraceId, <key-expr>],
+// Reference Tempo hands every stage the spansets the stage before it
+// returned, and its metrics evaluator observes every span of each spanset
+// the pipeline returns (grafana/tempo pkg/traceql/ast_execute.go,
+// engine_metrics.go). A stage of cerberus's flat-row plan model, by
+// contrast, may collapse its spans: a spanset aggregate to one row per
+// trace, by() to one row per group, coalesce() to one row per span identity.
+// Those rows are what the /api/search envelope reads off the last stage, and
+// they carry neither the span columns nor the timestamp a following stage or
+// a metrics function reads.
+type pipelineStage struct {
+	// node is the stage as the /api/search envelope reads it when the stage
+	// ends the pipeline.
+	node chplan.Node
+	// spans is the span rows of every spanset the stage returns — what a
+	// following stage, a metrics function and a spanset-operation operand
+	// read. They carry every span column, except after select(), whose rows
+	// carry the span identity, the timestamp and the selected attributes
+	// alone (#4373).
+	spans chplan.Node
+	// groupKeys are the keys of the by() stages that split each trace's spans
+	// into spansets, in pipeline order; empty means one spanset per trace.
+	groupKeys []chplan.Expr
+}
+
+// lowerFollowingStage lowers el over the spansets prev returns.
 //
-//	AggFuncs: [ any(SpanId) AS SpanId,
-//	            count(1) AS Value, + the spanset-envelope columns ] }
+//   - by(k) keeps every span and splits each spanset further by k, so the
+//     stage's spans are prev's and its group keys gain k.
+//   - coalesce() merges each trace's spansets back into one, so the stage's
+//     spans are prev's with no group key.
+//   - A spanset aggregate or scalar filter evaluates once per spanset —
+//     per trace, or per group under a by() (groupPerSpanset) — and its
+//     spans are the spans of the spansets it passes (spanGranularOperand).
+//   - select(...) returns the spansets it reads, so it keeps prev's group
+//     keys; its spans are its own span rows, which carry the selected
+//     attributes a spanset-operation operand returns.
+func lowerFollowingStage(prev pipelineStage, el traceql.PipelineElement, s schema.Traces) (pipelineStage, error) {
+	if g, ok := asGroupOperation(el); ok {
+		spans, key, err := groupSpans(prev.spans, g, s)
+		if err != nil {
+			return pipelineStage{}, err
+		}
+		keys := append(slices.Clip(prev.groupKeys), key)
+		return pipelineStage{node: groupAggregate(spans, spansetGroupKey(keys), s), spans: spans, groupKeys: keys}, nil
+	}
+	if isCoalesceOperation(el) {
+		return pipelineStage{node: lowerCoalesce(prev.spans, s), spans: prev.spans}, nil
+	}
+	node, err := lowerFollowingElement(prev.spans, el, s)
+	if err != nil {
+		return pipelineStage{}, err
+	}
+	if len(prev.groupKeys) > 0 {
+		groupPerSpanset(node, spansetGroupKey(prev.groupKeys), s)
+	}
+	return pipelineStage{node: node, spans: spanGranularOperand(node, s), groupKeys: prev.groupKeys}, nil
+}
+
+// spansetGroupKey is the one GROUP BY key that stands for keys: the key
+// itself for a single by(), and the tuple of the keys for chained by()
+// stages, whose spansets are the spans sharing every key.
+func spansetGroupKey(keys []chplan.Expr) chplan.Expr {
+	if len(keys) == 1 {
+		return keys[0]
+	}
+	return &chplan.FuncCall{Fn: chplan.FnTuple, Args: keys}
+}
+
+// groupPerSpanset regroups the spanset aggregate a stage after by() just
+// lowered (lowerAggregate's GROUP BY TraceId, under any HAVING Filters) by
+// key as well, so it evaluates once per by() group, as reference Tempo's
+// Aggregate evaluates once per input spanset. key takes the GroupKey alias,
+// the by() stage's own alias for it. The aggregate is the stage's own,
+// built for it alone, so it is regrouped in place. A select() stage holds no
+// aggregate and is left as it is.
+func groupPerSpanset(node chplan.Node, key chplan.Expr, s schema.Traces) {
+	agg := spansetAggregate(node, s)
+	if agg == nil {
+		return
+	}
+	agg.GroupBy = append(slices.Clip(agg.GroupBy), key)
+	agg.GroupByAliases = append(slices.Clip(agg.GroupByAliases), groupKeyAlias)
+}
+
+// groupSpans returns the spans a `| by(<field-expr>)` stage groups, with
+// every column its key reads, and that key.
 //
-// The aggregate piggybacks the same per-group envelope columns
-// lowerAggregate carries (`any(SpanName) AS MetricName`,
-// `any(ResourceAttributes) AS ResourceAttrs`, `min(Timestamp) AS
-// TimeUnix`, TraceStartNs / TraceEndNs) so the Tempo handler's
-// spanset-aggregate wrap projection (isSpansetAggregateShape →
-// spansetAggregateSampleProjections) shapes the rows into real search
-// summaries. Before this, the by() output fell into the generic
-// metrics-fallback wrap which referenced a `Value` column the
-// aggregate never projected — every `{} | by(...)` search 502'd with
-// "Unknown identifier Value".
-//
-// Value is the per-group span count — the natural scalar for a
-// grouped spanset (mirrors Tempo's UI which reports group sizes).
-func lowerGroup(prev chplan.Node, g traceql.GroupOperation, s schema.Traces) (chplan.Node, error) {
+// The by() stage itself lowers to groupAggregate over them: one
+// representative span per (trace, group key), the shape the /api/search
+// envelope reads.
+func groupSpans(prev chplan.Node, g traceql.GroupOperation, s schema.Traces) (chplan.Node, chplan.Expr, error) {
 	if g.Expression == nil {
-		return nil, fmt.Errorf("traceql: `| group(...)` requires a field expression")
+		return nil, nil, fmt.Errorf("traceql: `| group(...)` requires a field expression")
 	}
 	// A group key on a nested-set intrinsic (`by(nestedSetParent)`) has
 	// no flat OTel-CH column; recompute the numbering with a
 	// NestedSetAnnotate pass and group by the synthetic column. Reference
 	// Tempo materialises the same positions, so `/api/search` accepts it.
 	if col, ok := nestedSetColumnForFieldExpr(g.Expression); ok {
-		prev = annotateNestedSet(prev, s)
-		return groupAggregate(prev, &chplan.ColumnRef{Name: col}, s), nil
+		return annotateNestedSet(prev, s), &chplan.ColumnRef{Name: col}, nil
 	}
 	// A group key on a nested intrinsic (`by(event:name)`,
 	// `by(link:traceID)`) reads the per-span Nested subfield array
@@ -64,7 +135,7 @@ func lowerGroup(prev chplan.Node, g traceql.GroupOperation, s schema.Traces) (ch
 	// is a valid GROUP BY key in ClickHouse (one group per distinct
 	// per-span array).
 	if col, sub, ok := nestedIntrinsicGroupTarget(g.Expression, s); ok {
-		return groupAggregate(prev, &chplan.ColumnRef{Name: col + "." + sub}, s), nil
+		return prev, &chplan.ColumnRef{Name: col + "." + sub}, nil
 	}
 	// The key reads only the materialized columns the grouped rows carry
 	// (materializedCarriedBy). A bare attribute key is also the group's
@@ -73,7 +144,7 @@ func lowerGroup(prev chplan.Node, g traceql.GroupOperation, s schema.Traces) (ch
 	// keeps the numeric column its comparison reads.
 	key, err := lowerFieldExpr(g.Expression, materializedCarriedBy(prev.RowType(), s))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if _, bare := fieldExprAttribute(g.Expression); bare {
 		readAttributeOutputFrom(key, prev.RowType())
@@ -81,12 +152,21 @@ func lowerGroup(prev chplan.Node, g traceql.GroupOperation, s schema.Traces) (ch
 	// A key reading a trace-scoped intrinsic (`by(rootName)`,
 	// `by(rootName = name)`) groups by each span's own trace's value, joined
 	// onto the spans.
-	return groupAggregate(withTraceScopedValues(prev, s, key), key, s), nil
+	return withTraceScopedValues(prev, s, key), key, nil
 }
 
-// groupAggregate builds the per-group Aggregate shared by lowerGroup:
-// the group key plus the representative envelope columns the Tempo
-// /api/search wrap projection decodes.
+// groupAggregate builds the per-group Aggregate a by() stage lowers to: the
+// group key plus the representative envelope columns the Tempo /api/search
+// wrap projection decodes.
+//
+// The aggregate piggybacks the same per-group envelope columns
+// lowerAggregate carries (`any(SpanName) AS MetricName`,
+// `any(ResourceAttributes) AS ResourceAttrs`, `min(Timestamp) AS
+// TimeUnix`, TraceStartNs / TraceEndNs) so the Tempo handler's
+// spanset-aggregate wrap projection (isSpansetAggregateShape →
+// spansetAggregateSampleProjections) shapes the rows into real search
+// summaries. Value is the per-group span count — the natural scalar for a
+// grouped spanset (mirrors Tempo's UI which reports group sizes).
 //
 // The grouping is per trace: by() splits each trace's spanset into one
 // spanset per distinct key value (Tempo's GroupOperation.evaluate groups the
@@ -175,24 +255,32 @@ func asGroupOperation(el traceql.PipelineElement) (traceql.GroupOperation, bool)
 	return traceql.GroupOperation{}, false
 }
 
+// isCoalesceOperation reports whether el is a coalesce() stage, in value or
+// pointer form.
+func isCoalesceOperation(el traceql.PipelineElement) bool {
+	switch el.(type) {
+	case traceql.CoalesceOperation, *traceql.CoalesceOperation:
+		return true
+	}
+	return false
+}
+
 // lowerCoalesce handles `| coalesce()` — Tempo's spanset-flattening
-// pipeline element. In Tempo's runtime, coalesce() merges results that
-// span multiple spansets (typically the output of a set-op like
-// `A || B`) into a single spanset with duplicates removed.
+// pipeline element. In Tempo's runtime, coalesce() merges the spansets of
+// each trace (typically the groups of a preceding `by(...)`) into a single
+// spanset holding all of their spans; a stage after it reads those spans
+// unchanged (lowerFollowingStage).
 //
-// In cerberus's flat-row plan model the multi-spanset concept doesn't
-// exist — every prior stage emits rows already. We faithfully model
-// coalesce() as a `DISTINCT (TraceId, SpanId)` dedup via an Aggregate
-// that groups by the span-identity columns and keeps one row per group.
-// For inputs that don't have duplicates (the common single-spanset
-// case) the optimizer can fold the no-op grouping in a later pass.
+// As the last stage, coalesce() lowers to a `DISTINCT (TraceId, SpanId)`
+// Aggregate that groups by the span-identity columns and keeps one row per
+// span, the rows the /api/search envelope reads.
 //
-// Like lowerGroup, the aggregate piggybacks the spanset-envelope
+// Like groupAggregate, the aggregate piggybacks the spanset-envelope
 // columns so the search wrap projection produces real summaries
 // instead of referencing a non-existent `Value` column. Value here is
 // the per-(TraceId, SpanId) row count — i.e. how many duplicate rows
 // the dedup collapsed.
-func lowerCoalesce(prev chplan.Node, s schema.Traces) (chplan.Node, error) {
+func lowerCoalesce(prev chplan.Node, s schema.Traces) chplan.Node {
 	return &chplan.Aggregate{
 		Input: prev,
 		GroupBy: []chplan.Expr{
@@ -201,7 +289,7 @@ func lowerCoalesce(prev chplan.Node, s schema.Traces) (chplan.Node, error) {
 		},
 		GroupByAliases: []string{s.TraceIDColumn, s.SpanIDColumn},
 		AggFuncs:       spansetEnvelopeAggFuncs(s),
-	}, nil
+	}
 }
 
 // spansetEnvelopeAggFuncs returns the per-group envelope AggFunc list

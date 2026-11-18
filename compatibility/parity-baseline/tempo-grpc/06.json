@@ -3,6 +3,7 @@
   "head": "tempo-grpc",
   "bucket": "06",
   "cases": [
+    "metrics_range | metrics_rate_after_group_select",
     "metrics_range | metrics_rate_no_groupby"
   ]
 }

@@ -84,9 +84,9 @@ single canonical probe, so a function that lowers `sort_by_label(v, "l")` and
 rejects `sort_by_label(v)` still counts as one supported symbol.
 
 Shape-level wrong-rejections are measured separately, by the rejection-parity
-catalogue: across all three heads it records **2** open divergences — queries
-the reference backend answers and cerberus rejects. Both are argument shapes.
-Each is one `class: "divergence"` row in
+catalogue: across all three heads it records **3** open divergences — queries
+the reference backend answers and cerberus rejects. Two are argument shapes;
+the third is a TraceQL spanset filter after another pipeline stage. Each is one `class: "divergence"` row in
 [`test/rejection-parity/catalogue/`](../test/rejection-parity/catalogue),
 carries an open GitHub issue tracking its closure, and is re-verified against
 both backends on every compat run in both directions — cerberus must still
