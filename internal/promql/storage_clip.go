@@ -38,7 +38,7 @@ var sampleSetRangeFunctions = map[string]bool{
 	fnHoltWinters:                  true,
 	"idelta":                       true,
 	"irate":                        true,
-	"last_over_time":               true,
+	lastOverTimeWindowFn:           true,
 	"mad_over_time":                true,
 	"max_over_time":                true,
 	"min_over_time":                true,

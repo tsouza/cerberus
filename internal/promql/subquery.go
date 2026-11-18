@@ -470,7 +470,7 @@ func subqueryIdentityWindow(
 func subqueryIdentityValuePreserving(fn string) bool {
 	switch fn {
 	case fnLabelReplace, fnLabelJoin, "info",
-		"sort", "sort_desc", "sort_by_label", "sort_by_label_desc":
+		"sort", "sort_desc", fnSortByLabel, fnSortByLabelDesc:
 		return true
 	}
 	return false
@@ -524,7 +524,7 @@ func lowerSubqueryIdentityMathReorder(
 	// instantFnCH tail — so it reaches [lowerRoundOverInput] rather than
 	// being rejected by the arity check below.
 	switch call.Func.Name {
-	case "clamp", "clamp_min", "clamp_max":
+	case "clamp", fnClampMin, fnClampMax:
 		plan, err := lowerClampOverInput(call, s, rangeCtx, load, ordinaryGuarded)
 		return plan, true, err
 	case "round":
@@ -2260,19 +2260,19 @@ func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 // argMax collapse the instant and range shapes apply.
 var instantTransformFns = map[string]struct{}{
 	// Unary math + the multi-arg clamp/round shapes: pure Value maps.
-	"abs":       {},
-	"ceil":      {},
-	"floor":     {},
-	"round":     {},
-	"sqrt":      {},
-	"exp":       {},
-	"ln":        {},
-	"log2":      {},
-	"log10":     {},
-	"sgn":       {},
-	"clamp":     {},
-	"clamp_min": {},
-	"clamp_max": {},
+	"abs":      {},
+	"ceil":     {},
+	"floor":    {},
+	"round":    {},
+	"sqrt":     {},
+	"exp":      {},
+	"ln":       {},
+	"log2":     {},
+	"log10":    {},
+	"sgn":      {},
+	"clamp":    {},
+	fnClampMin: {},
+	fnClampMax: {},
 
 	// Trigonometric family + degree/radian conversion — the same
 	// per-row Value map as the block above (instantFnCH).
@@ -2319,10 +2319,10 @@ var instantTransformFns = map[string]struct{}{
 	// Sorting: reference discards the ordering when it folds each
 	// anchor's instant result into the subquery's matrix, so these are
 	// identity on the sample set.
-	"sort":               {},
-	"sort_desc":          {},
-	"sort_by_label":      {},
-	"sort_by_label_desc": {},
+	"sort":            {},
+	"sort_desc":       {},
+	fnSortByLabel:     {},
+	fnSortByLabelDesc: {},
 
 	// Native-histogram value accessors: arithmetic over a single
 	// exp-histogram row's own columns.
