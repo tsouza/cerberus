@@ -53,7 +53,8 @@ func TestMayCarryBucketBound(t *testing.T) {
 		`info(m_bucket)`:                                      true,
 		`info(up, {le=~".+"})`:                                true,
 		`info(up, {__name__="build_bucket"})`:                 true,
-		`info(up, {__name__=~".+_info"})`:                     true,
+		`info(up, {__name__=~"m.*"})`:                         true,
+		`info(up, {__name__!="target_info"})`:                 true,
 		`label_replace(m_bucket, "dst", "$1", "job", "(.*)")`: true,
 		// A selector pinning a name without the `_bucket` suffix and
 		// with no `le` matcher, and anything carrying its labels.
@@ -82,6 +83,8 @@ func TestMayCarryBucketBound(t *testing.T) {
 		`info(up)`:                                     false,
 		`info(up, {k8s_cluster_name=~".+"})`:           false,
 		`info(up, {__name__="build_info"})`:            false,
+		`info(up, {__name__="m_bucket", job="a"})`:     false,
+		`info(up, {})`:                                 false,
 		// Scalars and label-free outputs.
 		`up * scalar(m_bucket)`: false,
 		`hour()`:                false,

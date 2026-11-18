@@ -20,9 +20,10 @@ import (
 // Filter (empty vector) instead of a 422 — and instead of reading the whole
 // argument to reassemble a bucket ladder from rows that cannot hold one. A
 // selector pinning a name without the `_bucket` suffix and with no `le`
-// matcher carries no `le`, so `up * 2` and `abs(up)` fold, in instant and
-// range mode alike. An argument that MAY carry `le` (a `_bucket` selector,
-// an `le` matcher, an unpinned name, a minted `le`) is not folded. The spec
+// matcher carries no `le`, so `up * 2`, `abs(up)` and `info(up)` fold, in
+// instant and range mode alike. An argument that MAY carry `le` (a
+// `_bucket` selector, an `le` matcher, an unpinned name, a minted `le`, an
+// info selector matching on `le`) is not folded. The spec
 // corpus pins the `_bucket` and `le`-matcher answers against Prometheus
 // (histogram_quantile_classic_bucket_arithmetic,
 // histogram_quantile_le_matcher_unparseable_empty).

@@ -4,7 +4,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 
@@ -495,7 +494,7 @@ func hasBucketBoundMatcher(matchers []*labels.Matcher) bool {
 var labelKeepingFunctions = map[string]struct{}{
 	"abs": {}, "acos": {}, "acosh": {}, "asin": {}, "asinh": {}, "atan": {},
 	"atanh": {}, "avg_over_time": {}, "ceil": {}, "changes": {}, "clamp": {},
-	"clamp_max": {}, fnClampMin: {}, "cos": {}, "cosh": {},
+	fnClampMax: {}, fnClampMin: {}, "cos": {}, "cosh": {},
 	"count_over_time": {}, "days_in_month": {}, "day_of_month": {},
 	"day_of_week": {}, "day_of_year": {}, "deg": {}, "delta": {}, "deriv": {},
 	"double_exponential_smoothing": {}, "exp": {}, "first_over_time": {},
@@ -508,7 +507,7 @@ var labelKeepingFunctions = map[string]struct{}{
 	"minute": {}, "month": {}, "predict_linear": {}, "present_over_time": {},
 	"quantile_over_time": {}, "rad": {}, "rate": {}, "resets": {},
 	"round": {}, "sgn": {}, "sin": {}, "sinh": {}, "sort": {},
-	"sort_by_label": {}, fnSortByLabelDesc: {}, "sort_desc": {},
+	fnSortByLabel: {}, fnSortByLabelDesc: {}, "sort_desc": {},
 	"sqrt": {}, fnStartTimestamp: {}, "stddev_over_time": {},
 	"stdvar_over_time": {}, "sum_over_time": {}, "tan": {}, "tanh": {},
 	timestampFunctionName: {}, "ts_of_first_over_time": {},
@@ -537,10 +536,7 @@ func callMayCarryBucketBound(c *parser.Call) bool {
 	case "absent", "absent_over_time":
 		return mentionsBucketBound(c.Args[0])
 	case "info":
-		if mayCarryBucketBound(c.Args[0]) {
-			return true
-		}
-		return len(c.Args) > 1 && infoSeriesMayCarryBucketBound(c.Args[1])
+		return mayCarryBucketBound(c.Args[0]) || infoSeriesMayCarryBucketBound(c)
 	}
 	if _, keeps := labelKeepingFunctions[c.Func.Name]; !keeps {
 		return true
@@ -548,23 +544,23 @@ func callMayCarryBucketBound(c *parser.Call) bool {
 	return slices.ContainsFunc(c.Args, mayCarryBucketBound)
 }
 
-// infoSeriesMayCarryBucketBound reports whether the info series `info`'s
-// data-label selector sel picks can contribute an `le` label. Without a
-// `__name__` matcher the info metric is [targetInfoMetric], so the series
-// carry `le` only when sel names it; a pinned info-metric name is judged
-// by [selectorMayCarryBucketBound]'s rule; a regex or negated name
-// matcher may select any metric, so it answers true.
-func infoSeriesMayCarryBucketBound(sel parser.Expr) bool {
-	vs, ok := sel.(*parser.VectorSelector)
-	if !ok || hasBucketBoundMatcher(vs.LabelMatchers) {
+// infoSeriesMayCarryBucketBound reports whether the info series an `info`
+// call selects can contribute an `le` label. info copies only the data
+// labels its selector has matchers for, so with any data-label matcher the
+// series contribute `le` only when one of those matchers names it. With
+// none, info copies every label of the info metric it reads (Prometheus's
+// combineWithInfoVector), and that metric — [effectiveInfoNameMatchers],
+// [targetInfoMetric] by default — is judged by
+// [selectorMayCarryBucketBound]'s naming rule.
+func infoSeriesMayCarryBucketBound(c *parser.Call) bool {
+	nameMatchers, dataMatchers, err := infoSecondArgMatchers(c)
+	if err != nil {
 		return true
 	}
-	if !slices.ContainsFunc(vs.LabelMatchers, func(m *labels.Matcher) bool {
-		return m.Name == model.MetricNameLabel
-	}) {
-		return false
+	if len(dataMatchers) > 0 {
+		return hasBucketBoundMatcher(dataMatchers)
 	}
-	return selectorMayCarryBucketBound(vs.LabelMatchers)
+	return selectorMayCarryBucketBound(effectiveInfoNameMatchers(nameMatchers))
 }
 
 // mintsBucketBound reports whether a label-name argument may name `le`:

@@ -2955,6 +2955,8 @@ const (
 // PromQL function names more than one lowering path dispatches on.
 const (
 	fnClampMin        = "clamp_min"
+	fnClampMax        = "clamp_max"
+	fnSortByLabel     = "sort_by_label"
 	fnSortByLabelDesc = "sort_by_label_desc"
 )
 
@@ -2998,7 +3000,7 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	switch c.Func.Name {
 	case "absent":
 		return lowerAbsent(c, s, ctx)
-	case "clamp", fnClampMin, "clamp_max":
+	case "clamp", fnClampMin, fnClampMax:
 		return lowerClamp(c, s, ctx)
 	case "histogram_quantile":
 		return lowerHistogramQuantile(c, s, ctx)
@@ -3019,7 +3021,7 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerDateFn(c, s, ctx)
 	case "sort", "sort_desc":
 		return lowerSort(c, s, ctx)
-	case "sort_by_label", fnSortByLabelDesc:
+	case fnSortByLabel, fnSortByLabelDesc:
 		return lowerSortByLabel(c, s, ctx)
 	case "scalar", fnMinOf, fnMaxOf:
 		return lowerScalarTopLevel(c, s, ctx)
