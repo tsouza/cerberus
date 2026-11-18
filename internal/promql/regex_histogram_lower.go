@@ -154,15 +154,8 @@ func buildRegexHistogramBucketArm(
 	layout staleLayoutWindow,
 ) chplan.Node {
 	input := regexHistogramScan(s, scanMatchers, mode)
-	input = wrapHistogramBucketFanout(input, "", s, cat, mode, layout)
+	input = wrapHistogramBucketFanout(input, "", leMatchers, s, cat, mode, layout)
 	if pred := regexHistogramNamePredicate(names, s); pred != nil {
-		input = &chplan.Filter{Input: input, Predicate: pred}
-	}
-	if pred := buildPredicate(leMatchers, func() schema.Metrics {
-		leSchema := s
-		leSchema.ResourceAttributesColumn = ""
-		return leSchema
-	}()); pred != nil {
 		input = &chplan.Filter{Input: input, Predicate: pred}
 	}
 	return input

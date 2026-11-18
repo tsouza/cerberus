@@ -656,8 +656,13 @@ func alignUnionArms(left, right chplan.Node, s schema.Traces) (chplan.Node, chpl
 
 // projectSpanArm gives an already-narrow structural arm the same output shape
 // as a select() arm. Applying narrowSpanProjection after select() would read
-// columns that select intentionally removed.
+// columns that select intentionally removed. The select() arm's projections
+// are copied, then re-fitted to the narrow arm's rows: a materialized
+// attribute column the select() arm reads is not part of the narrow span
+// envelope, so the copy reads that attribute from its map.
 func projectSpanArm(n chplan.Node, projections []chplan.Projection) chplan.Node {
+	projections = chplan.CloneProjections(projections)
+	readSelectedAttributesFrom(projections, n.RowType())
 	return &chplan.Project{Input: n, Projections: projections}
 }
 

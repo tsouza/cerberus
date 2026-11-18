@@ -523,6 +523,13 @@ func cloneExprs(in []Expr) []Expr {
 	return out
 }
 
+// CloneProjections returns a deep copy of a projection list: every
+// Projection's Expr tree is cloned, so the copy can be rewritten without
+// touching the plan the original belongs to.
+func CloneProjections(in []Projection) []Projection {
+	return cloneProjections(in)
+}
+
 func cloneProjections(in []Projection) []Projection {
 	if in == nil {
 		return nil

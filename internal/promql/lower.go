@@ -956,13 +956,10 @@ func lowerMatrixSelector(ms *parser.MatrixSelector, s schema.Metrics, ctx lowerC
 // resource attributes at the selector seam.
 //
 //   - `_bucket` (bucketSuffixed != ""): the scan-side filter feeds into
-//     the fan-out Project, then a post-fan-out Filter applies any
-//     `le=<bound>` matcher against the synthesized `Attributes['le']` key.
-//     That key lives ONLY in the (already resource-merged) Attributes map,
-//     so the `le` predicate is built against a schema view with the
-//     resource column cleared to keep it a bare Attributes match. `pred`
-//     is baked into the fan-out's input Filter and returned nil so the
-//     downstream wrapper doesn't re-apply it.
+//     the fan-out Project, which applies any `le=<bound>` matcher to each
+//     row's synthesised bucket bounds before arrayJoin expands them
+//     ([keepBucketPairs]). `pred` is baked into the fan-out's input Filter
+//     and returned nil so the downstream wrapper doesn't re-apply it.
 //   - `_count` / `_sum` (companionValueColumn != ""): wrap the scan in the
 //     companion Project that aliases the source Count / Sum column as
 //     `Value`. pred passes through to the downstream wrapper.
@@ -989,13 +986,7 @@ func lowerHistogramSelectorInput(
 		if pred = withStaleMarkerDrop(pred, mode, s); pred != nil {
 			fanInput = &chplan.Filter{Input: scan, Predicate: pred}
 		}
-		selectorInput := wrapHistogramBucketFanout(fanInput, bucketSuffixed, s, cat, mode, layout)
-		leSchema := s
-		leSchema.ResourceAttributesColumn = ""
-		if lePred := buildPredicate(bucketLeMatchers, leSchema); lePred != nil {
-			selectorInput = &chplan.Filter{Input: selectorInput, Predicate: lePred}
-		}
-		return selectorInput, nil, true
+		return wrapHistogramBucketFanout(fanInput, bucketSuffixed, bucketLeMatchers, s, cat, mode, layout), nil, true
 	case companionValueColumn != "":
 		return wrapHistogramCompanionProject(scan, companionValueColumn, s, cat, mode), pred, true
 	}
@@ -1285,9 +1276,9 @@ func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCt
 	// For the `_bucket` companion path the fan-out is more involved —
 	// arrayJoin over BucketCounts × ExplicitBounds produces N+1 rows per
 	// source row with the synthetic `le` label baked into Attributes.
-	// Any user-supplied `le` matcher applies AFTER the fan-out as an
-	// outer Filter on `Attributes['le']` (the column doesn't exist on
-	// the raw scan row).
+	// Any user-supplied `le` matcher narrows each row's synthesised
+	// bucket pairs before arrayJoin (the label doesn't exist on the raw
+	// scan row).
 	staleMode := ctx.staleMarkerMode(s)
 	// Its one error is selectorAnchor's, which the anchor resolution below
 	// returns for the same selector anyway.
@@ -1876,7 +1867,7 @@ func deltaPrefixAggregateEligibleFunc(funcName string) bool {
 // the tier's own bucketing discards to detect a counter reset between them.
 func downsampleTierEligibleFunc(funcName string) bool {
 	switch funcName {
-	case "irate", "idelta", "last_over_time":
+	case "irate", "idelta", lastOverTimeWindowFn:
 		return true
 	}
 	return false
@@ -1933,7 +1924,7 @@ func attachDownsampleTierArm(
 		rw.DownsampleTierInput = buildDownsampleTierArm(vs.LabelMatchers, s, rangeCtx)
 		return
 	}
-	if funcName == "last_over_time" && rangeVectorSingleGaugeTable(vs, s, rangeCtx) {
+	if funcName == lastOverTimeWindowFn && rangeVectorSingleGaugeTable(vs, s, rangeCtx) {
 		rw.DownsampleTierInput = buildDownsampleTierArm(vs.LabelMatchers, s, rangeCtx)
 	}
 }
@@ -2952,6 +2943,14 @@ const (
 	fnLabelJoin    = "label_join"
 )
 
+// PromQL function names more than one lowering path dispatches on.
+const (
+	fnClampMin        = "clamp_min"
+	fnClampMax        = "clamp_max"
+	fnSortByLabel     = "sort_by_label"
+	fnSortByLabelDesc = "sort_by_label_desc"
+)
+
 // lowerCall dispatches PromQL function calls. The arg shape decides the
 // path: a MatrixSelector means a range-vector function (rate, increase,
 // *_over_time); the clamp family takes a vector + scalar bounds; everything
@@ -2992,7 +2991,7 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	switch c.Func.Name {
 	case "absent":
 		return lowerAbsent(c, s, ctx)
-	case "clamp", "clamp_min", "clamp_max":
+	case "clamp", fnClampMin, fnClampMax:
 		return lowerClamp(c, s, ctx)
 	case "histogram_quantile":
 		return lowerHistogramQuantile(c, s, ctx)
@@ -3013,7 +3012,7 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerDateFn(c, s, ctx)
 	case "sort", "sort_desc":
 		return lowerSort(c, s, ctx)
-	case "sort_by_label", "sort_by_label_desc":
+	case fnSortByLabel, fnSortByLabelDesc:
 		return lowerSortByLabel(c, s, ctx)
 	case "scalar", fnMinOf, fnMaxOf:
 		return lowerScalarTopLevel(c, s, ctx)
@@ -3591,7 +3590,7 @@ func lowerRangeVectorCallFanout(c *parser.Call, s schema.Metrics, ctx lowerCtx, 
 		return ctx.lowerers.Irate.LowerIrate(rw, s)
 	case "idelta":
 		return ctx.lowerers.Idelta.LowerIdelta(rw, s)
-	case "last_over_time":
+	case lastOverTimeWindowFn:
 		return ctx.lowerers.LastOverTime.LowerLastOverTime(rw, s)
 	// sum_over_time / avg_over_time / first_over_time / stddev_over_time /
 	// stdvar_over_time / mad_over_time (cerberus issue #2761, widened by
@@ -4045,7 +4044,7 @@ func nativeTSGridInstantNode(rw *chplan.RangeWindow, wantFunc string, s schema.M
 // exists to SYNTHESISE that same shape only for the plain fan-out
 // RangeWindow (whose own output carries no MetricName column at all).
 func nativeLastOverTimeNode(rw *chplan.RangeWindow, s schema.Metrics) *chplan.RangeWindowStaleResample {
-	if rw.Func != "last_over_time" {
+	if rw.Func != lastOverTimeWindowFn {
 		return nil
 	}
 	if rw.Identity || rw.Step <= 0 || rw.Start.IsZero() || rw.End.IsZero() {
@@ -4423,7 +4422,7 @@ func isIdentityColumnRef(x chplan.Expr, name string) bool {
 //	prometheus/prometheus@cerberus-parser/promql/engine.go
 //	`dropName := (e.Func.Name != "last_over_time" && e.Func.Name != "first_over_time")`
 func rangeFnPreservesName(fn string) bool {
-	return fn == "last_over_time" || fn == "first_over_time"
+	return fn == lastOverTimeWindowFn || fn == "first_over_time"
 }
 
 // preservedNameExpr picks the expression a preserve-name wrapper should
