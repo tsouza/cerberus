@@ -9,19 +9,24 @@ import (
 // logs table begins in a log query's statement.
 const logsScanWhere = "FROM `otel_logs` WHERE "
 
-// TestLogQueryFiltersKeepPipelineOrder pins that a log query's filters reach
-// the WHERE of the SELECT that reads the table in the order its pipeline
-// writes them. ClickHouse runs a multi-step PREWHERE in the order of the
-// WHERE conjuncts, so a line filter moved ahead of a `detected_level` filter
-// that the pipeline runs first reads the body of every row the level filter
-// would have dropped.
-func TestLogQueryFiltersKeepPipelineOrder(t *testing.T) {
+// TestLogQueryFilterConjunctOrder pins the order of a log query's filters in
+// the WHERE of the SELECT that reads the table. ClickHouse runs a multi-step
+// PREWHERE in the order of the WHERE conjuncts and reads each column at the
+// first step that needs it, so a filter belongs ahead of one the pipeline
+// runs first only when it reads no column the earlier steps do not already
+// read. A line filter moved ahead of a `detected_level` filter reads the body
+// of every row the level filter would have dropped; one behind a parser's
+// label filter, or behind a line filter the scan already runs, reads nothing
+// new.
+func TestLogQueryFilterConjunctOrder(t *testing.T) {
 	t.Parallel()
 	const (
 		// The statement binds each literal as a parameter.
-		level  = "(`_logql_detected_level` = ?)"
-		failed = "match(`Body`, ?)"
-		first  = "(position(`Body`, ?) > 0)"
+		level   = "(`_logql_detected_level` = ?)"
+		failed  = "match(`Body`, ?)"
+		request = "(position(`Body`, ?) > 0)"
+		// A label filter after `| json` reads the parsed labels map.
+		parsed = "mapContains(`_logql_labels_"
 	)
 	for _, tc := range []struct {
 		name  string
@@ -39,9 +44,19 @@ func TestLogQueryFiltersKeepPipelineOrder(t *testing.T) {
 			order: []string{failed, level},
 		},
 		{
-			name:  "line_level_line",
+			name:  "level_then_parsed_then_line",
+			query: `{service_name="tempo"} | detected_level="error" | json | status >= 400 |= "request"`,
+			order: []string{level, parsed, request},
+		},
+		{
+			name:  "line_ahead_of_parsed",
+			query: `{service_name="tempo"} | json | status >= 400 |= "request"`,
+			order: []string{request, parsed},
+		},
+		{
+			name:  "line_ahead_of_level_behind_a_line",
 			query: `{service_name="tempo"} |= "request" | detected_level="error" |~ "(?i)failed"`,
-			order: []string{first, level, failed},
+			order: []string{request, failed, level},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -59,7 +74,7 @@ func TestLogQueryFiltersKeepPipelineOrder(t *testing.T) {
 					t.Fatalf("the table's WHERE does not read %s: %s", conjunct, where)
 				}
 				if i < prevAt {
-					t.Errorf("the table's WHERE reads %s ahead of %s, which the pipeline runs first: %s", conjunct, prev, where)
+					t.Errorf("the table's WHERE reads %s ahead of %s: %s", conjunct, prev, where)
 				}
 				prev, prevAt = conjunct, i
 			}
