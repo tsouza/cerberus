@@ -294,3 +294,113 @@ func TestChildCountAnswersOneStatusClassForEveryOperator(t *testing.T) {
 		t.Errorf("Parse(%q): want a rejection (upstream forbids `<intrinsic> = nil`), got none", rejected)
 	}
 }
+
+// TestSpanFreeOperandOfTopLevelOr pins how a span-free operand of a logical
+// OR lowers. Reference Tempo folds a span-free expression to a Static, and
+// its fetch layer fetches an OR filter's spans by the conditions of the whole
+// query. When the first filter's top-level OR chain supplies every first-pass
+// condition, each as one span-level condition, such an operand adds no span:
+// the plan is the remaining operands' plan (withoutFetchlessOrOperands).
+// Otherwise a span-free NOT is still dropped and any other span-free operand
+// is evaluated (lowerTopLevelOr). An OR nested under an AND, and an OR that
+// references no span at all, are evaluated.
+func TestSpanFreeOperandOfTopLevelOr(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelTraces()
+
+	lower := func(t *testing.T, q string) chplan.Node {
+		t.Helper()
+		expr, err := tempo.Parse(q)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", q, err)
+		}
+		plan, err := traceql.Lower(context.Background(), expr, s)
+		if err != nil {
+			t.Fatalf("Lower(%q): %v", q, err)
+		}
+		return plan
+	}
+
+	for _, tc := range []struct{ q, same string }{
+		{`{ kind = server || !("a" = "b") }`, `{ kind = server }`},
+		{`{ !("a" = "b") || kind = server }`, `{ kind = server }`},
+		{`{ kind = server || !("a" = "a") }`, `{ kind = server }`},
+		{`{ kind = server || true }`, `{ kind = server }`},
+		{`{ true || kind = server }`, `{ kind = server }`},
+		{`{ kind = server || ("a" = "a") }`, `{ kind = server }`},
+		{`{ kind = server || kind = client || true }`, `{ kind = server || kind = client }`},
+		{`{ (kind = server || !("a" = "b")) || kind = client }`, `{ kind = server || kind = client }`},
+		{`{ kind = server || span.foo != nil || true }`, `{ kind = server || span.foo != nil }`},
+		{`{ "x" = span.foo || true }`, `{ "x" = span.foo }`},
+		{`{ span.foo =~ "x.*" || true }`, `{ span.foo =~ "x.*" }`},
+		// Stages that hand the first fetch pass no condition.
+		{`{ kind = server || true } | count() > 1`, `{ kind = server } | count() > 1`},
+		{`{ kind = server || true } | coalesce()`, `{ kind = server } | coalesce()`},
+		{`{ kind = server || true } | select(span.foo) | by(span.foo)`, `{ kind = server } | select(span.foo) | by(span.foo)`},
+		{`{ kind = server || true } | rate() by (span.foo)`, `{ kind = server } | rate() by (span.foo)`},
+		// Where the operand is kept, a span-free NOT over a comparison still
+		// lowers as OR's identity element, as v1.24.0 lowered it. Tempo
+		// answers both differently (#4402); flip these when that is fixed.
+		{`{ (kind = server && span.foo = "x") || !("a" = "b") }`, `{ kind = server && span.foo = "x" }`},
+		{`{ kind = server || !("a" = "b") } && { kind = client }`, `{ kind = server } && { kind = client }`},
+	} {
+		if got, want := spec.PrintChplan(lower(t, tc.q)), spec.PrintChplan(lower(t, tc.same)); got != want {
+			t.Errorf("Lower(%q) plan =\n%s\nwant (same as %q):\n%s", tc.q, got, tc.same, want)
+		}
+	}
+
+	// Not dropped: the spans Tempo fetches depend on more than the OR's own
+	// span-level conditions, so the operand keeps its evaluated lowering.
+	for _, tc := range []struct{ q, dropped string }{
+		// A compound operand hands the fetch layer several conditions.
+		{`{ (kind = server && span.foo = "x") || true }`, `{ kind = server && span.foo = "x" }`},
+		// A trace-scoped condition switches span filtering off.
+		{`{ trace:rootName = "x" || true }`, `{ trace:rootName = "x" }`},
+		{`{ kind = server || traceDuration > 1s || true }`, `{ kind = server || traceDuration > 1s }`},
+		// The fetch condition keeps the operator as written: span.foo < "5".
+		{`{ "5" < span.foo || true }`, `{ "5" < span.foo }`},
+		// Another filter, a structural relation, a grouping or a field
+		// aggregate adds fetch conditions of its own.
+		{`{ kind = server || true } && { kind = client }`, `{ kind = server } && { kind = client }`},
+		{`{ kind = server || true } > { kind = client }`, `{ kind = server } > { kind = client }`},
+		{`{ kind = server || true } | by(span.foo)`, `{ kind = server } | by(span.foo)`},
+		{`{ kind = server || true } | avg(duration) > 1s`, `{ kind = server } | avg(duration) > 1s`},
+		// The by() stage before a metrics function is dropped from the plan,
+		// but Tempo still extracts its condition.
+		{`{ kind = server || true } | by(span.foo) | rate()`, `{ kind = server } | by(span.foo) | rate()`},
+		// Event and instrumentation conditions are not matched per span.
+		{`{ event.foo = "x" || true }`, `{ event.foo = "x" }`},
+		{`{ instrumentation.foo = "x" || true }`, `{ instrumentation.foo = "x" }`},
+		// Beside a sibling filter, a double negation and a NOT over a
+		// compound operand are evaluated, as v1.24.0 evaluated them.
+		{`{ kind = server || !!("a" = "a") } && { kind = client }`, `{ kind = server } && { kind = client }`},
+		{`{ kind = server || !(("a" = "b") && ("c" = "d")) } && { kind = client }`, `{ kind = server } && { kind = client }`},
+		{`{ trace:rootName = "x" || !!("a" = "a") }`, `{ trace:rootName = "x" }`},
+	} {
+		if got, dropped := spec.PrintChplan(lower(t, tc.q)), spec.PrintChplan(lower(t, tc.dropped)); got == dropped {
+			t.Errorf("Lower(%q) plan is the plan of %q; want the span-free operand kept:\n%s", tc.q, tc.dropped, got)
+		}
+	}
+
+	// Evaluated, not dropped: the predicate keeps the NOT as SQL not(...).
+	for _, q := range []string{
+		`{ (kind = server || !("a" = "b")) && kind = client }`,
+		`{ kind = client && (kind = server || !("a" = "b")) }`,
+		`{ ("a" = "b") || !("a" = "b") }`,
+	} {
+		filter, ok := lower(t, q).(*chplan.Filter)
+		if !ok {
+			t.Fatalf("Lower(%q): want *chplan.Filter", q)
+		}
+		evaluated := false
+		chplan.InspectExpr(filter.Predicate, func(e chplan.Expr) bool {
+			if call, ok := e.(*chplan.FuncCall); ok && call.Fn == chplan.FnNot {
+				evaluated = true
+			}
+			return true
+		})
+		if !evaluated {
+			t.Errorf("Lower(%q): predicate %#v has no not(...); want the span-free NOT evaluated", q, filter.Predicate)
+		}
+	}
+}

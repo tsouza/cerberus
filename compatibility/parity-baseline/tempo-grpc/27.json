@@ -4,6 +4,7 @@
   "bucket": "27",
   "cases": [
     "search | duration_lt_300ms",
+    "search | static_bool_or_true_beside_spanset_and",
     "tag_values_v2 | tag_values_v2_unknown_tag_empty",
     "tags_v2 | tags_v2_incomplete_query_keeps_valid_conjunct"
   ]

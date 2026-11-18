@@ -2,5 +2,8 @@
   "schema_version": 1,
   "head": "tempo",
   "bucket": "10",
-  "cases": []
+  "cases": [
+    "search | static_bool_nested_or_not_static",
+    "search | static_bool_or_not_static_beside_span"
+  ]
 }

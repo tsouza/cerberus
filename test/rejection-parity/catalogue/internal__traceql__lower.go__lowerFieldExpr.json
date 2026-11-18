@@ -18,6 +18,7 @@
           "lowerNestedAttrBinary",
           "lowerNestedIntrinsicBinary",
           "lowerNestedSetBinary",
+          "lowerTopLevelOr",
           "lowerTraceScopedPeer",
           "lowerUnaryMinus",
           "scalarAggLeaf"

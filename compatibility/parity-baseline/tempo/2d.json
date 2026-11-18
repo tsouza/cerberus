@@ -5,6 +5,7 @@
   "cases": [
     "metrics_range | metrics_compare_root_name_eq_name",
     "search | coalesce_trace_duration_filtered",
+    "search | static_bool_or_true_beside_trace_scoped",
     "traces | trace_by_id_rootless"
   ]
 }
