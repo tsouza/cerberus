@@ -263,10 +263,7 @@ every PR) to *broad* (corpus-wide, nightly).
    deployment's tables, with the server facts the resolved set decides
    (`choptwire.SetServerStrategies`), and runs some sentinels against the
    exporter's own sorting key and against renamed tables. A nightly sentinel
-   whose mechanism changes the plan without moving peak memory beyond noise
-   names a processor (`Sentinel.WantPipelineStep`) that `EXPLAIN PIPELINE` of
-   the statement it dispatched, rebuilt from `system.query_log`, must contain
-   on every repeat. A nightly sentinel whose peak depends on a per-query
+   whose peak depends on a per-query
    setting names it (`Sentinel.WantSettings`): the statement it dispatched
    must carry it on every repeat, on every server at or past the setting's
    line. A nightly sentinel whose mechanism is leaving the `PREWHERE` split to
