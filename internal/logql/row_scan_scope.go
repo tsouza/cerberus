@@ -223,7 +223,7 @@ type stageMaps struct {
 func stageMapReads(maps []string, consumer []chplan.Expr, items []chplan.Node) stageMaps {
 	m := stageMaps{maps: maps}
 	note := func(e chplan.Expr) {
-		forEachMapRead(e, maps, func(name string, keyed bool) {
+		forEachMapRead(e, maps, func(name, _ string, keyed bool) {
 			if !keyed && !slices.Contains(m.whole, name) {
 				m.whole = append(m.whole, name)
 			}
@@ -246,7 +246,7 @@ func stageMapReads(maps []string, consumer []chplan.Expr, items []chplan.Node) s
 // readsWhole reports whether e reads a map column as a whole.
 func (m stageMaps) readsWhole(e chplan.Expr) bool {
 	found := false
-	forEachMapRead(e, m.maps, func(_ string, keyed bool) { found = found || !keyed })
+	forEachMapRead(e, m.maps, func(_, _ string, keyed bool) { found = found || !keyed })
 	return found
 }
 
@@ -255,7 +255,7 @@ func (m stageMaps) readsWhole(e chplan.Expr) bool {
 func (m stageMaps) readsWholeKey(e chplan.Expr) bool {
 	found := false
 	if len(m.whole) > 0 {
-		forEachMapRead(e, m.maps, func(name string, keyed bool) {
+		forEachMapRead(e, m.maps, func(name, _ string, keyed bool) {
 			found = found || keyed && slices.Contains(m.whole, name)
 		})
 	}
@@ -297,14 +297,7 @@ type scanScope struct {
 
 // readsLayer reports whether e reads an alias the stack defines.
 func (s *scanScope) readsLayer(e chplan.Expr) bool {
-	found := false
-	chplan.InspectExpr(e, func(sub chplan.Expr) bool {
-		if ref, ok := sub.(*chplan.ColumnRef); ok && s.aliases[ref.Name] {
-			found = true
-		}
-		return !found
-	})
-	return found
+	return readsAlias(e, s.aliases)
 }
 
 // admits reports whether e — a layer's value or a filter conjunct — reads
@@ -373,20 +366,20 @@ func conjunction(preds []chplan.Expr) chplan.Expr {
 }
 
 // forEachMapRead calls visit for each read e makes of a column of maps:
-// keyed for a read through a constant key, and not keyed for a read of the
-// map as a whole.
-func forEachMapRead(e chplan.Expr, maps []string, visit func(name string, keyed bool)) {
+// keyed, with the key, for a read through a constant key, and not keyed
+// for a read of the map as a whole.
+func forEachMapRead(e chplan.Expr, maps []string, visit func(name, key string, keyed bool)) {
 	chplan.InspectExpr(e, func(sub chplan.Expr) bool {
 		switch v := sub.(type) {
 		case *chplan.MapAccess:
 			ref, isColumn := v.Map.(*chplan.ColumnRef)
-			if _, constant := v.Key.(*chplan.LitString); isColumn && constant && slices.Contains(maps, ref.Name) {
-				visit(ref.Name, true)
+			if key, constant := v.Key.(*chplan.LitString); isColumn && constant && slices.Contains(maps, ref.Name) {
+				visit(ref.Name, key.V, true)
 				return false
 			}
 		case *chplan.ColumnRef:
 			if slices.Contains(maps, v.Name) {
-				visit(v.Name, false)
+				visit(v.Name, "", false)
 			}
 		}
 		return true

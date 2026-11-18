@@ -112,7 +112,8 @@ func lowerLogQuery(sel syntax.LogSelectorExpr, s schema.Logs, lc lowerCtx) (chpl
 			Alias: logMetadataCol,
 		})
 	}
-	rows.hoist(logLineLimit(sel, s, lc))
+	order, limit := logLineLimit(sel, s, lc)
+	rows.hoist(logMapColumns(s), order, limit)
 	out := &chplan.Project{
 		Roles:       logSampleRoles(),
 		Input:       rows.node,
