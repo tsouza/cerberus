@@ -1,6 +1,10 @@
 package promql
 
 import (
+	"slices"
+	"strings"
+
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -68,11 +72,16 @@ const hqFloatMinRungs = 2
 //	          Filter <sample carries a parseable `le`>
 //	            <the argument, lowered as an ordinary float expression>
 //
-// The fan-out is the reason this route is GUARDED rather than universal.
-// It multiplies a histogram row into one row per bucket, and the classic
+// The fan-out is the reason this route is not the first choice. It
+// multiplies a histogram row into one row per bucket, and the classic
 // `sum by(le)` idiom — the hottest cost centre in the product — must keep
 // reaching the array-domain fold that reads the bucket arrays in place.
-// Only an aggregation with no fold gets here.
+// Only an argument the array-domain idioms cannot express gets here: an
+// aggregation with no fold, and — through
+// [lowerHistogramQuantileClassicFloatOverPlan] from lowerHistogramQuantile's
+// unrecognised-shape fallback — every other float expression whose samples
+// may carry `le` (range functions the idioms do not accept, instant
+// functions and arithmetic over a bucket selector, …).
 //
 // Range mode needs no separate lowering. The argument's own lowering
 // already fans across the step grid, stamping each row with its anchor, so
@@ -98,6 +107,9 @@ func lowerHistogramQuantileClassicFloat(
 	return lowerHistogramQuantileClassicFloatOverPlan(inner, phi, s, ctx), nil
 }
 
+// lowerHistogramQuantileClassicFloatOverPlan reassembles the ladder over an
+// argument already lowered as an ordinary float expression; see
+// [lowerHistogramQuantileClassicFloat].
 func lowerHistogramQuantileClassicFloatOverPlan(inner chplan.Node, phi phiArg, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	attrs := chplan.Expr(&chplan.ColumnRef{Name: s.AttributesColumn})
 
@@ -193,6 +205,7 @@ func lowerHistogramQuantileClassicFloatOverPlan(inner chplan.Node, phi phiArg, s
 		BucketCountsColumn:     s.BucketCountsColumn,
 		ExplicitBoundsColumn:   s.ExplicitBoundsColumn,
 		BucketCountsCumulative: true,
+		BucketCountsSigned:     true,
 		GroupBy: []chplan.Expr{
 			&chplan.ColumnRef{Name: s.AttributesColumn},
 			&chplan.ColumnRef{Name: s.TimestampColumn},
@@ -386,4 +399,220 @@ func hqFloatPairedLadderExpr() chplan.Expr {
 		&chplan.ColumnRef{Name: hqFloatSortedCountAlias}, &chplan.LitInt{V: -1},
 	}}
 	return &chplan.FuncCall{Fn: chplan.FnArrayConcat, Args: []chplan.Expr{pairedInterior, trailingCount}}
+}
+
+// mayCarryBucketBound reports whether e's output samples can carry an `le`
+// label, deciding it from the expression's label algebra alone. A false
+// answer folds histogram_quantile over e to the empty vector without
+// evaluating it. Every shape the algebra below does not settle answers
+// true, which costs the reassembly reading the whole argument from
+// ClickHouse only to drop every row it reads.
+//
+// The selector rule rests on a naming assumption rather than on the
+// data: a series whose name lacks the `_bucket` suffix is taken to store
+// no `le` label. A plain-named series that does store one answers empty
+// here where Prometheus would interpolate it (cerberus issue #4393).
+//
+//   - A scalar or string expression outputs no labels.
+//   - A selector carries `le` only from a classic-histogram bucket fan-out
+//     (a pinned `__name__` with the `_bucket` suffix) or from a series an
+//     `le` matcher names. A selector that pins a name without the suffix
+//     and has no `le` matcher answers false; one whose name is unpinned
+//     (regex, or omitted) answers true.
+//   - A range selector, a subquery, a unary minus, parentheses and `@` read
+//     their operand's label sets unchanged.
+//   - A function call carries `le` as [callMayCarryBucketBound] decides.
+//   - A reducing aggregation outputs exactly its grouping labels: `le`
+//     survives `by` only when listed, and `without` only when not listed
+//     and the operand may carry it. No grouping at all outputs no labels.
+//   - `topk` / `bottomk` / `limitk` / `limit_ratio` select samples and keep
+//     their label sets, so they carry `le` exactly when their operand does.
+//   - `count_values` outputs its grouping labels plus the label it mints,
+//     whose values are sample values: minting `le` makes them bounds.
+//   - A binary operation's output labels come from its vector operands
+//     (`group_left` / `group_right` copy them from the other operand), so
+//     it carries `le` only when one of them may.
+func mayCarryBucketBound(e parser.Expr) bool {
+	if t := e.Type(); t == parser.ValueTypeScalar || t == parser.ValueTypeString {
+		return false
+	}
+	switch n := e.(type) {
+	case *parser.ParenExpr:
+		return mayCarryBucketBound(n.Expr)
+	case *parser.StepInvariantExpr:
+		return mayCarryBucketBound(n.Expr)
+	case *parser.UnaryExpr:
+		return mayCarryBucketBound(n.Expr)
+	case *parser.SubqueryExpr:
+		return mayCarryBucketBound(n.Expr)
+	case *parser.MatrixSelector:
+		return mayCarryBucketBound(n.VectorSelector)
+	case *parser.VectorSelector:
+		return selectorMayCarryBucketBound(n.LabelMatchers)
+	case *parser.Call:
+		return callMayCarryBucketBound(n)
+	case *parser.BinaryExpr:
+		return mayCarryBucketBound(n.LHS) || mayCarryBucketBound(n.RHS)
+	case *parser.AggregateExpr:
+		switch n.Op {
+		case parser.TOPK, parser.BOTTOMK, parser.LIMITK, parser.LIMIT_RATIO:
+			return mayCarryBucketBound(n.Expr)
+		case parser.COUNT_VALUES:
+			if mintsBucketBound(n.Param) {
+				return true
+			}
+			return groupingMayKeepBucketBound(n)
+		case parser.SUM, parser.AVG, parser.MIN, parser.MAX, parser.COUNT, parser.GROUP,
+			parser.STDDEV, parser.STDVAR, parser.QUANTILE:
+			return groupingMayKeepBucketBound(n)
+		}
+	}
+	return true
+}
+
+// selectorMayCarryBucketBound applies [mayCarryBucketBound]'s selector rule
+// to a selector's matchers.
+func selectorMayCarryBucketBound(matchers []*labels.Matcher) bool {
+	name := metricNameFromMatchers(matchers)
+	if name == "" || strings.HasSuffix(name, bucketSuffix) {
+		return true
+	}
+	return hasBucketBoundMatcher(matchers)
+}
+
+// hasBucketBoundMatcher reports whether matchers include one on `le`.
+func hasBucketBoundMatcher(matchers []*labels.Matcher) bool {
+	return slices.ContainsFunc(matchers, func(m *labels.Matcher) bool {
+		return m.Name == bucketBoundLabel
+	})
+}
+
+// labelKeepingFunctions names the functions whose output labels are a
+// subset of their arguments' labels, so they carry `le` only when an
+// argument may. A function missing from this set and from
+// [callMayCarryBucketBound]'s own cases answers true.
+var labelKeepingFunctions = map[string]struct{}{
+	"abs": {}, "acos": {}, "acosh": {}, "asin": {}, "asinh": {}, "atan": {},
+	"atanh": {}, "avg_over_time": {}, "ceil": {}, "changes": {}, "clamp": {},
+	fnClampMax: {}, fnClampMin: {}, "cos": {}, "cosh": {},
+	"count_over_time": {}, "days_in_month": {}, "day_of_month": {},
+	"day_of_week": {}, "day_of_year": {}, "deg": {}, "delta": {}, "deriv": {},
+	"double_exponential_smoothing": {}, "exp": {}, "first_over_time": {},
+	"floor": {}, "histogram_avg": {}, "histogram_count": {},
+	"histogram_fraction": {}, "histogram_quantile": {},
+	"histogram_stddev": {}, "histogram_stdvar": {}, "histogram_sum": {},
+	"hour": {}, "idelta": {}, "increase": {}, "irate": {},
+	lastOverTimeWindowFn: {}, "ln": {}, "log10": {}, "log2": {},
+	"mad_over_time": {}, "max_over_time": {}, "min_over_time": {},
+	"minute": {}, "month": {}, "predict_linear": {}, "present_over_time": {},
+	"quantile_over_time": {}, "rad": {}, "rate": {}, "resets": {},
+	"round": {}, "sgn": {}, "sin": {}, "sinh": {}, "sort": {},
+	fnSortByLabel: {}, fnSortByLabelDesc: {}, "sort_desc": {},
+	"sqrt": {}, fnStartTimestamp: {}, "stddev_over_time": {},
+	"stdvar_over_time": {}, "sum_over_time": {}, "tan": {}, "tanh": {},
+	timestampFunctionName: {}, "ts_of_first_over_time": {},
+	"ts_of_last_over_time": {}, "ts_of_max_over_time": {},
+	"ts_of_min_over_time": {}, "vector": {}, "year": {},
+}
+
+// callMayCarryBucketBound applies [mayCarryBucketBound] to a function
+// call. A label-keeping function ([labelKeepingFunctions]) carries `le`
+// when one of its arguments may; its scalar and string arguments carry
+// none, so `vector(s)` and an argument-less `hour()` answer false.
+//
+//   - `label_replace` / `label_join` / `histogram_quantiles` keep their
+//     vector argument's labels and write the label their second argument
+//     names: writing `le` mints it.
+//   - `absent` / `absent_over_time` output the labels their argument's
+//     equality matchers pin, so they carry `le` when a selector in the
+//     argument matches on it.
+//   - `info` keeps its vector argument's labels and copies data labels
+//     from the info series its second argument selects: see
+//     [infoSeriesMayCarryBucketBound].
+func callMayCarryBucketBound(c *parser.Call) bool {
+	switch c.Func.Name {
+	case fnLabelReplace, fnLabelJoin, "histogram_quantiles":
+		return mintsBucketBound(c.Args[1]) || mayCarryBucketBound(c.Args[0])
+	case "absent", "absent_over_time":
+		return mentionsBucketBound(c.Args[0])
+	case "info":
+		return mayCarryBucketBound(c.Args[0]) || infoSeriesMayCarryBucketBound(c)
+	}
+	if _, keeps := labelKeepingFunctions[c.Func.Name]; !keeps {
+		return true
+	}
+	return slices.ContainsFunc(c.Args, mayCarryBucketBound)
+}
+
+// infoSeriesMayCarryBucketBound reports whether the info series an `info`
+// call selects can contribute an `le` label. info copies only the data
+// labels its selector has matchers for, so with any data-label matcher the
+// series contribute `le` only when one of those matchers names it. With
+// none, info copies every label of the info metric it reads (Prometheus's
+// combineWithInfoVector), and that metric — [effectiveInfoNameMatchers],
+// [targetInfoMetric] by default — is judged by
+// [selectorMayCarryBucketBound]'s naming rule.
+func infoSeriesMayCarryBucketBound(c *parser.Call) bool {
+	nameMatchers, dataMatchers, err := infoSecondArgMatchers(c)
+	if err != nil {
+		return true
+	}
+	if len(dataMatchers) > 0 {
+		return hasBucketBoundMatcher(dataMatchers)
+	}
+	return selectorMayCarryBucketBound(effectiveInfoNameMatchers(nameMatchers))
+}
+
+// mintsBucketBound reports whether a label-name argument may name `le`:
+// any argument other than a string literal naming another label may.
+func mintsBucketBound(arg parser.Expr) bool {
+	minted, ok := arg.(*parser.StringLiteral)
+	return !ok || minted.Val == bucketBoundLabel
+}
+
+// mentionsBucketBound reports whether any selector in e has an `le`
+// matcher.
+func mentionsBucketBound(e parser.Expr) bool {
+	found := false
+	parser.Inspect(e, func(node parser.Node, _ []parser.Node) error {
+		if vs, ok := node.(*parser.VectorSelector); ok {
+			found = found || hasBucketBoundMatcher(vs.LabelMatchers)
+		}
+		return nil
+	})
+	return found
+}
+
+// groupingMayKeepBucketBound applies a reducing aggregation's grouping to
+// its operand's `le`: see [mayCarryBucketBound].
+func groupingMayKeepBucketBound(agg *parser.AggregateExpr) bool {
+	listed := slices.Contains(agg.Grouping, bucketBoundLabel)
+	if agg.Without == listed {
+		return false
+	}
+	return mayCarryBucketBound(agg.Expr)
+}
+
+// planProvablyEmpty reports whether inner's lowering already folded it to
+// zero rows: a constant-false Filter reached through nodes that can only
+// map or drop rows (a native-histogram argument under a function that
+// drops histogram samples, `max_over_time(h_exp_hist[5m])`, lowers so).
+// An Aggregate stops the walk, since one without grouping keys answers a
+// row over an empty input.
+func planProvablyEmpty(inner chplan.Node) bool {
+	for {
+		switch n := inner.(type) {
+		case *chplan.Filter:
+			if lit, ok := n.Predicate.(*chplan.LitBool); ok && !lit.V {
+				return true
+			}
+			inner = n.Input
+		case *chplan.Project:
+			inner = n.Input
+		case *chplan.OrderBy:
+			inner = n.Input
+		default:
+			return false
+		}
+	}
 }

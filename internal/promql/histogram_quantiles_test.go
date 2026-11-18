@@ -219,6 +219,35 @@ func TestLower_HistogramQuantiles_FloatVectorFallsBack(t *testing.T) {
 	}
 }
 
+// A float-bucket argument outside the histogram idioms reassembles its
+// ladder from `le`-labelled samples into the same HistogramQuantile kernel
+// every other classic input feeds, so the levels share that one kernel
+// rather than fanning out one arm per level.
+func TestLower_HistogramQuantiles_FloatBucketArgSharesKernel(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"irate by le", `histogram_quantiles(sum by (le) (irate(request_latency_bucket[5m])), "q", 0.5, 0.9)`},
+		{"bucket arithmetic", `histogram_quantiles(request_latency_bucket * 2, "q", 0.5, 0.9)`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			expr, err := newExperimentalParser().ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr: %v", err)
+			}
+			plan, err := promql.Lower(context.Background(), expr, schema.DefaultOTelMetrics())
+			if err != nil {
+				t.Fatalf("Lower: %v", err)
+			}
+			if got := countSharedHistogramKernels(plan); got != 1 {
+				t.Fatalf("shared histogram kernels = %d, want 1", got)
+			}
+		})
+	}
+}
+
 func TestLower_HistogramQuantiles_AllOutOfDomainFallsBackWithoutRejecting(t *testing.T) {
 	t.Parallel()
 	expr, err := newExperimentalParser().ParseExpr(`histogram_quantiles(http_server_request_duration, "q", -1, 2)`)

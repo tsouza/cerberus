@@ -86,6 +86,7 @@ regex_absent_key.txtar
 regex_attr.txtar
 regex_match_any_fold.txtar
 regex_match_none_fold.txtar
+search_leading_select.txtar
 search_trace_limit_bare_table_map_column.txtar
 search_trace_limit_exceeds_match_count.txtar
 search_traceid.txtar
@@ -179,9 +180,5 @@ trace_scoped_span_operand_trace_duration_neq.txtar
 unary_minus_duration.txtar
 unary_not_compound_and_operand.txtar
 unary_not_double_negation.txtar
-unary_not_static_comparison_and.txtar
-unary_not_static_comparison_and_attr.txtar
-unary_not_static_comparison_or.txtar
-unary_not_static_comparison_top.txtar
 unscoped_bool_attr.txtar
 unscoped_bool_attr_false.txtar

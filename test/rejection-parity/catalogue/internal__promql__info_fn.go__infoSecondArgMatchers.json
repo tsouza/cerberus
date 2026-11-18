@@ -5,15 +5,19 @@
       "site": "internal/promql/info_fn.go:infoSecondArgMatchers#a1d855c7",
       "message": "promql: info(...) second argument must be a label selector, got %T",
       "class": "internal",
-      "rationale": "The reference engine's evalInfo itself type-asserts args[1] to *parser.VectorSelector; a non-selector vector second argument is not a meaningful info label-selector and the guard mirrors that upstream assumption rather than panicking on the cast.",
+      "rationale": "The reference engine's evalInfo itself type-asserts args[1] to *parser.VectorSelector; a non-selector vector second argument is not a meaningful info label-selector and the guard mirrors that upstream assumption rather than panicking on the cast. infoSeriesMayCarryBucketBound calls it on a call the parser already accepted as info, and answers true on the error rather than surfacing it, so no query reaches the message through that caller either.",
       "evidence": {
         "guard": [
           "past returning if len(c.Args) != 2",
           "if !ok"
         ],
         "callers": [
+          "infoSeriesMayCarryBucketBound",
           "lowerInfo",
           "lowerInfoOverMixedPlan"
+        ],
+        "cited": [
+          "infoSeriesMayCarryBucketBound"
         ]
       }
     }
