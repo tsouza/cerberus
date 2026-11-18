@@ -17,7 +17,12 @@ import (
 // times the size of its text. The parser and label-filter scopes of the
 // shapes the stage lowers to expand to 1.8–2.9 times their text; the
 // unwrap conversion chain above them expands past 3.4, and moved into the
-// scan's scope it adds seconds of analysis on ClickHouse 24.8.
+// scan's scope it adds seconds of analysis on ClickHouse 24.8. The one
+// exception is a conjunct that reads only values already in the scope,
+// behind the first conjunct of an ordered prefix ([scanGather.first]): it
+// adds no layer, only its own reads of the scope's aliases, and it is one
+// of the filters the query wrote ahead of its line filter, so it joins
+// whatever the expansion.
 const maxScanScopeExpansion = 3
 
 // gatherAtScan moves into the stream scan's own scope the part of a range
@@ -65,9 +70,11 @@ const maxScanScopeExpansion = 3
 // whole map in the scan's scope reads it ahead of the rows it filters.
 //
 // The conjuncts in the scan's scope keep the order the stage gives them,
-// which is the pipeline's: ClickHouse runs a multi-step PREWHERE in the
-// order of the WHERE conjuncts, and the order the query was written in
-// is the one a reader of it can tune.
+// which is the pipeline's: a server that keeps WHERE order
+// (chopt.PrewhereKeepsWhereOrder) runs a multi-step PREWHERE in that
+// order, and the order the query was written in is the one a reader of it
+// can tune. A server that reorders the conditions chooses their order
+// itself.
 //
 // Moving a value below the layers it does not read changes nothing it
 // computes: every layer is a pure per-row value, and an AND of predicates
@@ -181,7 +188,7 @@ func (g *scanGather) takeFilter(scope *scanScope, i int, n *chplan.Filter) {
 		switch {
 		case g.reads.readsWhole(conjunct) && i > g.keyedThrough:
 			kept = append(kept, conjunct)
-		case !scope.readsLayer(conjunct) && (len(g.filtered) == 0 || g.reads.readsWholeKey(conjunct)):
+		case !scope.readsLayer(conjunct) && (len(g.filtered) == 0 || g.reads.readsWholeKey(conjunct) && !g.joinsFirst(i)):
 			g.base = andFilter(g.base, conjunct)
 		case !scope.readsLayer(conjunct):
 			// Behind a moved filter it joins the moved ones in order; it

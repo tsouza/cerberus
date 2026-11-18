@@ -72,8 +72,8 @@ func TestRangeAggregationFiltersRunWhereTheTableIsRead(t *testing.T) {
 // TestRangeAggregationScanFiltersKeepTheirOrder pins that the filters a
 // range aggregation evaluates where the table is read keep the order the
 // pipeline gives them: a detected_level filter written ahead of a line
-// filter runs ahead of it, so ClickHouse's multi-step PREWHERE reads the
-// line only for the rows the level keeps.
+// filter runs ahead of it, so a server that runs a multi-step PREWHERE in
+// WHERE order reads the line only for the rows the level keeps.
 func TestRangeAggregationScanFiltersKeepTheirOrder(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -104,6 +104,7 @@ var levelThenLineBehindAWholeMapRead = []string{
 	`sum(count_over_time({job="wide"} | detected_level="error" | json | status >= 400 |= "orders/5" [5m]))`,
 	`sum by (tenant) (count_over_time({job="wide"} | detected_level="error" |= "orders/5" [5m]))`,
 	`sum(bytes_over_time({job="wide"} | detected_level!="info" | tenant!="tenant-7" |= "request" [5m]))`,
+	`absent_over_time({job="wide"} | detected_level="error" | tenant!="tenant-7" |= "orders/5" [5m])`,
 }
 
 // TestRangeAggregationLevelFilterLeadsWhereOrderHolds pins that on servers
@@ -116,15 +117,21 @@ var levelThenLineBehindAWholeMapRead = []string{
 // joins the scan's predicates and the level source stays above.
 func TestRangeAggregationLevelFilterLeadsWhereOrderHolds(t *testing.T) {
 	t.Parallel()
-	const level, line = "lower(`_logql_level_source`)", "position(`Body`"
+	const level, line, tenant = "lower(`_logql_level_source`)", "position(`Body`", "mapContains(`LogAttributes`"
 	for _, query := range levelThenLineBehindAWholeMapRead {
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 			sql, _ := rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{PrewhereInWhereOrder: true})
 			scope := scopeAround(t, sql, "FROM `otel_logs`")
-			first, then := strings.Index(scope, level), strings.Index(scope, line)
+			where := scope[strings.Index(scope, "FROM `otel_logs`"):]
+			first, then := strings.Index(where, level), strings.Index(where, line)
 			if first < 0 || then < 0 || first > then {
-				t.Errorf("in WHERE order, the SELECT reading otel_logs does not read %s ahead of %s: %s", level, line, scope)
+				t.Errorf("in WHERE order, the SELECT reading otel_logs does not read %s ahead of %s: %s", level, line, where)
+			}
+			// A label filter the pipeline runs after the level filter runs
+			// after it there too.
+			if at := strings.Index(where, tenant); strings.Contains(query, "tenant!=") && (at < first || at > then) {
+				t.Errorf("in WHERE order, the tenant filter does not run between %s and %s: %s", level, line, where)
 			}
 			sql, _ = rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{})
 			scope = scopeAround(t, sql, "FROM `otel_logs`")

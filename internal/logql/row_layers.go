@@ -278,9 +278,11 @@ func (r *rowLayers) hoist(maps []string, order *chplan.OrderBy, limit *chplan.Li
 // conjuncts of the filters among items that can run there, and returns the
 // new base with each filter's remaining conjuncts, in order.
 //
-// ClickHouse runs a multi-step PREWHERE in the order of the WHERE conjuncts
-// and reads each column at the first step that needs it, for the rows the
-// steps ahead of that one keep. Every conjunct the pipeline runs ahead of
+// A server that keeps WHERE order (chopt.PrewhereKeepsWhereOrder) runs a
+// multi-step PREWHERE in the order of the WHERE conjuncts and reads each
+// column at the first step that needs it, for the rows the steps ahead of
+// that one keep; a server that reorders the conditions chooses their order
+// itself. Every conjunct the pipeline runs ahead of
 // the first one that reads a layer folds. After that first one, a conjunct
 // that reads no layer folds only when base and the first one, through the
 // layers it reads, already read every table column it reads: run ahead of

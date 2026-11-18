@@ -561,7 +561,9 @@ The emitter is also CH-native rather than ANSI-ish:
   no layer and a table column the scan's filter and the first filter
   conjunct reading a layer do not already read lifts that rule for
   everything up to it, as long as the first conjunct then moves: it
-  runs behind the first conjunct in the scan's scope. The layers above
+  runs behind the first conjunct in the scan's scope, and a conjunct up
+  to it that reads only values already in the scope joins it there past
+  the three-times bound, adding no layer. The layers above
   the moved part render one `SELECT` each. The chain
   stays nested when an alias is defined twice, when an alias is named
   like a table column that the scan's filter or a node at or below the

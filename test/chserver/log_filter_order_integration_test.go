@@ -140,32 +140,36 @@ func TestRangeAggregationLevelFilterSparesTheBody(t *testing.T) {
 }
 
 // TestRangeAggregationOnAReorderingServerKeepsItsStatement runs
-// logFilterOrderRangeQueries on a server that reorders PREWHERE conditions,
-// once with the strategies its build resolves to and once with
-// PrewhereInWhereOrder unset, and requires the two runs to send the same
-// statement and read the same bytes: on such a server the order the plan
-// writes the filters in buys nothing, so it renders what it rendered before
-// the order mattered.
+// logFilterOrderRangeQueries on a server that reorders PREWHERE conditions
+// three ways: with the strategies its build resolves to, with
+// PrewhereInWhereOrder unset, and with it set. The resolved run must send the
+// unset run's statement and read its bytes — on such a server the plan keeps
+// the arrangement it had before the order mattered. The set run must send a
+// different statement with the same answer, so the arrangement it renders
+// for a server that keeps WHERE order is answer-preserving here too.
 func TestRangeAggregationOnAReorderingServerKeepsItsStatement(t *testing.T) {
 	ctx := context.Background()
 	s, resolved, _ := startLogFilterOrder(ctx, t, logFilterReorderImage, true)
-	if chopt.PrewhereKeepsWhereOrder(s.version) {
-		t.Fatalf("%s keeps WHERE order; the test needs a build that reorders PREWHERE conditions", s.version)
-	}
 	unset := logFilterOrderMux(t, s, false)
+	set := logFilterOrderMuxWith(t, s, true)
 	for _, query := range logFilterOrderRangeQueries {
 		t.Run(query, func(t *testing.T) {
 			params := func() url.Values {
 				return url.Values{"query": {query}, "step": {strconv.FormatFloat(logFilterOrderStep.Seconds(), 'f', -1, 64)}}
 			}
-			var a, b json.RawMessage
+			var a, b, c json.RawMessage
 			readResolved, sqlResolved := queryLogFilterOrderStatement(ctx, t, s, resolved, params(), &a)
 			readUnset, sqlUnset := queryLogFilterOrderStatement(ctx, t, s, unset, params(), &b)
-			if sqlResolved != sqlUnset {
-				t.Errorf("the resolved strategies change the statement on %s:\n%s\n%s", s.version, sqlResolved, sqlUnset)
+			readSet, sqlSet := queryLogFilterOrderStatement(ctx, t, s, set, params(), &c)
+			t.Logf("%s: resolved %d bytes, unset %d, set %d", s.version, readResolved, readUnset, readSet)
+			if sqlResolved != sqlUnset || readResolved != readUnset || string(a) != string(b) {
+				t.Errorf("the strategies %s resolves to change the statement:\n%s\n%s", s.version, sqlResolved, sqlUnset)
 			}
-			if readResolved != readUnset || string(a) != string(b) {
-				t.Errorf("the resolved strategies read %d bytes and answer %s; unset, %d bytes and %s", readResolved, a, readUnset, b)
+			if sqlSet == sqlUnset {
+				t.Errorf("PrewhereInWhereOrder set renders the unset statement: %s", sqlSet)
+			}
+			if string(c) != string(b) {
+				t.Errorf("PrewhereInWhereOrder set answers %s; unset, %s", c, b)
 			}
 		})
 	}
@@ -195,8 +199,15 @@ func startLogFilterOrder(ctx context.Context, t *testing.T, image string, resolv
 // (chopt.PrewhereKeepsWhereOrder); otherwise under it unset.
 func logFilterOrderMux(t *testing.T, s *server, resolved bool) *http.ServeMux {
 	t.Helper()
+	return logFilterOrderMuxWith(t, s, resolved && chopt.PrewhereKeepsWhereOrder(s.version))
+}
+
+// logFilterOrderMuxWith mounts the Loki API over s, rendering under
+// PrewhereInWhereOrder set to inOrder.
+func logFilterOrderMuxWith(t *testing.T, s *server, inOrder bool) *http.ServeMux {
+	t.Helper()
 	cell := chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{})
-	cell.SetPrewhereInWhereOrder(resolved && chopt.PrewhereKeepsWhereOrder(s.version))
+	cell.SetPrewhereInWhereOrder(inOrder)
 	h := loki.New(s.client(t, adminUser, adminPassword, chclient.Config{}), schema.DefaultOTelLogs(), nil)
 	h.Strategies = cell
 	mux := http.NewServeMux()

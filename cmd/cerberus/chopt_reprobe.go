@@ -369,7 +369,8 @@ func reprobeCHOptimizations(
 		}
 
 		// One fleet probe feeds every decision. The condition-cache override,
-		// the shape defects and the analyzer decision follow it on every pass,
+		// the shape defects, the analyzer decision and the PREWHERE order
+		// fact follow it on every pass,
 		// regardless of the resolution: a resolve error, a floor fallback, or
 		// an unchanged set must never leave a known-unsafe build serving from
 		// its cache, nor keep stamping enable_analyzer=0 once a node runs a
@@ -381,6 +382,7 @@ func reprobeCHOptimizations(
 			refreshConditionCacheOverride(logger, consumers.client, fleet, conditionCacheOff)
 		}
 		analyzerMandatory := analyzerMandatoryOnFleet(fleet, inForce.Set.AnalyzerMandatory())
+		inWhereOrder := prewhereInWhereOrderOnFleet(fleet, inForce.Set.PrewhereInWhereOrder())
 		shapeDefects := shapeDefectsOnFleet(fleet, gates)
 		next, ok := resolveCHOptimizationsOnce(logger, cfg, rawQueryWorkload, fleet, &inForce)
 		if !ok {
@@ -394,7 +396,7 @@ func reprobeCHOptimizations(
 			next.FleetHeld = fleet.Held
 		}
 		next.Set = next.Set.WithAnalyzerMandatory(analyzerMandatory).WithShapeDefects(shapeDefects).
-			WithPrewhereInWhereOrder(prewhereInWhereOrderOnFleet(fleet))
+			WithPrewhereInWhereOrder(inWhereOrder)
 		prev := live.get()
 		schedule(next)
 		if next.Set.Equal(prev.Set) && next.ResolvedVersion == prev.ResolvedVersion && next.QueryWorkload == prev.QueryWorkload {
