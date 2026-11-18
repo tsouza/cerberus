@@ -15,6 +15,8 @@ INSERT INTO otel_logs (Timestamp, Body, SeverityText, ResourceAttributes, LogAtt
     (toDateTime64('2025-12-31 23:57:20', 9), 'e3 request retried',  'ERROR', map('job', 'api'), map('tenant', 't1')),
     (toDateTime64('2025-12-31 23:57:30', 9), 'i1 request failed',   'INFO',  map('job', 'api'), map('tenant', 't1')),
     (toDateTime64('2025-12-31 23:57:40', 9), 'e4 failed opening db', 'error', map('job', 'api'), map());
+-- expected_rows --
+[]
 -- parity_exempt --
 reason: structured-metadata-unobservable
 detail: seed populates SeverityText and the tenant structured metadata, which upstream's in-process querier discards before the pipeline runs, so the detected_level and tenant filters would be answered over different data on the two sides
