@@ -10,7 +10,8 @@ import (
 // whether the first element is a literal (exempt from the must-gap rule),
 // and whether the last is a `<_>` (the remainder must then be non-empty).
 // A literal that is a prefix or a suffix of `<_>` is ordinary text, and a
-// valid encoding of U+FFFD is a literal rune.
+// valid encoding of U+FFFD is a literal rune. The empty pattern and a lone
+// `<_>` both have no literal run and differ only in ending on a capture.
 func TestParsePatternLineFilter_Structure(t *testing.T) {
 	t.Parallel()
 
@@ -23,6 +24,7 @@ func TestParsePatternLineFilter_Structure(t *testing.T) {
 		{"<_><<_>", patternLineFilter{Literals: []string{"<"}, EndsWithCapture: true}},
 		{"a\xef\xbf\xbd<_>", patternLineFilter{Literals: []string{"a�"}, FirstIsLiteral: true, EndsWithCapture: true}},
 		{"<_>", patternLineFilter{Literals: []string{}, EndsWithCapture: true}},
+		{"", patternLineFilter{Literals: []string{}}},
 	}
 	for _, c := range cases {
 		got, err := parsePatternLineFilter(c.pattern)

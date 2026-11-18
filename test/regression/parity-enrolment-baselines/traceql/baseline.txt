@@ -86,6 +86,7 @@ regex_absent_key.txtar
 regex_attr.txtar
 regex_match_any_fold.txtar
 regex_match_none_fold.txtar
+search_leading_select.txtar
 search_trace_limit_bare_table_map_column.txtar
 search_trace_limit_exceeds_match_count.txtar
 search_traceid.txtar
