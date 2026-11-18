@@ -1192,6 +1192,20 @@ func (b *Builder) exprFunc(f *chplan.FuncCall) error {
 	if f.Fn == chplan.FnMapSort {
 		return b.exprCanonicalMap(f.Args)
 	}
+	if parsedMapTypeFns[f.Fn] {
+		var err error
+		ParsedMapType(func(b *Builder) { err = b.exprFuncCall(f) })(b)
+		if err != nil {
+			return err
+		}
+		return b.err
+	}
+	return b.exprFuncCall(f)
+}
+
+// exprFuncCall renders a FuncCall whose Fn exprFunc does not special-case,
+// through fnResolutions.
+func (b *Builder) exprFuncCall(f *chplan.FuncCall) error {
 	if jsonFullMapFns[f.Fn] {
 		f = b.substituteJSONFullMapArgs(f)
 	}
@@ -2629,13 +2643,44 @@ func CanonicalMap(m Frag) Frag {
 		if !typeCast {
 			return
 		}
-		text, argEnd := b.sb.String()[start:b.sb.Len()-1], len(b.args)
-		b.sb.WriteString(", toTypeName(")
-		b.sb.WriteString(text)
-		b.args = append(b.args, b.args[argStart:argEnd]...)
-		b.physicalScans += b.physicalScans - scanStart
-		b.sb.WriteString("))")
+		b.writeReplayedTypeName(start, b.sb.Len()-1, argStart, scanStart)
 	}
+}
+
+// ParsedMapType renders m, a call to a Map function that derives its result
+// type from the underlying Array(Tuple(key, value)) (mapConcat, mapApply),
+// cast back to the type ClickHouse parses from m's own type name under
+// SchemaStrategies.CanonicalMapTypeCast:
+//
+//	CAST(<m>, toTypeName(<m>))
+//
+// and bare otherwise. m is rendered once and replayed into toTypeName, as in
+// [CanonicalMap]; the cast converts no value. canonical_map.go records why.
+func ParsedMapType(m Frag) Frag {
+	return func(b *Builder) {
+		if !b.strategies.CanonicalMapTypeCast {
+			m(b)
+			return
+		}
+		b.sb.WriteString("CAST(")
+		start, argStart, scanStart := b.sb.Len(), len(b.args), b.physicalScans
+		m(b)
+		b.writeReplayedTypeName(start, b.sb.Len(), argStart, scanStart)
+	}
+}
+
+// writeReplayedTypeName closes a type cast opened with "CAST(" by writing
+// ", toTypeName(<text>))", where text is the already-rendered SQL in
+// [start, end), and replays the arguments that text bound (from argStart)
+// and the physical scans it counted (from scanStart), so the placeholders
+// and the bound arguments stay aligned.
+func (b *Builder) writeReplayedTypeName(start, end, argStart, scanStart int) {
+	text, argEnd := b.sb.String()[start:end], len(b.args)
+	b.sb.WriteString(", toTypeName(")
+	b.sb.WriteString(text)
+	b.args = append(b.args, b.args[argStart:argEnd]...)
+	b.physicalScans += b.physicalScans - scanStart
+	b.sb.WriteString("))")
 }
 
 // Array returns a Frag rendering a CH array literal "[<e0>, <e1>, …]".
