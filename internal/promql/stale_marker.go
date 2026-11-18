@@ -245,30 +245,38 @@ func dropStaleLatestHistograms(fanout chplan.Node, s schema.Metrics) chplan.Node
 // histogram scan the bucket layout of its series, so the `_bucket` fan-out
 // turns the marker into one row per bucket bound instead of into none. A
 // marker row carries empty BucketCounts / ExplicitBounds; it takes the
-// sorted union of every bound its series carried in the scanned rows
-// (`groupUniqArrayArray` over a window partitioned by series), and
+// sorted union of every bound its series carried in the scanned rows, and
 // BucketCounts sized to that layout plus the `+Inf` bucket. The fan-out
 // reads the arrays from [staleLayoutBoundsAlias] / [staleLayoutCountsAlias]
 // and writes the encoded marker ([staleMarkerValueExpr]) as each fanned
 // row's Value, so each `le` series ends at the marker in the latest-sample
 // pick. Every other row passes through unchanged.
 //
-// The plan is three stages:
+// The plan is five stages:
 //
-//	Project [rows..., stale_layout_bounds, stale_layout_counts]   -- the window
-//	  Project [rows..., ExplicitBounds, BucketCounts]              -- row columns
-//	    Filter bound
-//	      input
+//	Project [rows..., stale_layout_bounds, stale_layout_counts]   -- the layout
+//	  Project [rows..., ExplicitBounds, BucketCounts, union]      -- unpack
+//	    Project [series keys, union, arrayJoin(rows tuples)]      -- re-expand
+//	      Aggregate by series: groupUniqArrayArray(ExplicitBounds) AS union,
+//	                           groupArray(tuple(row columns))     AS rows tuples
+//	        Project [rows..., ExplicitBounds, BucketCounts]       -- row columns
+//	          Filter bound
+//	            input
 //
-// rows are the fan-out's own row projections, evaluated once in the middle
-// stage so the window stage reads them by name; the window publishes its
-// arrays under names of their own because an alias that shadows the column
-// its own window reads is a cyclic reference to ClickHouse 24.8.
+// The series is the (MetricName, Attributes) pair. The union is an
+// aggregate per series, and the series' rows travel through the aggregate
+// as one array of tuples that arrayJoin expands again, so every row meets
+// its series' union without a window function. The aggregate holds every
+// row it reads too, as one array per series, but ClickHouse evaluates a
+// window by sorting every input row with all its columns, which costs many
+// times as much memory for the same rows.
+//
+// rows are the fan-out's own row projections, evaluated once in the row
+// stage so the later stages read them by name.
 //
 // bound is the time window the consumer reads ([staleLayoutBoundFor]). It
-// filters the rows beneath the window, because ClickHouse does not push a
-// filter on a non-partition column through a window step: applied only
-// above it, the scan would read the metric's whole history.
+// filters the rows beneath the aggregate, so the scan reads only that
+// window rather than the metric's whole history.
 func staleMarkerBucketLayout(input chplan.Node, rows []chplan.Projection, bound chplan.Expr, s schema.Metrics) chplan.Node {
 	rowStage := &chplan.Project{
 		Roles: metricRoles(s),
@@ -279,24 +287,84 @@ func staleMarkerBucketLayout(input chplan.Node, rows []chplan.Projection, bound 
 			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.BucketCountsColumn}, Alias: s.BucketCountsColumn},
 		),
 	}
+	seriesKeys := []string{s.MetricNameColumn, s.AttributesColumn}
+	var carried []string
+	for _, p := range rowStage.Projections {
+		if !slices.Contains(seriesKeys, p.Alias) {
+			carried = append(carried, p.Alias)
+		}
+	}
+	rowTuple := &chplan.FuncCall{Fn: chplan.FnTuple}
+	for _, col := range carried {
+		rowTuple.Args = append(rowTuple.Args, &chplan.ColumnRef{Name: col})
+	}
+	keyRefs := func() []chplan.Projection {
+		out := make([]chplan.Projection, 0, len(seriesKeys))
+		for _, k := range seriesKeys {
+			out = append(out, chplan.Projection{Expr: &chplan.ColumnRef{Name: k}, Alias: k})
+		}
+		return out
+	}
+	series := &chplan.Aggregate{
+		Roles:          metricRoles(s),
+		Input:          rowStage,
+		GroupByAliases: seriesKeys,
+		AggFuncs: []chplan.AggFunc{
+			{
+				Fn:    chplan.FnGroupUniqArrayArray,
+				Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ExplicitBoundsColumn}},
+				Alias: staleLayoutUnionAlias,
+			},
+			{Fn: chplan.FnGroupArray, Args: []chplan.Expr{rowTuple}, Alias: staleLayoutRowsAlias},
+		},
+	}
+	for _, k := range seriesKeys {
+		series.GroupBy = append(series.GroupBy, &chplan.ColumnRef{Name: k})
+	}
+	expanded := &chplan.Project{
+		Roles: metricRoles(s),
+		Input: series,
+		Projections: append(
+			keyRefs(),
+			chplan.Projection{Expr: &chplan.ColumnRef{Name: staleLayoutUnionAlias}, Alias: staleLayoutUnionAlias},
+			chplan.Projection{
+				Expr: &chplan.FuncCall{
+					Fn:   chplan.FnArrayJoin,
+					Args: []chplan.Expr{&chplan.ColumnRef{Name: staleLayoutRowsAlias}},
+				},
+				Alias: staleLayoutRowAlias,
+			},
+		),
+	}
+	unpacked := &chplan.Project{
+		Roles: metricRoles(s),
+		Input: expanded,
+		Projections: append(
+			keyRefs(),
+			chplan.Projection{Expr: &chplan.ColumnRef{Name: staleLayoutUnionAlias}, Alias: staleLayoutUnionAlias},
+		),
+	}
+	for i, col := range carried {
+		unpacked.Projections = append(unpacked.Projections, chplan.Projection{
+			Expr: &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{
+				&chplan.ColumnRef{Name: staleLayoutRowAlias}, &chplan.LitInt{V: int64(i + 1)},
+			}},
+			Alias: col,
+		})
+	}
 	bounds := &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}
 	counts := &chplan.ColumnRef{Name: s.BucketCountsColumn}
-	seriesBounds := &chplan.FuncCall{
-		Fn: chplan.FnArraySort,
-		Args: []chplan.Expr{&chplan.WindowExpr{
-			Fn:   chplan.FnGroupUniqArrayArray,
-			Args: []chplan.Expr{bounds},
-			PartitionBy: []chplan.Expr{
-				&chplan.ColumnRef{Name: s.MetricNameColumn},
-				&chplan.ColumnRef{Name: s.AttributesColumn},
-			},
-		}},
+	seriesBounds := func() chplan.Expr {
+		return &chplan.FuncCall{
+			Fn:   chplan.FnArraySort,
+			Args: []chplan.Expr{&chplan.ColumnRef{Name: staleLayoutUnionAlias}},
+		}
 	}
 	markerCounts := &chplan.FuncCall{
 		Fn: chplan.FnArrayResize,
 		Args: []chplan.Expr{
 			counts,
-			addExpr(&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{seriesBounds}}, &chplan.LitInt{V: 1}),
+			addExpr(&chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{seriesBounds()}}, &chplan.LitInt{V: 1}),
 		},
 	}
 	marker := staleMarkerRowExpr(s)
@@ -307,7 +375,7 @@ func staleMarkerBucketLayout(input chplan.Node, rows []chplan.Projection, bound 
 	projections = append(
 		projections,
 		chplan.Projection{
-			Expr:  &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{marker, seriesBounds, bounds}},
+			Expr:  &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{marker, seriesBounds(), bounds}},
 			Alias: staleLayoutBoundsAlias,
 		},
 		chplan.Projection{
@@ -315,14 +383,20 @@ func staleMarkerBucketLayout(input chplan.Node, rows []chplan.Projection, bound 
 			Alias: staleLayoutCountsAlias,
 		},
 	)
-	return &chplan.Project{Roles: metricRoles(s), Input: rowStage, Projections: projections}
+	return &chplan.Project{Roles: metricRoles(s), Input: unpacked, Projections: projections}
 }
 
 // staleLayoutBoundsAlias / staleLayoutCountsAlias name the marker-aware
-// ExplicitBounds / BucketCounts [staleMarkerBucketLayout] publishes.
+// ExplicitBounds / BucketCounts [staleMarkerBucketLayout] publishes;
+// staleLayoutUnionAlias, staleLayoutRowsAlias and staleLayoutRowAlias name
+// its per-series bound union, the series' rows as tuples, and one row
+// tuple after the re-expansion.
 const (
 	staleLayoutBoundsAlias = "stale_layout_bounds"
 	staleLayoutCountsAlias = "stale_layout_counts"
+	staleLayoutUnionAlias  = "stale_layout_union"
+	staleLayoutRowsAlias   = "stale_layout_rows"
+	staleLayoutRowAlias    = "stale_layout_row"
 )
 
 // staleMarkerLayoutBoundFilter returns the bound Filter beneath a layout
@@ -331,7 +405,19 @@ func staleMarkerLayoutBoundFilter(p *chplan.Project) (*chplan.Filter, bool) {
 	if len(p.Projections) == 0 || p.Projections[len(p.Projections)-1].Alias != staleLayoutCountsAlias {
 		return nil, false
 	}
-	rowStage, ok := p.Input.(*chplan.Project)
+	unpacked, ok := p.Input.(*chplan.Project)
+	if !ok {
+		return nil, false
+	}
+	expanded, ok := unpacked.Input.(*chplan.Project)
+	if !ok {
+		return nil, false
+	}
+	series, ok := expanded.Input.(*chplan.Aggregate)
+	if !ok {
+		return nil, false
+	}
+	rowStage, ok := series.Input.(*chplan.Project)
 	if !ok {
 		return nil, false
 	}

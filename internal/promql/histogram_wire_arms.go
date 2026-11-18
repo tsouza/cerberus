@@ -34,9 +34,10 @@ import (
 //     <suffix>)` expression — ResolveName always reports
 //     DecisionWireSynthetic for it.
 //   - WireArmWireBound matchers (an `le` matcher on a classic-histogram
-//     selector) exist only AFTER a bucket fan-out materializes the ladder
-//     as a synthetic Attributes entry; evaluated against the pre-fanout
-//     row they are unconditionally unsatisfiable.
+//     selector) test the bucket bound string the lowering synthesises from
+//     the ladder (the fan-out's pair filter, histogram_quantile's ladder
+//     restriction); evaluated against the stored row's labels they are
+//     unconditionally unsatisfiable.
 //
 // See #1755 for the investigation this classifier formalizes: the package
 // had three independent, inconsistent reimplementations of this split

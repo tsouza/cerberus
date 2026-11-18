@@ -41,7 +41,7 @@ func histogramValuedProducerCall(expr parser.Expr, s schema.Metrics, ctx lowerCt
 		if len(call.Args) < 1 || len(call.Args) > 2 {
 			return nil, false
 		}
-	case "sort_by_label", "sort_by_label_desc":
+	case fnSortByLabel, fnSortByLabelDesc:
 		if len(call.Args) < 1 {
 			return nil, false
 		}
@@ -68,7 +68,7 @@ func lowerHistogramValuedProducerCall(call *parser.Call, s schema.Metrics, ctx l
 	switch call.Func.Name {
 	case "info":
 		return lowerInfo(call, s, ctx)
-	case "sort_by_label", "sort_by_label_desc":
+	case fnSortByLabel, fnSortByLabelDesc:
 		return lowerSortByLabel(call, s, ctx)
 	}
 	return nil, fmt.Errorf("promql: internal invariant violated: %s is not a histogram-valued-producing call", call.Func.Name)

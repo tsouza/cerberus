@@ -368,10 +368,10 @@ func TestNativePredictLinearHorizonEligible_ZeroHorizonIsEligible(t *testing.T) 
 
 // TestLowerClampOverMixedExpHistogramSetOp_ClampMinMaxPickCorrectFn kills
 // the CONDITIONALS_NEGATION mutant at
-// instant_fns.go:`if c.Func.Name == "clamp_min"`:
+// instant_fns.go:`if c.Func.Name == fnClampMin`:
 //
 //	fnName := chplan.FnLeast
-//	if c.Func.Name == "clamp_min" {
+//	if c.Func.Name == fnClampMin {
 //	    fnName = chplan.FnGreatest
 //	}
 //
@@ -385,14 +385,14 @@ func TestLowerClampOverMixedExpHistogramSetOp_ClampMinMaxPickCorrectFn(t *testin
 	fc, ok := minValue.(*chplan.FuncCall)
 	if !ok || fc.Fn != chplan.FnGreatest {
 		t.Fatalf("clamp_min newValue = %#v, want FuncCall{Fn: FnGreatest} (mutant `==`→`!=` at "+
-			"instant_fns.go:`if c.Func.Name == \"clamp_min\"` would pick FnLeast)", minValue)
+			"instant_fns.go:`if c.Func.Name == fnClampMin` would pick FnLeast)", minValue)
 	}
 
 	maxValue := clampFamilyNewValue(t, `clamp_max(latency_exp_hist or histogram_quantile(0.5, latency_exp_hist), 5)`)
 	fc, ok = maxValue.(*chplan.FuncCall)
 	if !ok || fc.Fn != chplan.FnLeast {
 		t.Fatalf("clamp_max newValue = %#v, want FuncCall{Fn: FnLeast} (mutant `==`→`!=` at "+
-			"instant_fns.go:`if c.Func.Name == \"clamp_min\"` would pick FnGreatest)", maxValue)
+			"instant_fns.go:`if c.Func.Name == fnClampMin` would pick FnGreatest)", maxValue)
 	}
 }
 

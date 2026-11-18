@@ -132,7 +132,7 @@ var distinctSampleRowsFuncs = map[string]bool{
 	"min_over_time":         true,
 	"max_over_time":         true,
 	"first_over_time":       true,
-	"last_over_time":        true,
+	lastOverTimeWindowFn:    true,
 	"present_over_time":     true,
 	"stddev_over_time":      true,
 	"stdvar_over_time":      true,

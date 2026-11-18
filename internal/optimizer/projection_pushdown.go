@@ -835,12 +835,20 @@ func predicateColumns(e chplan.Expr) []string {
 // outer-scope column, not a child ColumnRef) — omitting it would let
 // ProjectionPushdown prune TraceId off the Scan beneath a gated leaf and
 // emit an UNKNOWN_IDENTIFIER (the failure mode stageColumns' own doc
-// names). The visitor always returns true: every sub-expression of a
-// projection or predicate is evaluated on the Scan's row shape, so there
-// is no subtree whose column reads may be skipped.
+// names). A FieldAccess routed to a materialized attribute column
+// (FieldAccess.MaterializedColumn) is read through that top-level column,
+// not through its Source map — chsql's exprFieldAccess emits the column
+// alone — so the visitor records the column and does not descend into
+// Source. Every other sub-expression of a projection or predicate is
+// evaluated on the Scan's row shape, so the visitor descends into it.
 func collectColumn(seen map[string]struct{}) func(chplan.Expr) bool {
 	return func(sub chplan.Expr) bool {
 		switch v := sub.(type) {
+		case *chplan.FieldAccess:
+			if v.MaterializedColumn != "" {
+				seen[v.MaterializedColumn] = struct{}{}
+				return false
+			}
 		case *chplan.ColumnRef:
 			seen[v.Name] = struct{}{}
 		case *chplan.NestedArrayExists:

@@ -240,12 +240,12 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 
 func lowerClampOverInput(c *parser.Call, s schema.Metrics, ctx lowerCtx, load mathOperandLoader, finish mathFinalization) (chplan.Node, error) {
 	switch c.Func.Name {
-	case "clamp_max", "clamp_min":
+	case fnClampMax, fnClampMin:
 		if len(c.Args) != 2 {
 			return nil, fmt.Errorf("promql: %s expects 2 arguments, got %d", c.Func.Name, len(c.Args))
 		}
 		fnName := chplan.FnLeast
-		if c.Func.Name == "clamp_min" {
+		if c.Func.Name == fnClampMin {
 			fnName = chplan.FnGreatest
 		}
 		if bound, ok := tryScalarLiteral(c.Args[1]); ok {
@@ -390,7 +390,7 @@ const (
 // lowerMathCall selects a value kernel, never a row-shape-specific builder.
 func lowerMathCall(c *parser.Call, s schema.Metrics, ctx lowerCtx, chFn chplan.Fn, load mathOperandLoader, finish mathFinalization) (chplan.Node, error) {
 	switch c.Func.Name {
-	case "clamp", "clamp_min", "clamp_max":
+	case "clamp", fnClampMin, fnClampMax:
 		return lowerClampOverInput(c, s, ctx, load, finish)
 	case "round":
 		if len(c.Args) == 2 {
