@@ -66,9 +66,6 @@ func lowerGroup(prev chplan.Node, g traceql.GroupOperation, s schema.Traces) (ch
 	if col, sub, ok := nestedIntrinsicGroupTarget(g.Expression, s); ok {
 		return groupAggregate(prev, &chplan.ColumnRef{Name: col + "." + sub}, s), nil
 	}
-	// A key reading a trace-scoped intrinsic (`by(rootName)`,
-	// `by(rootName = name)`) groups by each span's own trace's value, joined
-	// onto the spans.
 	// The key reads only the materialized columns the grouped rows carry
 	// (materializedCarriedBy). A bare attribute key is also the group's
 	// value, so a numeric-kind column in it is read through the attribute
@@ -81,6 +78,9 @@ func lowerGroup(prev chplan.Node, g traceql.GroupOperation, s schema.Traces) (ch
 	if _, bare := fieldExprAttribute(g.Expression); bare {
 		readAttributeOutputFrom(key, prev.RowType())
 	}
+	// A key reading a trace-scoped intrinsic (`by(rootName)`,
+	// `by(rootName = name)`) groups by each span's own trace's value, joined
+	// onto the spans.
 	return groupAggregate(withTraceScopedValues(prev, s, key), key, s), nil
 }
 

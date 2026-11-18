@@ -92,10 +92,9 @@ func readSelectedAttributesFrom(projections []chplan.Projection, row chplan.Sche
 //     group key read from it folds a malformed value into the absent one.
 //   - The column must be one of row's columns. An open row type carries
 //     every column of the span table: a Scan, under any Filter,
-//     trace-scoped lookup or nested-set annotation, and a set operation
-//     over two such arms. A closed one
-//     carries only the columns it names: the structural-join span envelope
-//     and a set operation's aligned arms name the attribute maps but no
+//     trace-scoped lookup or nested-set annotation. A closed one carries
+//     only the columns it names: the structural-join span envelope and a
+//     set operation's aligned arms name the attribute maps but no
 //     materialized column.
 func readAttributeOutputFrom(e chplan.Expr, row chplan.Schema) {
 	chplan.InspectExpr(e, func(e chplan.Expr) bool {
