@@ -122,6 +122,11 @@ func TestNormalizeDetectedLevel(t *testing.T) {
 		"Audit":     "Audit",
 		"SEVERE":    "SEVERE",
 		"Emergency": "Emergency",
+		// A capital outside ASCII is no spelling of a variant: Go's
+		// Unicode lowercasing maps U+0130 to `i`, ClickHouse's lower and
+		// upstream's EqualFold do not.
+		"İNFO":     "İNFO",
+		"CRİTİCAL": "CRİTİCAL",
 	}
 	for in, want := range cases {
 		if got := NormalizeDetectedLevel(in); got != want {

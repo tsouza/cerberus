@@ -180,5 +180,9 @@ trace_scoped_span_operand_trace_duration_neq.txtar
 unary_minus_duration.txtar
 unary_not_compound_and_operand.txtar
 unary_not_double_negation.txtar
+unary_not_static_comparison_and.txtar
+unary_not_static_comparison_and_attr.txtar
+unary_not_static_comparison_or_nested.txtar
+unary_not_static_comparison_top.txtar
 unscoped_bool_attr.txtar
 unscoped_bool_attr_false.txtar

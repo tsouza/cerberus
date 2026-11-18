@@ -41,7 +41,7 @@ import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { error, group, log, notice } from './lib/gh.mjs';
 import { runLegBuffered } from './lib/spawn-tagged.mjs';
-import { assertExecuted, parseTestInventory, partitionTests, testKey } from './lib/coverage-partition.mjs';
+import { assertExecuted, parseTestInventory, partitionTests, selectorTests, testKey } from './lib/coverage-partition.mjs';
 
 /**
  * Import path → process count. Every entry is a package whose own chDB suite
@@ -137,11 +137,16 @@ export function planCommands({ go, flags, importPaths, inventories, fanout = FAN
     const count = fanout[pkg];
     for (let index = 1; index <= count; index++) {
       const plan = partitionTests(inventory, index, count);
-      commands.push({
-        name: `${pkg} ${index}/${count}`,
-        argv: [go, 'test', ...flags, '-json', '-run', plan.pattern, pkg],
-        env: {},
-        plan,
+      // A partition whose selector is past the argument budget runs as one
+      // process per selector, each judged on the tests its selector names.
+      plan.selectors.forEach((selector, part) => {
+        const run = plan.selectors.length > 1 ? ` run ${part + 1}/${plan.selectors.length}` : '';
+        commands.push({
+          name: `${pkg} ${index}/${count}${run}`,
+          argv: [go, 'test', ...flags, '-json', '-run', selector.pattern, pkg],
+          env: {},
+          plan: { selected: selectorTests(plan, selector) },
+        });
       });
     }
   }
@@ -150,12 +155,12 @@ export function planCommands({ go, flags, importPaths, inventories, fanout = FAN
 
 /**
  * Reads one partition's `go test -json` stream: the plain output text it
- * carries, and the keys of the top-level tests that passed. Lines that are
+ * carries, and the key of every top-level pass, repeats included. Lines that are
  * not JSON (a build failure's stderr) pass through as text.
  */
 export function readTestEvents(stream) {
   const text = [];
-  const passed = new Set();
+  const passed = [];
   for (const line of stream.split('\n')) {
     if (line === '') continue;
     let event;
@@ -167,7 +172,7 @@ export function readTestEvents(stream) {
     }
     if (typeof event.Output === 'string') text.push(event.Output.replace(/\n$/, ''));
     if (event.Action === 'pass' && event.Test && !event.Test.includes('/')) {
-      passed.add(testKey({ package: event.Package, name: event.Test }));
+      passed.push(testKey({ package: event.Package, name: event.Test }));
     }
   }
   return { text: text.join('\n'), passed };

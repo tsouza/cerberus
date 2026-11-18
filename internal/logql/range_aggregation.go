@@ -161,6 +161,7 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
 		{Expr: value, Alias: rangeAggSynthValueColumn},
 	}
+	rows.gatherAtScan(logMapColumns(s), projectionExprs(projections)...)
 	projected := &chplan.Project{
 		Roles:       logRoles(s),
 		Input:       rows.node,
@@ -309,6 +310,7 @@ func lowerAbsentOverTime(e *syntax.RangeAggregationExpr, s schema.Logs, lc lower
 		return nil, err
 	}
 
+	rows.gatherAtScan(logMapColumns(s))
 	const tsAlias = sampleTimeUnixCol
 	timestamps := &chplan.Project{
 		Roles: logRoles(s),
@@ -394,11 +396,11 @@ func lowerLogRange(lr *syntax.LogRangeExpr, s schema.Logs, lc lowerCtx) (rows *r
 		return nil, nil, nil, fmt.Errorf("logql: range-aggregation inner is %T (not MatchersExpr or PipelineExpr)", lr.Left)
 	}
 	rows = newRowLayers(lowerMatchers(stream, s, lc))
-	level = defineDetectedLevel(rows, s)
+	source, level := defineDetectedLevel(rows, s)
 	// No pipeline — labels-map is the ResourceAttributes column.
 	labelsExpr = &chplan.ColumnRef{Name: s.ResourceAttributesColumn}
 	if pipeline != nil {
-		lc.row.level = level
+		lc.row.level, lc.row.levelSource = level, source
 		if labelsExpr, err = lowerPipelineStages(pipeline, s, lc, rows); err != nil {
 			return nil, nil, nil, err
 		}

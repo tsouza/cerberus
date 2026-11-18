@@ -11,7 +11,7 @@
           "past returning if expr, ok := spansetFilterExpression(elem); ok",
           "case GroupOperation of switch e := elem.(type)",
           "past returning if err := validateFieldExpr(e.Expression); err != nil",
-          "if !referencesSpan(e.Expression)"
+          "if !ReferencesSpan(e.Expression)"
         ],
         "callers": [
           "validatePipeline"

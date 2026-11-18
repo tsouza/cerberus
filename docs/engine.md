@@ -539,12 +539,25 @@ The emitter is also CH-native rather than ANSI-ish:
   optimization (`SchemaStrategies.PrewhereByServer`) it writes every
   conjunct into `WHERE` instead and leaves the split to the server.
 - **Row-chain fusion** renders a filter over a stack of per-row
-  `Project` layers over `Filter(Scan)` as one
+  `Project` layers over `Filter(Scan)` — or a stack with no such filter
+  whose layers read only the table's columns — as one
   `SELECT … FROM <table> WHERE …`, whose select list defines every
   layer alias and whose `WHERE` reads them by name, when the `Project`
   reading it is marked `OneScopeRows` and has an explicit select list.
-  The LogQL lowering marks a log query's row stage only; a range
-  aggregation's row stage renders one `SELECT` per layer. The chain
+  The LogQL lowering marks a log query's row stage — under a limit,
+  the part of it below the sort. A range aggregation's row stage moves
+  into the scan's scope the layers that read only the table's columns
+  and the filters, with the layers they read, whose scope stays within
+  three times its text size once every alias read is replaced by its
+  expression; a filter conjunct that reads no layer joins the scan's
+  filter, or, behind a moved filter, the scope's `WHERE`, so the
+  conjuncts keep the pipeline's order. In a range aggregation, a
+  `detected_level` equality, an OR of them, or an inequality reads the
+  level source rather than the normalised level. A filter conjunct that
+  reads a map column as a whole
+  stays where it is, and nothing that reads a key of a map column the
+  stage reads as a whole moves. The layers above the moved part render
+  one `SELECT` each. The chain
   stays nested when an alias is defined twice, when an alias is named
   like a table column that the scan's filter or a node at or below the
   alias's own layer reads, or when the chain with every alias read
