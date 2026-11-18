@@ -102,3 +102,81 @@ func TestLowerSelect_MaterializedAttributeReads(t *testing.T) {
 		})
 	}
 }
+
+// groupKeyReads lowers query and returns the MaterializedColumn of each
+// FieldAccess in the group keys of its metrics aggregate, histogram or
+// search by() aggregate ("" for a map read), in key order.
+func groupKeyReads(t *testing.T, query string, s schema.Traces) []string {
+	t.Helper()
+	expr, err := tempo.Parse(query)
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", query, err)
+	}
+	plan, err := traceql.Lower(context.Background(), expr, s)
+	if err != nil {
+		t.Fatalf("Lower(%q): %v", query, err)
+	}
+	var keys []chplan.Expr
+	chplan.Walk(plan, func(n chplan.Node) bool {
+		switch v := n.(type) {
+		case *chplan.MetricsAggregate:
+			keys = append(keys, v.GroupBy...)
+		case *chplan.MetricsHistogramOverTime:
+			keys = append(keys, v.GroupBy...)
+		case *chplan.Aggregate:
+			keys = append(keys, v.GroupBy...)
+		}
+		return true
+	})
+	out := []string{}
+	for _, key := range keys {
+		chplan.InspectExpr(key, func(e chplan.Expr) bool {
+			if f, ok := e.(*chplan.FieldAccess); ok {
+				out = append(out, f.MaterializedColumn)
+			}
+			return true
+		})
+	}
+	return out
+}
+
+// TestLowerGroupKey_MaterializedAttributeReads pins which group keys read a
+// materialized attribute column. A group key is an output, so it follows the
+// select() rule: the column stands in for the map cell only where it is
+// String-kind and the grouped rows carry it.
+func TestLowerGroupKey_MaterializedAttributeReads(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelTraces()
+	s.MaterializedSpanAttributeColumns = schema.DefaultMaterializedSpanAttributeColumns()
+	s.MaterializedResourceAttributeColumns = schema.DefaultMaterializedResourceAttributeColumns()
+	const rpcMethod = "__cerberus_materialized_rpc.method"
+
+	cases := []struct {
+		query string
+		want  []string
+	}{
+		{`{ } | rate() by (span.rpc.method)`, []string{rpcMethod}},
+		{`{ } | rate() by (span.http.status_code)`, []string{""}},
+		{`{ } | rate() by (span.http.status_code, span.rpc.method)`, []string{"", rpcMethod}},
+		{`{ } | quantile_over_time(duration, .9) by (span.http.status_code)`, []string{""}},
+		{`{ } | histogram_over_time(duration) by (span.http.status_code)`, []string{""}},
+		{`{ } >> { } | rate() by (span.rpc.method)`, []string{""}},
+		{`{ } | by(span.rpc.method)`, []string{rpcMethod}},
+		{`{ } | by(span.http.status_code)`, []string{""}},
+		// The unscoped read's span arm is the numeric column; its resource
+		// arm has no materialized column.
+		{`{ } | by(.http.status_code)`, []string{"", ""}},
+		{`{ } >> { } | by(span.rpc.method)`, []string{""}},
+		// A key that compares keeps the numeric column its comparison reads.
+		{`{ } | by(span.http.status_code > 400)`, []string{"__cerberus_materialized_http.status_code"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			t.Parallel()
+			if got := groupKeyReads(t, tc.query, s); !slices.Equal(got, tc.want) {
+				t.Errorf("group key reads = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -62,9 +63,18 @@ const materializedSelectSeed = `INSERT INTO otel_traces (TraceId, SpanId, Parent
 // materialized is true and the map-only schema otherwise.
 func newMaterializedSelectServer(t *testing.T, materialized bool) *httptest.Server {
 	t.Helper()
+	return newMaterializedServer(t, materialized, materializedSelectSeed)
+}
+
+// newMaterializedServer serves /api/search and /api/metrics over the
+// materialized table seeded with seed, with the default materialized
+// attribute registry routed when materialized is true and the map-only
+// schema otherwise.
+func newMaterializedServer(t *testing.T, materialized bool, seed string) *httptest.Server {
+	t.Helper()
 	c := chclienttest.NewChDB(t)
 	c.Seed(t, materializedSelectDDL)
-	c.Seed(t, materializedSelectSeed)
+	c.Seed(t, seed)
 	s := schema.DefaultOTelTraces()
 	if materialized {
 		s.MaterializedSpanAttributeColumns = schema.DefaultMaterializedSpanAttributeColumns()
@@ -247,6 +257,161 @@ func TestMaterializedAttributeReadsPastPrunedScan_ChDB(t *testing.T) {
 			}
 			if !strings.Contains(got, tc.carries) {
 				t.Errorf("answer does not carry %q: %s", tc.carries, got)
+			}
+		})
+	}
+}
+
+// materializedMalformedSeed is one trace whose spans carry a well-formed
+// http.status_code ("500", twice), a malformed one ("x5") and none at all.
+// The numeric materialized column holds toInt32OrNull of the cell, so the
+// malformed value and the absent one are both NULL there, while the map
+// keeps them apart: "x5" and "".
+const materializedMalformedSeed = `INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, SpanName, SpanKind, Duration, Timestamp, StatusCode, SpanAttributes, ResourceAttributes) VALUES
+    ('d0000000000000000000000000000001', '4000000000000001', '', 'root', 'Server', 3000, toDateTime64('2026-05-01 11:00:00.000000001', 9), 'Unset', map('rpc.method', 'Root', 'http.status_code', '500'), map('service.name', 'gateway')),
+    ('d0000000000000000000000000000001', '4000000000000002', '4000000000000001', 'child-a', 'Client', 1000, toDateTime64('2026-05-01 11:00:00.000000002', 9), 'Unset', map('rpc.method', 'ChildA', 'http.status_code', 'x5'), map('service.name', 'gateway')),
+    ('d0000000000000000000000000000001', '4000000000000003', '4000000000000001', 'child-b', 'Client', 1000, toDateTime64('2026-05-01 11:00:00.000000003', 9), 'Unset', map('rpc.method', 'ChildB'), map('service.name', 'gateway')),
+    ('d0000000000000000000000000000001', '4000000000000004', '4000000000000001', 'child-c', 'Client', 1000, toDateTime64('2026-05-01 11:00:00.000000004', 9), 'Unset', map('rpc.method', 'ChildC', 'http.status_code', '500'), map('service.name', 'gateway'));`
+
+// metricsSeriesOf decodes a /api/metrics/query_range body into its series,
+// keyed by label set.
+func metricsSeriesOf(t *testing.T, body string) map[string][]float64 {
+	t.Helper()
+	var resp struct {
+		Series []struct {
+			Labels []struct {
+				Key   string `json:"key"`
+				Value struct {
+					StringValue *string `json:"stringValue"`
+					IntValue    *string `json:"intValue"`
+				} `json:"value"`
+			} `json:"labels"`
+			Samples []struct {
+				Value float64 `json:"value"`
+			} `json:"samples"`
+		} `json:"series"`
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("decode: %v\nbody: %s", err, body)
+	}
+	out := map[string][]float64{}
+	for _, s := range resp.Series {
+		var labels []string
+		for _, l := range s.Labels {
+			v := "<untyped>"
+			switch {
+			case l.Value.StringValue != nil:
+				v = *l.Value.StringValue
+			case l.Value.IntValue != nil:
+				v = "int:" + *l.Value.IntValue
+			}
+			labels = append(labels, l.Key+"="+v)
+		}
+		var values []float64
+		for _, sm := range s.Samples {
+			values = append(values, sm.Value)
+		}
+		out[strings.Join(labels, ",")] = values
+	}
+	return out
+}
+
+// TestMetricsByNumericMaterializedKey_ChDB groups a metrics query by the
+// numeric materialized attribute (http.status_code) over spans carrying a
+// well-formed value, a malformed one and none. A group key is an output, so
+// it must be the attribute's own value: the malformed "x5" is its own series
+// and the absent attribute is the "" series. Reading the Nullable(Int32)
+// column instead turns "x5" into NULL and folds it into the "" series.
+func TestMetricsByNumericMaterializedKey_ChDB(t *testing.T) {
+	materialized := newMaterializedServer(t, true, materializedMalformedSeed)
+	mapOnly := newMaterializedServer(t, false, materializedMalformedSeed)
+	path := func(q string) string {
+		return "/api/metrics/query_range?" + url.Values{
+			"q": {q}, "start": {"1777633200"}, "end": {"1777636800"}, "step": {"3600s"},
+		}.Encode()
+	}
+	for _, query := range []string{
+		`{ } | count_over_time() by (span.http.status_code)`,
+		`{ } | count_over_time() by (span.http.status_code, span.rpc.method)`,
+		`{ kind = client } | count_over_time() by (span.http.status_code)`,
+	} {
+		t.Run(query, func(t *testing.T) {
+			got := metricsSeriesOf(t, materializedAttributeBody(t, materialized, path(query)))
+			want := metricsSeriesOf(t, materializedAttributeBody(t, mapOnly, path(query)))
+			if !maps.EqualFunc(got, want, func(a, b []float64) bool { return slices.Equal(a, b) }) {
+				t.Errorf("materialized series differ from the map-only series\n materialized: %v\n map-only:     %v", got, want)
+			}
+			malformed := false
+			for labels := range got {
+				malformed = malformed || strings.Contains(labels, "span.http.status_code=x5")
+			}
+			if !malformed {
+				t.Errorf("no series for the malformed value x5: %v", got)
+			}
+		})
+	}
+	t.Run("series values", func(t *testing.T) {
+		got := metricsSeriesOf(t, materializedAttributeBody(t, materialized, path(`{ } | count_over_time() by (span.http.status_code)`)))
+		want := map[string][]float64{
+			"span.http.status_code=500": {0, 2},
+			"span.http.status_code=x5":  {0, 1},
+			"span.http.status_code=":    {0, 1},
+		}
+		if !maps.EqualFunc(got, want, func(a, b []float64) bool { return slices.Equal(a, b) }) {
+			t.Errorf("series = %v, want %v", got, want)
+		}
+	})
+}
+
+// TestMetricsByMaterializedKeyPastClosedRows_ChDB groups a metrics query by
+// a materialized attribute over the structural-join span envelope, which
+// carries the attribute maps but no materialized column. The group key must
+// read the attribute map there, and the answer must equal the map-only one.
+func TestMetricsByMaterializedKeyPastClosedRows_ChDB(t *testing.T) {
+	materialized := newMaterializedServer(t, true, materializedSelectSeed)
+	mapOnly := newMaterializedServer(t, false, materializedSelectSeed)
+	path := func(q string) string {
+		return "/api/metrics/query_range?" + url.Values{
+			"q": {q}, "start": {"1777633200"}, "end": {"1777636800"}, "step": {"3600s"},
+		}.Encode()
+	}
+	for _, tc := range []struct{ query, carries string }{
+		{`{ } >> { } | rate() by (span.rpc.method)`, "ChildA"},
+		{`{ kind = server } >> { kind = client } | count_over_time() by (span.http.status_code)`, "503"},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			got := materializedAttributeBody(t, materialized, path(tc.query))
+			if want := materializedAttributeBody(t, mapOnly, path(tc.query)); got != want {
+				t.Errorf("materialized answer differs from the map-only answer\n materialized: %s\n map-only:     %s", got, want)
+			}
+			if !strings.Contains(got, tc.carries) {
+				t.Errorf("answer does not carry %q: %s", tc.carries, got)
+			}
+		})
+	}
+}
+
+// TestSearchByMaterializedKey_ChDB groups a search by a bare materialized
+// attribute: the unscoped spelling, whose span-then-resource read mixes the
+// numeric column with the resource map, and a by() over the structural-join
+// span envelope, which carries no materialized column. Each must answer
+// exactly what the same data answers with materialization off.
+func TestSearchByMaterializedKey_ChDB(t *testing.T) {
+	materialized := newMaterializedServer(t, true, materializedMalformedSeed)
+	mapOnly := newMaterializedServer(t, false, materializedMalformedSeed)
+	for _, query := range []string{
+		`{ } | by(.http.status_code)`,
+		`{ } >> { } | by(span.rpc.method)`,
+		`{ } >> { } | by(span.http.status_code)`,
+	} {
+		t.Run(query, func(t *testing.T) {
+			path := "/api/search?q=" + url.QueryEscape(query) + "&start=1777593600&end=1777680000&limit=20&spss=20"
+			got := materializedAttributeBody(t, materialized, path)
+			if want := materializedAttributeBody(t, mapOnly, path); got != want {
+				t.Errorf("materialized answer differs from the map-only answer\n materialized: %s\n map-only:     %s", got, want)
+			}
+			if !strings.Contains(got, "d0000000000000000000000000000001") {
+				t.Errorf("answer does not carry the seeded trace: %s", got)
 			}
 		})
 	}

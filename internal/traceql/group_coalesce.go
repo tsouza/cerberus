@@ -73,6 +73,13 @@ func lowerGroup(prev chplan.Node, g traceql.GroupOperation, s schema.Traces) (ch
 	if err != nil {
 		return nil, err
 	}
+	// A bare attribute key is the group's value, so a materialized read in
+	// it follows readAttributeOutputFrom: a numeric-kind column, or one the
+	// grouped rows do not carry, is read through the attribute map. A key
+	// that compares or computes keeps the operand types its lowering chose.
+	if _, bare := fieldExprAttribute(g.Expression); bare {
+		readAttributeOutputFrom(key, prev.RowType())
+	}
 	return groupAggregate(withTraceScopedValues(prev, s, key), key, s), nil
 }
 

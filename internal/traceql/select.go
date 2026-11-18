@@ -69,35 +69,45 @@ func lowerSelect(prev chplan.Node, sel traceql.SelectOperation, s schema.Traces)
 }
 
 // readSelectedAttributesFrom routes every materialized attribute read in
-// projections (a FieldAccess whose MaterializedColumn is set) back to its
-// attribute map unless a select() over rows of type row may read the
-// column in the map cell's place. projections is rewritten in place. A
-// selected value is an output, so the column stands in for the cell only
-// when it is value-identical to it and the rows carry it:
+// projections back to its attribute map unless a select() over rows of type
+// row may read the column in the map cell's place (readAttributeOutputFrom).
+// projections is rewritten in place.
+func readSelectedAttributesFrom(projections []chplan.Projection, row chplan.Schema) {
+	for _, projection := range projections {
+		readAttributeOutputFrom(projection.Expr, row)
+	}
+}
+
+// readAttributeOutputFrom routes every materialized attribute read in e (a
+// FieldAccess whose MaterializedColumn is set) back to its attribute map
+// unless an expression over rows of type row may read the column in the map
+// cell's place. e is rewritten in place. It applies to an expression whose
+// value is an output, such as a selected value or a by() group key,
+// so the column stands in for the cell only when it is value-identical to it
+// and the rows carry it:
 //
 //   - String-kind columns only. A numeric-kind column
 //     (FieldAccess.MaterializedColumnNumeric) holds toInt32OrNull of the
-//     cell — NULL for a malformed value, and not the cell's own spelling.
+//     cell — NULL for a malformed value, and not the cell's own spelling. A
+//     group key read from it folds a malformed value into the absent one.
 //   - The column must be one of row's columns. An open row type is the
 //     span table itself — a Scan, under any Filter, trace-scoped lookup or
 //     nested-set annotation — which carries every column. A closed one
 //     carries only the columns it names: the structural-join span envelope
 //     and a set operation's aligned arms name the attribute maps but no
 //     materialized column.
-func readSelectedAttributesFrom(projections []chplan.Projection, row chplan.Schema) {
-	for _, projection := range projections {
-		chplan.InspectExpr(projection.Expr, func(e chplan.Expr) bool {
-			f, ok := e.(*chplan.FieldAccess)
-			if !ok || f.MaterializedColumn == "" {
-				return true
-			}
-			if _, carried := row.ByName(f.MaterializedColumn); f.MaterializedColumnNumeric || (!carried && !row.Open) {
-				f.MaterializedColumn = ""
-				f.MaterializedColumnNumeric = false
-			}
+func readAttributeOutputFrom(e chplan.Expr, row chplan.Schema) {
+	chplan.InspectExpr(e, func(e chplan.Expr) bool {
+		f, ok := e.(*chplan.FieldAccess)
+		if !ok || f.MaterializedColumn == "" {
 			return true
-		})
-	}
+		}
+		if _, carried := row.ByName(f.MaterializedColumn); f.MaterializedColumnNumeric || (!carried && !row.Open) {
+			f.MaterializedColumn = ""
+			f.MaterializedColumnNumeric = false
+		}
+		return true
+	})
 }
 
 // selectsNestedSet reports whether any selected attribute is one of
