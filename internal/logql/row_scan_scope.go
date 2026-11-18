@@ -19,10 +19,14 @@ import (
 // unwrap conversion chain above them expands past 3.4, and moved into the
 // scan's scope it adds seconds of analysis on ClickHouse 24.8. The one
 // exception is a conjunct that reads only values already in the scope,
-// behind the first conjunct of an ordered prefix ([scanGather.first]): it
-// adds no layer, only its own reads of the scope's aliases, and it is one
-// of the filters the query wrote ahead of its line filter, so it joins
-// whatever the expansion.
+// behind the first conjunct of an ordered prefix ([scanGather.first]). It
+// adds no layer, only its own reads of the scope's aliases. Left above the
+// scan, it leaves the scan reading more of the table than pipeline order
+// needs — 120,838 bytes more on 24.8 for a `| json | status >= 400` filter
+// between a level filter and a line filter — while the scope it joins
+// analyses and runs in 2.6 s, against 19.3 s for the same stack inlined
+// into the scan's WHERE. The emitted-SQL byte bound still applies to the
+// whole scope, past which the chain renders nested.
 const maxScanScopeExpansion = 3
 
 // gatherAtScan moves into the stream scan's own scope the part of a range
@@ -39,7 +43,8 @@ const maxScanScopeExpansion = 3
 //   - a filter conjunct that reads no layer is folded into the stream
 //     scan's own filter when no conjunct moved ahead of it, or when its
 //     own text reads a key of a map column that some expression of the
-//     stage, or of consumer, reads as a whole in its own text; behind a
+//     stage, or of consumer, reads as a whole in its own text, unless it
+//     follows the moved first conjunct of an ordered prefix; behind a
 //     moved conjunct otherwise, it joins the moved filter;
 //   - a layer whose value reads only the table's columns and the values
 //     already moved, and a filter conjunct that reads only those values,

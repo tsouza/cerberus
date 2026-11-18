@@ -141,12 +141,14 @@ func TestRangeAggregationLevelFilterSparesTheBody(t *testing.T) {
 
 // TestRangeAggregationOnAReorderingServerKeepsItsStatement runs
 // logFilterOrderRangeQueries on a server that reorders PREWHERE conditions
-// three ways: with the strategies its build resolves to, with
-// PrewhereInWhereOrder unset, and with it set. The resolved run must send the
-// unset run's statement and read its bytes — on such a server the plan keeps
-// the arrangement it had before the order mattered. The set run must send a
-// different statement with the same answer, so the arrangement it renders
-// for a server that keeps WHERE order is answer-preserving here too.
+// three ways: with the PrewhereInWhereOrder chopt.PrewhereKeepsWhereOrder
+// gives its build, with it unset, and with it set, dropping the query
+// condition cache ahead of each run so no run reads less for following
+// another. The first run must send the unset run's statement and read its
+// bytes — on such a server the plan keeps the arrangement it had before the
+// order mattered. The set run must send a different statement with the same
+// answer, so the arrangement it renders for a server that keeps WHERE order
+// is answer-preserving here too.
 func TestRangeAggregationOnAReorderingServerKeepsItsStatement(t *testing.T) {
 	ctx := context.Background()
 	s, resolved, _ := startLogFilterOrder(ctx, t, logFilterReorderImage, true)
@@ -158,8 +160,11 @@ func TestRangeAggregationOnAReorderingServerKeepsItsStatement(t *testing.T) {
 				return url.Values{"query": {query}, "step": {strconv.FormatFloat(logFilterOrderStep.Seconds(), 'f', -1, 64)}}
 			}
 			var a, b, c json.RawMessage
+			s.dropConditionCache(ctx, t)
 			readResolved, sqlResolved := queryLogFilterOrderStatement(ctx, t, s, resolved, params(), &a)
+			s.dropConditionCache(ctx, t)
 			readUnset, sqlUnset := queryLogFilterOrderStatement(ctx, t, s, unset, params(), &b)
+			s.dropConditionCache(ctx, t)
 			readSet, sqlSet := queryLogFilterOrderStatement(ctx, t, s, set, params(), &c)
 			t.Logf("%s: resolved %d bytes, unset %d, set %d", s.version, readResolved, readUnset, readSet)
 			if sqlResolved != sqlUnset || readResolved != readUnset || string(a) != string(b) {

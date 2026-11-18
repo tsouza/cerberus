@@ -389,8 +389,8 @@ func reprobeCHOptimizations(
 			// The resolution failed, so the resolution in force stays,
 			// marked with this pass's fleet: a pass still short of a node,
 			// or resting on a build it did not reach, keeps retrying fast
-			// like one still on the floor. The analyzer and shape-defect
-			// decisions below still follow the fleet.
+			// like one still on the floor. The analyzer, shape-defect and
+			// PREWHERE order decisions below still follow the fleet.
 			next = inForce
 			next.FleetIncomplete = !fleet.Complete
 			next.FleetHeld = fleet.Held
