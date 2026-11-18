@@ -271,6 +271,8 @@ histogram_avg_mixed_or.txtar
 histogram_avg_mixed_or_histogram_right_shadowed.txtar
 histogram_bucket_companion.txtar
 histogram_bucket_le_filter.txtar
+histogram_bucket_le_regex_name.txtar
+histogram_bucket_le_regex_negation.txtar
 histogram_count_basic.txtar
 histogram_count_exp.txtar
 histogram_count_exp_at_pinned_range.txtar
