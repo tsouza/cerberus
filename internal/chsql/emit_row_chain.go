@@ -6,8 +6,9 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
-// rowChain is a LogQL log query's per-row stage over one filtered table
-// scan, as the Input of a Project marked [chplan.Project.OneScopeRows]:
+// rowChain is a LogQL per-row stage, or the part of one that reads the
+// table, over one filtered table scan, as the Input of a Project marked
+// [chplan.Project.OneScopeRows]:
 // each layer passes columns through by name and defines values under
 // aliases, and each filter reads those aliases. fusedRowChain renders it
 // as ONE `SELECT … FROM <table> WHERE …` whose select list defines every
@@ -35,9 +36,12 @@ type rowChainFilter struct {
 }
 
 // rowChainOf returns the chain n heads, or false when n is not one: a
-// Filter or a Project of the chain's shape, with at least one Filter
-// above a layer — the case the fusion changes — and a Filter over a Scan
-// at the bottom.
+// Filter or a Project of the chain's shape with a Filter over a Scan at
+// the bottom, which fusing changes without reading an alias where it is
+// defined at no gain. That is a chain with at least one Filter above a
+// layer, or one with layers whose values all read the table's columns
+// alone: fused, those values are computed in the scope that reads the
+// table, and none of them reads another's alias.
 func rowChainOf(n chplan.Node) (rowChain, bool) {
 	var c rowChain
 	// Walking top-down, each filter first records how many layers sit
@@ -47,7 +51,8 @@ func rowChainOf(n chplan.Node) (rowChain, bool) {
 		case *chplan.Filter:
 			if scan, ok := v.Input.(*chplan.Scan); ok {
 				c.scanFilter, c.scan = v, scan
-				if len(c.filters) == 0 || c.filters[0].above == len(c.layers) {
+				filterAboveLayer := len(c.filters) > 0 && c.filters[0].above < len(c.layers)
+				if !filterAboveLayer && (len(c.layers) == 0 || c.layersReadAlias()) {
 					return rowChain{}, false
 				}
 				for i := range c.filters {
@@ -85,6 +90,37 @@ func isRowLayer(p *chplan.Project) bool {
 		}
 	}
 	return true
+}
+
+// layersReadAlias reports whether a value one of the chain's layers
+// defines reads an alias the chain defines.
+func (c rowChain) layersReadAlias() bool {
+	aliases := map[string]bool{}
+	for _, layer := range c.layers {
+		for _, pr := range layer.Projections {
+			if pr.Alias != "" {
+				aliases[pr.Alias] = true
+			}
+		}
+	}
+	for _, layer := range c.layers {
+		for _, pr := range layer.Projections {
+			if pr.Alias == "" {
+				continue
+			}
+			reads := false
+			chplan.InspectExpr(pr.Expr, func(e chplan.Expr) bool {
+				if ref, ok := e.(*chplan.ColumnRef); ok && aliases[ref.Name] {
+					reads = true
+				}
+				return !reads
+			})
+			if reads {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // namesAreUnambiguous reports whether every name the chain reads means
@@ -169,6 +205,9 @@ func (e *emitter) fusedRowChain(c rowChain) (*QueryBuilder, error) {
 			expr := pr.Expr
 			sb.SelectAs(func(b *Builder) { _ = b.Expr(projectedExpr(b, expr)) }, pr.Alias)
 		}
+	}
+	if len(c.filters) == 0 {
+		return sb, nil
 	}
 	predicates := make([]chplan.Expr, len(c.filters))
 	for i, f := range c.filters {

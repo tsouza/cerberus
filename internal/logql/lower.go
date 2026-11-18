@@ -143,7 +143,12 @@ type lowerCtx struct {
 // level and inlines every value at the filter.
 type filterRow struct {
 	level chplan.Expr
-	rows  *rowLayers
+	// levelSource is the stage's level source column, or nil. When set,
+	// a `detected_level` equality or inequality reads it through
+	// [levelEqualsExpr] instead of level, so the filter reads only the
+	// table's columns and can run where the table is read.
+	levelSource chplan.Expr
+	rows        *rowLayers
 }
 
 // definer returns the [defineFunc] one filter defines its values with.
@@ -1962,8 +1967,17 @@ func regexpMergeLabels(prev chplan.Expr, s schema.Logs, pattern string) (chplan.
 func labelFiltererLower(lf syntax.LabelFilterer, s schema.Logs, labelsExpr chplan.Expr, row filterRow) (chplan.Expr, []labelFilterMark, error) {
 	switch v := lf.(type) {
 	case *syntax.StringLabelFilter:
+		if m := v.Matcher; isDetectedLevelLabel(m.Name) && row.levelSource != nil && m.Type == labels.MatchNotEqual {
+			return notExpr(levelEqualsExpr(row.levelSource, m.Value)), nil, nil
+		}
+		if levels, ok := detectedLevelEqualities(lf); ok && row.levelSource != nil {
+			return levelEqualsExpr(row.levelSource, levels...), nil, nil
+		}
 		return labelMatcherToExpr(v.Matcher, s, labelsExpr, row.level), nil, nil
 	case *syntax.BinaryLabelFilter:
+		if levels, ok := detectedLevelEqualities(lf); ok && row.levelSource != nil {
+			return levelEqualsExpr(row.levelSource, levels...), nil, nil
+		}
 		left, leftMarks, err := labelFiltererLower(v.Left, s, labelsExpr, row)
 		if err != nil {
 			return nil, nil, err
@@ -2004,6 +2018,29 @@ func labelFiltererLower(lf syntax.LabelFilterer, s schema.Logs, labelsExpr chpla
 		return pred, nil, err
 	}
 	return nil, nil, fmt.Errorf("logql: unsupported label filterer %T", lf)
+}
+
+// detectedLevelEqualities returns the levels lf compares `detected_level`
+// against when lf is a `detected_level` equality or an OR of them, and
+// false otherwise.
+func detectedLevelEqualities(lf syntax.LabelFilterer) ([]string, bool) {
+	switch v := lf.(type) {
+	case *syntax.StringLabelFilter:
+		if m := v.Matcher; isDetectedLevelLabel(m.Name) && m.Type == labels.MatchEqual {
+			return []string{m.Value}, true
+		}
+	case *syntax.BinaryLabelFilter:
+		if v.And {
+			return nil, false
+		}
+		left, ok := detectedLevelEqualities(v.Left)
+		if !ok {
+			return nil, false
+		}
+		right, ok := detectedLevelEqualities(v.Right)
+		return append(left, right...), ok
+	}
+	return nil, false
 }
 
 // numericLabelFilterExpr lowers `| field > 5` / `>= 5` / `< 5` / `<= 5`
