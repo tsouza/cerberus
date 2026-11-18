@@ -43,9 +43,10 @@ type Project struct {
 	// leaves such a relation, and everything below it, as it is.
 	SubqueryGrid bool
 
-	// OneScopeRows marks a Project whose Input is a LogQL log query's
-	// per-row stage: Filters and per-row Projects over a filtered table
-	// scan. The emitter may render that stage as one SELECT whose WHERE
+	// OneScopeRows marks a Project whose Input is a LogQL per-row stage,
+	// or the part of one a range aggregation reads the table in: Filters
+	// and per-row Projects over a filtered table scan. The emitter may
+	// render that stage as one SELECT whose WHERE
 	// reads the stage's aliases next to the table's columns, instead of
 	// one subquery per layer (chsql's rowChainFrag says when it does). A
 	// Project without the mark reads its Input nested.

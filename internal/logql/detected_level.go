@@ -2,7 +2,6 @@ package logql
 
 import (
 	"slices"
-	"strings"
 
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
@@ -303,7 +302,7 @@ func normaliseLevelExpr(value chplan.Expr) chplan.Expr {
 	args = append(
 		args,
 		&chplan.Binary{Op: chplan.OpEq, Left: lowerValue, Right: &chplan.LitString{V: ""}},
-		&chplan.LitString{V: "unknown"},
+		&chplan.LitString{V: unknownLevel},
 	)
 	for _, g := range levelNormalizationGroups {
 		args = append(args, anyEqual(lowerValue, g.variants), &chplan.LitString{V: g.canonical})
@@ -316,6 +315,22 @@ func normaliseLevelExpr(value chplan.Expr) chplan.Expr {
 
 	return &chplan.FuncCall{Fn: chplan.FnMultiIf, Args: args}
 }
+
+// lowerASCII lowercases the ASCII letters of s and leaves every other
+// byte as it is, as ClickHouse's `lower` does.
+func lowerASCII(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
+// unknownLevel is the level reference Loki stamps on a record with no
+// detectable level (constants.LogLevelUnknown).
+const unknownLevel = "unknown"
 
 // levelNormalizationGroup pairs the input-variant spellings upstream
 // Loki's `normalizeLogLevel` accepts with the canonical lowercase level
@@ -351,7 +366,9 @@ var levelNormalizationGroups = []levelNormalizationGroup{
 // comment). A non-empty input that matches none of the known variants
 // falls through UNCHANGED — upstream `normalizeLogLevel` folds case
 // only to MATCH (`bytes.EqualFold`) and returns the caller's own string
-// from its default branch.
+// from its default branch. The fold is ASCII-only, as ClickHouse's
+// `lower` and upstream's `bytes.EqualFold` against ASCII variants are:
+// `İNFO` is no spelling of `info`.
 //
 // Used by `/loki/api/v1/patterns` (internal/api/loki/patterns.go) to
 // bucket pattern mining per detected level: that handler resolves each
@@ -359,9 +376,9 @@ var levelNormalizationGroups = []levelNormalizationGroup{
 // through the optimizer/emit pipeline for a value it already has in
 // hand.
 func NormalizeDetectedLevel(raw string) string {
-	lower := strings.ToLower(raw)
+	lower := lowerASCII(raw)
 	if lower == "" {
-		return "unknown"
+		return unknownLevel
 	}
 	for _, g := range levelNormalizationGroups {
 		if slices.Contains(g.variants, lower) {
@@ -389,6 +406,57 @@ func anyEqual(expr chplan.Expr, variants []string) chplan.Expr {
 		out = &chplan.Binary{Op: chplan.OpOr, Left: out, Right: eq}
 	}
 	return out
+}
+
+// levelEqualsExpr returns a predicate over source, a level source
+// [detectedLevelSourceExpr] resolves, that holds exactly when
+// [normaliseLevelExpr] of source equals one of levels, and reads source
+// no more than twice whatever the number of levels. The normalisation
+// yields a level from a source that lowercases to one of the level's
+// variants, from an empty source when the level is `unknown`, and from
+// source itself when it lowercases to no variant at all, so the
+// predicate is the OR of those cases:
+//
+//	has([variants of each level…, '' for unknown], lower(source))
+//	OR has([each level that lowercases to no variant…], source)
+//
+// A level the normalisation never yields — an uppercase variant, a
+// non-canonical variant such as `warning`, the empty string — matches no
+// row.
+func levelEqualsExpr(source chplan.Expr, levels ...string) chplan.Expr {
+	var folded, verbatim []chplan.Expr
+	for _, level := range levels {
+		isVariant := false
+		for _, g := range levelNormalizationGroups {
+			if g.canonical == level {
+				for _, v := range g.variants {
+					folded = append(folded, &chplan.LitString{V: v})
+				}
+			}
+			isVariant = isVariant || slices.Contains(g.variants, lowerASCII(level))
+		}
+		if level == unknownLevel {
+			folded = append(folded, &chplan.LitString{V: ""})
+		}
+		if level != "" && !isVariant {
+			verbatim = append(verbatim, &chplan.LitString{V: level})
+		}
+	}
+	var cases []chplan.Expr
+	if len(folded) > 0 {
+		lowerSource := &chplan.FuncCall{Fn: chplan.FnLower, Args: []chplan.Expr{source}}
+		cases = append(cases, &chplan.FuncCall{Fn: chplan.FnArrayHas, Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnArray, Args: folded}, lowerSource}})
+	}
+	if len(verbatim) > 0 {
+		cases = append(cases, &chplan.FuncCall{Fn: chplan.FnArrayHas, Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnArray, Args: verbatim}, source}})
+	}
+	switch len(cases) {
+	case 0:
+		return &chplan.LitBool{V: false}
+	case 1:
+		return cases[0]
+	}
+	return &chplan.Binary{Op: chplan.OpOr, Left: cases[0], Right: cases[1]}
 }
 
 // withDetectedLevel wraps a labels-map expression so the result carries
@@ -634,8 +702,8 @@ const (
 )
 
 // defineDetectedLevel defines the synthesized `detected_level` value —
-// [detectedLevelExpr] — as columns of rows and returns a reference to
-// the normalised level.
+// [detectedLevelExpr] — as columns of rows and returns references to the
+// source and to the normalised level.
 //
 // The source cascade is defined first and the normalisation reads it as
 // a column: [normaliseLevelExpr] compares the lowercased source against
@@ -646,9 +714,9 @@ const (
 // identity, both arms of the error bypass, one entry per `by (...)`
 // label. Both columns read only raw log columns, so the stage defines
 // them ahead of the pipeline and every stage can read them.
-func defineDetectedLevel(rows *rowLayers, s schema.Logs) chplan.Expr {
-	source := rows.define(levelSourceAlias, detectedLevelSourceExpr(s))
-	return rows.define(detectedLevelAlias, normaliseLevelExpr(source))
+func defineDetectedLevel(rows *rowLayers, s schema.Logs) (source, level chplan.Expr) {
+	source = rows.define(levelSourceAlias, detectedLevelSourceExpr(s))
+	return source, rows.define(detectedLevelAlias, normaliseLevelExpr(source))
 }
 
 // projectedLevelColumn applies the pipeline's `| drop` / `| keep`
