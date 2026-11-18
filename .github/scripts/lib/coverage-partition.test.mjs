@@ -173,26 +173,31 @@ test('a shard past the argument budget runs one go test per selector, folds thei
     assert.equal(result.status, 0, result.stderr || result.stdout);
   };
   try {
-    const pkg = 'example.test/big';
-    const names = Array.from({ length: 12000 }, (_, i) => `Test${createHash('sha256').update(String(i)).digest('hex')}`);
-    writeFileSync(join(dir, 'names.json'), JSON.stringify(names));
-    // The fake go lists the names, and for each `-run` passes exactly the
-    // names its selector matches, writing a profile whose block is that
-    // run's own.
+    const packages = ['example.test/a', 'example.test/b', 'example.test/c'];
+    const tests = Array.from({ length: 12000 }, (_, i) => ({
+      package: packages[i % packages.length], name: `Test${createHash('sha256').update(String(i)).digest('hex')}`,
+    }));
+    writeFileSync(join(dir, 'tests.json'), JSON.stringify(tests));
+    // The fake go lists the tests, and for each `-run` passes exactly the
+    // tests its selector matches in the packages it targets, writing a
+    // profile whose block is that run's own.
     const go = join(dir, 'fake-go.mjs');
     writeFileSync(go, `#!/usr/bin/env node
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
-const names = JSON.parse(readFileSync(${JSON.stringify(join(dir, 'names.json'))}, 'utf8'));
-const event = (fields) => process.stdout.write(JSON.stringify({ Package: ${JSON.stringify(pkg)}, ...fields }) + '\\n');
-if (args[0] === 'list') { console.log(${JSON.stringify(pkg)}); process.exit(0); }
-if (args.includes('-list')) { for (const name of names) event({ Action: 'output', Output: name + '\\n' }); process.exit(0); }
+const tests = JSON.parse(readFileSync(${JSON.stringify(join(dir, 'tests.json'))}, 'utf8'));
+const event = (fields) => process.stdout.write(JSON.stringify(fields) + '\\n');
+if (args[0] === 'list') { console.log(${JSON.stringify(packages.join('\n'))}); process.exit(0); }
+if (args.includes('-list')) { for (const t of tests) event({ Action: 'output', Package: t.package, Output: t.name + '\\n' }); process.exit(0); }
 const pattern = new RegExp(args[args.indexOf('-run') + 1]);
+const targets = args.slice(args.indexOf('-run') + 2);
 const profile = args[args.indexOf('-coverprofile') + 1];
-appendFileSync(${JSON.stringify(join(dir, 'runs.log'))}, profile + '\\n');
+appendFileSync(${JSON.stringify(join(dir, 'runs.log'))}, JSON.stringify(targets) + '\\n');
 const run = readFileSync(${JSON.stringify(join(dir, 'runs.log'))}, 'utf8').split('\\n').filter(Boolean).length;
-writeFileSync(profile, 'mode: set\\nexample.test/big/run.go:' + run + '.1,' + run + '.2 1 1\\n');
-for (const name of names.filter((n) => pattern.test(n))) event({ Action: 'pass', Test: name, Elapsed: 0 });
+writeFileSync(profile, 'mode: set\\nexample.test/a/run.go:' + run + '.1,' + run + '.2 1 1\\n');
+for (const t of tests) {
+  if (pattern.test(t.name) && (targets.includes('./...') || targets.includes(t.package))) event({ Action: 'pass', Package: t.package, Test: t.name, Elapsed: 0 });
+}
 `);
     chmodSync(go, 0o755);
     const lib = join(dir, 'libchdb.so');
@@ -205,10 +210,17 @@ for (const name of names.filter((n) => pattern.test(n))) event({ Action: 'pass',
       COVERAGE_SHARD_INDEX: String(index), COVERAGE_REQUIRE_LANES: 'default+chdb',
     } });
     assert.equal(status, 0);
-    const runs = readFileSync(join(dir, 'runs.log'), 'utf8').split('\n').filter(Boolean);
+    const runs = readFileSync(join(dir, 'runs.log'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
     const receipt = JSON.parse(readFileSync(join(dir, shardManifest(index)), 'utf8'));
     assert.ok(runs.length > 1, 'the shard runs more than one go test');
     assert.equal(runs.length, receipt.selectors.length);
+    // The first run runs every test binary, as the unsplit shard did; a
+    // later one only the binaries that own its names.
+    assert.deepEqual(runs[0], ['./...']);
+    runs.slice(1).forEach((targets, i) => {
+      const owners = [...new Set(receipt.selected.filter(({ name }) => receipt.selectors[i + 1].names.includes(name)).map((t) => t.package))].sort();
+      assert.deepEqual(targets, owners);
+    });
     assert.equal(receipt.passed.length, receipt.selected.length);
     const folded = readFileSync(join(dir, shardProfile(index)), 'utf8');
     for (let r = 1; r <= runs.length; r++) assert.match(folded, new RegExp(`run\\.go:${r}\\.1,${r}\\.2 1 1`));

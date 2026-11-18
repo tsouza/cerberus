@@ -91,8 +91,13 @@ export function partitionTests(inventory, index, count = COVERAGE_SHARDS) {
   if (!selected.length) throw new Error(`test shard ${index}/${count} is empty`);
   const names = [...new Set(selected.map(({ name }) => name))].sort();
   // Each selector is one `go test -run` argument; a shard whose names do not
-  // fit one runs them as several.
-  const selectors = selectorRuns(names);
+  // fit one runs them as several. packages are the ones that own the
+  // selector's names: a run after the first needs no other test binary.
+  const selectors = selectorRuns(names).map((run) => {
+    const own = new Set(run.names);
+    const packages = [...new Set(selected.filter(({ name }) => own.has(name)).map(({ package: pkg }) => pkg))].sort();
+    return { ...run, packages };
+  });
   return { index, count, inventory, selected, selectors };
 }
 

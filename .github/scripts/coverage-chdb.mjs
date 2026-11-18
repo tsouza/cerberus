@@ -93,7 +93,10 @@ const FANOUT_SCRIPT = new URL('./perf-coverage-fanout.mjs', import.meta.url);
 
 /**
  * argv for the main sweep's `go test` invocation; with a partition plan, for
- * the run of its selector `part`, which writes that run's own profile. Exported so
+ * the run of its selector `part`, which writes that run's own profile. The
+ * first run targets the whole tree, as an unsplit shard does, so every test
+ * binary runs once in the shard; a later run targets only the packages that
+ * own its selector's names. Exported so
  * coverage-chdb.test.mjs (and test/regression/tagged_test_enrollment_test.go's
  * readCoverageChdbTaggedRun) can verify its shape directly, the same pattern
  * perf-coverage-fanout.mjs's own legCommands() already established, instead
@@ -109,7 +112,7 @@ export function mainSweepArgv(coverpkg, plan = null, part = 0) {
     '-coverpkg', coverpkg,
     '-coverprofile', plan ? selectorProfile(plan.index, part) : COVERAGE_PROFILE,
     ...(plan ? ['-json', '-run', plan.selectors[part].pattern] : []),
-    './...',
+    ...(part === 0 ? ['./...'] : plan.selectors[part].packages),
   ];
 }
 

@@ -2225,7 +2225,9 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   `COVERAGE_SHARD_INDEX`, the shard's tests are named by one or more `-run`
   selectors (`lib/coverage-partition.mjs` splits a shard's names into runs
   whose selector fits the 64 KiB argument budget). Each selector is one
-  `go test` run writing `cover-chdb-run-<shard>-<run>.out`; the runs fold into
+  `go test` run writing `cover-chdb-run-<shard>-<run>.out`: the first over
+  `./...`, as an unsplit shard, and each later one over only the packages
+  that own its selector's names. The runs fold into
   `cover-chdb-part-<shard>.out`, and the receipt proves every selected test
   passed exactly once across them.
   - Env: `CHDB_INSTALL_PATH` (required — the recipe always passes it),
