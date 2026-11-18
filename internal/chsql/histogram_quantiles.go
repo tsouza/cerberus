@@ -133,7 +133,7 @@ func (g hqLevelGrouping) levelKey(key Frag, alias string) Frag {
 	if alias != g.attributesColumn {
 		return key
 	}
-	return Call("mapConcat", key, Call("map", InlineLit(g.labelName), TupleIndex(Col(hqLevelColumn), 1)))
+	return ParsedMapType(Call("mapConcat", key, Call("map", InlineLit(g.labelName), TupleIndex(Col(hqLevelColumn), 1))))
 }
 
 func sharedPrometheusQuantilesAggregate(h *chplan.HistogramQuantile, levels []chplan.HistogramQuantileLevel, helpers hqClassicHelperColumns) Frag {

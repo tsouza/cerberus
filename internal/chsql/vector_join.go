@@ -782,7 +782,7 @@ func includeOverlayAttributesFrag(manySide, oneSide, attrs string, include []str
 		Lambda2("k", "v", In(BareIdent("k"), includes...)),
 		qualColFrag(oneSide, attrs),
 	)
-	return Call("mapConcat", qualColFrag(manySide, attrs), overlay)
+	return ParsedMapType(Call("mapConcat", qualColFrag(manySide, attrs), overlay))
 }
 
 // outputMetricNameFrag returns a Frag for the joined output's

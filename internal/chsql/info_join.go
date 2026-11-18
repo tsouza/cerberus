@@ -267,11 +267,11 @@ func infoOutputAttributesFrag(j *chplan.InfoJoin) Frag {
 	if j.MergeInfoMetrics {
 		extras = infoMergedExtrasFrag(j)
 	}
-	return Call(
+	return ParsedMapType(Call(
 		"mapConcat",
 		extras,
 		qualColFrag("L", j.AttributesColumn),
-	)
+	))
 }
 
 // infoMergedExtrasFrag folds a base sample's per-info-metric extras maps
