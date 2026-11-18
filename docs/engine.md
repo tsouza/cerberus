@@ -554,10 +554,14 @@ The emitter is also CH-native rather than ANSI-ish:
   conjuncts keep the pipeline's order. In a range aggregation, a
   `detected_level` equality, an OR of them, or an inequality reads the
   level source rather than the normalised level. A filter conjunct that
-  reads a map column as a whole
-  stays where it is, and nothing that reads a key of a map column the
-  stage reads as a whole moves. The layers above the moved part render
-  one `SELECT` each. The chain
+  reads a map column as a whole stays where it is, and nothing that
+  reads a key of a map column the stage reads as a whole moves, except
+  the first filter conjunct that reads a layer and no map column as a
+  whole, with the values it reads, when a later conjunct that reads no
+  layer reads a table column the scan's filter and that first conjunct
+  do not already read: that later conjunct then runs behind it in the
+  scan's scope. The layers above the moved part render one `SELECT`
+  each. The chain
   stays nested when an alias is defined twice, when an alias is named
   like a table column that the scan's filter or a node at or below the
   alias's own layer reads, or when the chain with every alias read
