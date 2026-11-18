@@ -1312,7 +1312,7 @@ func readCoverageChdbTaggedRun(root string) (taggedTestInvocation, error) {
 	if strings.Contains(source, "'-skip'") {
 		return taggedTestInvocation{}, fmt.Errorf("%s must not carry -skip — it is the sole CI evidence for other chdb-tagged packages", coverageChdbExecutionScript)
 	}
-	if !strings.Contains(source, "mainSweepArgv(coverpkg, plan)") || !strings.Contains(source, "spawn(go, argv,") {
+	if !strings.Contains(source, "mainSweepArgv(coverpkg, plan, part)") || !strings.Contains(source, "spawn(go, argv,") {
 		return taggedTestInvocation{}, fmt.Errorf("%s no longer executes its main sweep through go test", coverageChdbExecutionScript)
 	}
 	if !strings.Contains(source, "const inventory = parseTestInventory(listed.stdout)") ||

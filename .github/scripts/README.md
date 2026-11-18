@@ -2221,11 +2221,17 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   and `perf-coverage-fanout.test.mjs` (its `mainSweepArgv()`/`CHDB_TAGS`
   imports). `coverage-chdb.test.mjs` is the `node --test` guard, exercising
   the full flow (skip, fail-closed tail, the main sweep, and the real
-  fan-out call) against a fake `go` executable — no chDB needed.
+  fan-out call) against a fake `go` executable — no chDB needed. With
+  `COVERAGE_SHARD_INDEX`, the shard's tests are named by one or more `-run`
+  selectors (`lib/coverage-partition.mjs` splits a shard's names into runs
+  whose selector fits the 64 KiB argument budget). Each selector is one
+  `go test` run writing `cover-chdb-run-<shard>-<run>.out`; the runs fold into
+  `cover-chdb-part-<shard>.out`, and the receipt proves every selected test
+  passed exactly once across them.
   - Env: `CHDB_INSTALL_PATH` (required — the recipe always passes it),
     `CERBERUS_RAPID_SEED` (required once the libchdb.so branch runs),
-    `SKIP_RATCHET_FANOUT`, `COVERAGE_REQUIRE_LANES`, `GO` (default `go`,
-    test seam).
+    `SKIP_RATCHET_FANOUT`, `COVERAGE_REQUIRE_LANES`, `COVERAGE_SHARD_INDEX`,
+    `GO` (default `go`, test seam).
   - Exit: `0` on a graceful skip or a successful run; `1` on a failed
     `go test`, a failed fan-out, or `COVERAGE_REQUIRE_LANES=default+chdb`
     with no `cover-chdb.out` produced.
@@ -3949,9 +3955,10 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   under the invocation's own `-tags`, lists each split package's top-level
   tests with `go test -json -list`, and hash-partitions them into `-run`
   selectors with `lib/coverage-partition.mjs`. Every other package runs in one
-  ordinary `go test` process alongside. Each partition runs with `-json` and
-  fails unless exactly the tests its selector names passed, so a selector that
-  matched nothing cannot pass. libchdb executes one query at a time
+  ordinary `go test` process alongside. A partition whose selector would pass
+  the 64 KiB argument budget runs as one process per selector. Each process
+  runs with `-json` and fails unless exactly the tests its selector names
+  passed, each once, so a selector that matched nothing cannot pass. libchdb executes one query at a time
   per process, so a package's chDB suite is serial inside its own test binary
   and its whole wall-clock counts against the one `-timeout`; separate
   processes are the only parallelism it can get (#3674). Each process keeps
