@@ -297,11 +297,13 @@ func TestChildCountAnswersOneStatusClassForEveryOperator(t *testing.T) {
 
 // TestSpanFreeOperandOfTopLevelOr pins how a span-free operand of a logical
 // OR lowers. Reference Tempo folds a span-free expression to a Static, and
-// its fetch layer fetches an OR filter's spans by the span-referencing
-// operands' conditions only, so in the filter's top-level OR chain such an
-// operand adds no span: the plan is the remaining operands' plan. An OR
-// nested under an AND, and an OR that references no span at all, are
-// evaluated (see lowerTopLevelOr).
+// its fetch layer fetches an OR filter's spans by the conditions of the whole
+// query. When the first filter's top-level OR chain supplies every first-pass
+// condition, each as one span-level condition, such an operand adds no span:
+// the plan is the remaining operands' plan (withoutFetchlessOrOperands).
+// Otherwise a span-free NOT is still dropped and any other span-free operand
+// is evaluated (lowerTopLevelOr). An OR nested under an AND, and an OR that
+// references no span at all, are evaluated.
 func TestSpanFreeOperandOfTopLevelOr(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelTraces()
@@ -329,11 +331,42 @@ func TestSpanFreeOperandOfTopLevelOr(t *testing.T) {
 		{`{ kind = server || kind = client || true }`, `{ kind = server || kind = client }`},
 		{`{ (kind = server || !("a" = "b")) || kind = client }`, `{ kind = server || kind = client }`},
 		{`{ kind = server || span.foo != nil || true }`, `{ kind = server || span.foo != nil }`},
-		// A span-free NOT is dropped even when a sibling is compound.
+		{`{ "x" = span.foo || true }`, `{ "x" = span.foo }`},
+		{`{ span.foo =~ "x.*" || true }`, `{ span.foo =~ "x.*" }`},
+		// Stages that hand the first fetch pass no condition.
+		{`{ kind = server || true } | count() > 1`, `{ kind = server } | count() > 1`},
+		{`{ kind = server || true } | coalesce()`, `{ kind = server } | coalesce()`},
+		{`{ kind = server || true } | select(span.foo) | by(span.foo)`, `{ kind = server } | select(span.foo) | by(span.foo)`},
+		{`{ kind = server || true } | rate() by (span.foo)`, `{ kind = server } | rate() by (span.foo)`},
+		// A span-free NOT is dropped even when a sibling is compound, or
+		// when the filter shares the fetch request with another one.
 		{`{ (kind = server && span.foo = "x") || !("a" = "b") }`, `{ kind = server && span.foo = "x" }`},
+		{`{ kind = server || !("a" = "b") } && { kind = client }`, `{ kind = server } && { kind = client }`},
 	} {
 		if got, want := spec.PrintChplan(lower(t, tc.q)), spec.PrintChplan(lower(t, tc.same)); got != want {
 			t.Errorf("Lower(%q) plan =\n%s\nwant (same as %q):\n%s", tc.q, got, tc.same, want)
+		}
+	}
+
+	// Not dropped: the spans Tempo fetches depend on more than the OR's own
+	// span-level conditions, so the operand keeps its evaluated lowering.
+	for _, tc := range []struct{ q, dropped string }{
+		// A compound operand hands the fetch layer several conditions.
+		{`{ (kind = server && span.foo = "x") || true }`, `{ kind = server && span.foo = "x" }`},
+		// A trace-scoped condition switches span filtering off.
+		{`{ trace:rootName = "x" || true }`, `{ trace:rootName = "x" }`},
+		{`{ kind = server || traceDuration > 1s || true }`, `{ kind = server || traceDuration > 1s }`},
+		// The fetch condition keeps the operator as written: span.foo < "5".
+		{`{ "5" < span.foo || true }`, `{ "5" < span.foo }`},
+		// Another filter, a structural relation, a grouping or a field
+		// aggregate adds fetch conditions of its own.
+		{`{ kind = server || true } && { kind = client }`, `{ kind = server } && { kind = client }`},
+		{`{ kind = server || true } > { kind = client }`, `{ kind = server } > { kind = client }`},
+		{`{ kind = server || true } | by(span.foo)`, `{ kind = server } | by(span.foo)`},
+		{`{ kind = server || true } | avg(duration) > 1s`, `{ kind = server } | avg(duration) > 1s`},
+	} {
+		if got, dropped := spec.PrintChplan(lower(t, tc.q)), spec.PrintChplan(lower(t, tc.dropped)); got == dropped {
+			t.Errorf("Lower(%q) plan is the plan of %q; want the span-free operand kept:\n%s", tc.q, tc.dropped, got)
 		}
 	}
 

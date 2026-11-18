@@ -117,7 +117,11 @@ func lowerRoot(expr *traceql.RootExpr, s schema.Traces) (chplan.Node, error) {
 	// The implicit `{ }` before a leading stage goes in first, so dropping the
 	// stage of `by(X) | rate()` leaves that `{ }` behind instead of an empty
 	// pipeline.
-	pipeline := withImplicitSpansetFilter(expr.Pipeline)
+	//
+	// The span-free operands of the first filter's top-level OR are dropped
+	// before either rewrite, while the pipeline still holds every stage that
+	// hands Tempo's fetch layer a condition (withoutFetchlessOrOperands).
+	pipeline := withImplicitSpansetFilter(withoutFetchlessOrOperands(expr.Pipeline))
 	mp := expr.MetricsPipeline
 	if mp != nil {
 		pipeline = dropGroupByBeforeMetrics(pipeline)
@@ -194,6 +198,104 @@ func withImplicitSpansetFilter(p traceql.Pipeline) traceql.Pipeline {
 	}
 	matchAll := &traceql.SpansetFilter{Expression: traceql.NewStaticBool(true)}
 	return traceql.Pipeline{Elements: append([]traceql.PipelineElement{matchAll}, p.Elements...)}
+}
+
+// withoutFetchlessOrOperands returns p with the span-free operands of its
+// first spanset filter's top-level OR chain removed, when that filter alone
+// decides which spans reference Tempo evaluates it over. Otherwise it returns
+// p unchanged.
+//
+// Reference Tempo builds one fetch request for the whole query
+// (pkg/traceql ast_conditions.go, ast.go extractConditions). An OR clears
+// FetchSpansRequest.AllConditions, so the fetch layer returns every span that
+// matches any one condition, and the filter is evaluated over those spans
+// only. Its parser has already folded each span-free operand to a Static, and
+// a Static hands the fetch layer no condition: beside a span-referencing
+// operand it adds no span. `{ kind = server || true }` answers the server
+// spans, which is what the filter answers with the operand dropped.
+//
+// The drop is exact under two conditions. First, the filter's conditions are
+// the whole first-pass request: no stage after it adds one before a
+// select(), after which Tempo moves every condition to the second pass
+// (Pipeline.extractConditions), and a metrics function adds second-pass
+// conditions only (stagesAddNoFetchCondition). Second, every span-referencing
+// operand is one span-level condition (singleFetchCondition). Anywhere else
+// the spans Tempo fetches depend on conditions outside the OR's own operands,
+// and neither dropping nor evaluating the operand gives its answer (#4402):
+// the filter lowers as it is.
+func withoutFetchlessOrOperands(p traceql.Pipeline) traceql.Pipeline {
+	if len(p.Elements) == 0 {
+		return p
+	}
+	f, ok := p.Elements[0].(*traceql.SpansetFilter)
+	if !ok || !stagesAddNoFetchCondition(p.Elements[1:]) {
+		return p
+	}
+	b, ok := f.Expression.(*traceql.BinaryOperation)
+	if !ok || b.Op != traceql.OpOr || !traceql.ReferencesSpan(b) {
+		return p
+	}
+	operands := orChainOperands(b)
+	kept := make([]traceql.FieldExpression, 0, len(operands))
+	for _, e := range operands {
+		if !traceql.ReferencesSpan(e) {
+			continue
+		}
+		if !singleFetchCondition(e) {
+			return p
+		}
+		kept = append(kept, e)
+	}
+	if len(kept) == len(operands) {
+		return p
+	}
+	pred := kept[0]
+	for _, e := range kept[1:] {
+		pred = &traceql.BinaryOperation{Op: traceql.OpOr, LHS: pred, RHS: e}
+	}
+	elements := slices.Clone(p.Elements)
+	elements[0] = &traceql.SpansetFilter{Expression: pred}
+	return traceql.Pipeline{Elements: elements}
+}
+
+// stagesAddNoFetchCondition reports whether the pipeline stages after the
+// first spanset filter hand reference Tempo's first fetch pass no condition:
+// each is a coalesce() or a scalar filter over count() and a literal, up to
+// the first select(), after which every stage feeds the second pass only.
+func stagesAddNoFetchCondition(stages []traceql.PipelineElement) bool {
+	for _, el := range stages {
+		switch v := el.(type) {
+		case traceql.SelectOperation, *traceql.SelectOperation:
+			return true
+		case traceql.CoalesceOperation, *traceql.CoalesceOperation:
+		case traceql.ScalarFilter:
+			if !scalarAddsNoFetchCondition(v.LHS) || !scalarAddsNoFetchCondition(v.RHS) {
+				return false
+			}
+		case *traceql.ScalarFilter:
+			if !scalarAddsNoFetchCondition(v.LHS) || !scalarAddsNoFetchCondition(v.RHS) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// scalarAddsNoFetchCondition reports whether a scalar-filter side hands the
+// fetch layer no condition: a literal, or an aggregate over no field
+// (count()). An aggregate over a field fetches every span carrying it.
+func scalarAddsNoFetchCondition(e traceql.ScalarExpression) bool {
+	switch v := e.(type) {
+	case traceql.Static, *traceql.Static:
+		return true
+	case traceql.Aggregate:
+		return v.InnerExpr() == nil
+	case *traceql.Aggregate:
+		return v.InnerExpr() == nil
+	}
+	return false
 }
 
 // isLeadingStage reports whether elem is one of the non-spanset stages Tempo's
@@ -822,7 +924,7 @@ func mapStructuralOp(op traceql.Operator) (chplan.StructuralOp, error) {
 func lowerSpansetFilter(f *traceql.SpansetFilter, s schema.Traces) (chplan.Node, error) {
 	// notContextTop: f.Expression is the very top of the spanset filter's
 	// boolean tree, where a NOT over a span-referencing expression matches
-	// no span and a span-free operand of a top-level OR is dropped (see
+	// no span and a span-free NOT operand of a top-level OR is dropped (see
 	// lowerUnaryNot and lowerTopLevelOr).
 	pred, err := lowerBooleanFieldExpr(f.Expression, s, notContextTop)
 	if err != nil {
@@ -1091,7 +1193,7 @@ func lowerUnaryMinus(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr, er
 // compatibility/tempo harness uses (issues #1711/#1712); rule 2 is pinned by
 // that harness's corpus cases static_bool_and_not_static,
 // static_bool_and_not_static_false, static_bool_top_not_static and
-// static_bool_or_not_static_beside_span:
+// static_bool_nested_or_not_static:
 //
 //  1. Double negation always cancels, regardless of ctx: `!(!(x))`
 //     evaluates exactly like `x` on its own. This is checked first and
@@ -1106,10 +1208,11 @@ func lowerUnaryMinus(u traceql.UnaryOperation, s schema.Traces) (chplan.Expr, er
 //     reproduce. Cerberus lowers it to SQL `not(<inner>)`, which ClickHouse
 //     evaluates to the same constant — `{ ("test" = "test") &&
 //     !("test" = "test") }` matches no span, and `{ !("a" = "b") }`
-//     matches every span. The one position where the folded Static still
-//     does not decide the answer is an operand of the filter's top-level OR
-//     beside a span-referencing operand: lowerTopLevelOr drops it before
-//     this function sees it.
+//     matches every span. An operand of the filter's top-level OR beside a
+//     span-referencing operand is the exception: there the Static's answer
+//     depends on the spans Tempo's fetch layer returns, and
+//     withoutFetchlessOrOperands or lowerTopLevelOr drops it before this
+//     function sees it.
 //
 //  3. notContextTop — the NOT node IS the entire spanset filter
 //     predicate (`{ !(<expr>) }`, nothing else in the `{ }`): reference
@@ -1173,69 +1276,39 @@ func negate(e traceql.FieldExpression, s schema.Traces, ctx notContext) (chplan.
 	return &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{inner}}, nil
 }
 
-// lowerTopLevelOr lowers an OR that is the whole spanset filter predicate.
+// lowerTopLevelOr lowers an OR that is the whole spanset filter predicate,
+// beside a span-referencing operand, with every span-free NOT operand of its
+// chain dropped as OR's identity element.
 //
-// Reference Tempo fetches the spans of such a filter by the conditions its
-// span-referencing comparisons hand the fetch layer, then evaluates the
-// filter over the fetched spans only (pkg/traceql ast_conditions.go
-// BinaryOperation.extractConditions: an OR clears
-// FetchSpansRequest.AllConditions, so a span is fetched when it matches any
-// one condition). Its parser has already folded every span-free operand to a
-// Static, and a Static hands the fetch layer no condition. Beside a
-// span-referencing operand, a span-free operand therefore never adds a span:
-// `{ kind = server || true }` and `{ kind = server || !("a" = "b") }` both
-// answer the server spans, and so does dropping that operand.
-//
-// The drop is exact only when every span-referencing operand of the OR chain
-// is one fetch condition (singleFetchCondition). Then the spans the fetch
-// layer returns are exactly the spans the remaining operands match. Over a
-// compound operand, reference answers the spans matching any one of its
-// comparisons — `{ (kind = server && status = error) || true }` answers every
-// server span and every error span — which neither the dropped nor the
-// evaluated operand gives (#4402). In that chain a span-free NOT is still
-// dropped, as rule 4 of lowerUnaryNot drops a NOT operand of an OR, and any
-// other span-free operand keeps its evaluated lowering.
-//
-// The remaining operands lower exactly as they would inside the OR, as OR
-// operands. An OR that references no span is a Static in reference and is
-// evaluated whole.
+// Reference Tempo's parser folds the NOT to a Static `true`, and which spans
+// that operand lets through depends on the spans the fetch layer returns. When
+// the filter alone decides those spans, withoutFetchlessOrOperands has already
+// dropped the operand, which is Tempo's answer. Everywhere else neither the
+// dropped nor the evaluated operand is Tempo's answer (#4402); dropping keeps
+// the answer cerberus has always given, as rule 4 of lowerUnaryNot does for a
+// NOT over a comparison. A span-free operand that is not a NOT keeps its
+// evaluated lowering there, so `{ (A && B) || !false }` and
+// `{ (A && B) || !("a" = "b") }` answer differently, where Tempo answers both
+// alike (#4402). An OR that references no span is a Static in reference and is
+// evaluated whole. The remaining operands lower exactly as they would inside
+// the OR, as OR operands.
 func lowerTopLevelOr(b *traceql.BinaryOperation, s schema.Traces) (chplan.Expr, error) {
 	if !traceql.ReferencesSpan(b) {
 		return lowerFieldExpr(b, s)
 	}
 	operands := orChainOperands(b)
-	exact := !slices.ContainsFunc(operands, func(e traceql.FieldExpression) bool {
-		return traceql.ReferencesSpan(e) && !singleFetchCondition(e)
+	kept := slices.DeleteFunc(slices.Clone(operands), func(e traceql.FieldExpression) bool {
+		_, isNot := asUnaryNot(e)
+		return isNot && !traceql.ReferencesSpan(e)
 	})
-	kept := make([]traceql.FieldExpression, 0, len(operands))
-	for _, e := range operands {
-		if !traceql.ReferencesSpan(e) {
-			if _, isNot := asUnaryNot(e); isNot || exact {
-				continue
-			}
-		}
-		kept = append(kept, e)
-	}
 	if len(kept) == len(operands) {
 		return lowerFieldExpr(b, s)
 	}
-	var pred chplan.Expr
-	for _, e := range kept {
-		next, err := lowerBooleanFieldExpr(e, s, notContextOrOperand)
-		if err != nil {
-			return nil, err
-		}
-		if pred == nil {
-			pred = next
-			continue
-		}
-		if folded, ok := foldTrivialBoolConjunct(chplan.OpOr, pred, next); ok {
-			pred = folded
-			continue
-		}
-		pred = &chplan.Binary{Op: chplan.OpOr, Left: pred, Right: next}
+	pred := kept[0]
+	for _, e := range kept[1:] {
+		pred = &traceql.BinaryOperation{Op: traceql.OpOr, LHS: pred, RHS: e}
 	}
-	return pred, nil
+	return lowerBooleanFieldExpr(pred, s, notContextOrOperand)
 }
 
 // orChainOperands flattens the logical OR tree rooted at b into its
@@ -1253,18 +1326,22 @@ func orChainOperands(b *traceql.BinaryOperation) []traceql.FieldExpression {
 }
 
 // singleFetchCondition reports whether e hands reference Tempo's fetch layer
-// exactly one condition that selects the same spans e matches: a boolean
-// comparison between an attribute and a non-nil static (in either order,
-// including the parser's OR folds `IN` and regex-match-any), or an
-// existence test on an attribute. extractConditions reads every other shape
-// with OpNone, or as several conditions (pkg/traceql ast_conditions.go).
+// exactly one span-level condition that selects the spans e matches: an
+// existence test on an attribute, or a boolean comparison between an
+// attribute and a non-nil static, including the parser's OR folds `IN` and
+// regex-match-any (pkg/traceql ast_conditions.go). extractConditions reads
+// every other shape with OpNone, or as several conditions.
+//
+// A static on the left counts only for `=` and `!=`: extractConditions keeps
+// the operator as written, so `5 < span.foo` fetches `span.foo < 5`. The
+// attribute must be filtered per span (spanFetchAttribute).
 func singleFetchCondition(e traceql.FieldExpression) bool {
 	if u, ok := asUnaryOperation(e); ok {
 		if u.Op != traceql.OpExists && u.Op != traceql.OpNotExists {
 			return false
 		}
-		_, attr := fieldExprAttribute(u.Expression)
-		return attr
+		attr, ok := fieldExprAttribute(u.Expression)
+		return ok && spanFetchAttribute(attr)
 	}
 	b, ok := e.(*traceql.BinaryOperation)
 	if !ok {
@@ -1278,11 +1355,37 @@ func singleFetchCondition(e traceql.FieldExpression) bool {
 		return false
 	}
 	attrAndStatic := func(attrSide, staticSide traceql.FieldExpression) bool {
-		_, attr := fieldExprAttribute(attrSide)
+		attr, ok := fieldExprAttribute(attrSide)
 		lit, static := fieldExprStatic(staticSide)
-		return attr && static && !lit.IsNil()
+		return ok && spanFetchAttribute(attr) && static && !lit.IsNil()
 	}
-	return attrAndStatic(b.LHS, b.RHS) || attrAndStatic(b.RHS, b.LHS)
+	symmetric := b.Op == traceql.OpEqual || b.Op == traceql.OpNotEqual
+	return attrAndStatic(b.LHS, b.RHS) || (symmetric && attrAndStatic(b.RHS, b.LHS))
+}
+
+// spanFetchAttribute reports whether reference Tempo's vparquet4 fetch layer
+// filters each span by a condition on a: a span, resource or unscoped
+// attribute, or a span-level intrinsic (tempodb/encoding/vparquet4
+// block_traceql.go categorizeConditions). A trace-scoped condition switches
+// span filtering off when AllConditions is false, so the fetch layer returns
+// every span (createAllIterator); event, link and instrumentation conditions
+// are matched on their own iterators.
+func spanFetchAttribute(a traceql.Attribute) bool {
+	if a.Intrinsic == traceql.IntrinsicNone {
+		switch a.Scope {
+		case traceql.AttributeScopeNone, traceql.AttributeScopeSpan, traceql.AttributeScopeResource:
+			return true
+		}
+		return false
+	}
+	switch a.Intrinsic {
+	case traceql.IntrinsicName, traceql.IntrinsicStatus, traceql.IntrinsicStatusMessage,
+		traceql.IntrinsicDuration, traceql.IntrinsicKind, traceql.IntrinsicSpanID,
+		traceql.IntrinsicParentID, traceql.IntrinsicNestedSetLeft,
+		traceql.IntrinsicNestedSetRight, traceql.IntrinsicNestedSetParent:
+		return true
+	}
+	return false
 }
 
 // isCompoundBoolean reports whether e is itself a logical AND/OR

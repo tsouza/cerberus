@@ -431,7 +431,7 @@ func validatePipelineElement(elem PipelineElement) error {
 		// than answering, and it is not a harmless no-op here: the grouping
 		// key reaches the emitter as a projected constant, so cerberus
 		// answered 200 with a single synthetic group.
-		if !referencesSpan(e.Expression) {
+		if !ReferencesSpan(e.Expression) {
 			return newValidationError(groupReferencesSpanFormat, e.String())
 		}
 		return nil
@@ -502,7 +502,7 @@ func validateAggregate(a Aggregate) error {
 	// rejects it (pkg/traceql/ast_validate.go's `Aggregate.validate`);
 	// without the rule
 	// cerberus emitted `avg(1)` and answered 200.
-	if !referencesSpan(inner) {
+	if !ReferencesSpan(inner) {
 		return newValidationError(aggregateReferencesSpanFormat, a.String())
 	}
 	return nil
@@ -516,18 +516,14 @@ func validateAggregate(a Aggregate) error {
 // evaluates a span-free expression at parse time, so lowering reads it to
 // tell such an expression from one evaluated per span.
 func ReferencesSpan(fe FieldExpression) bool {
-	return referencesSpan(fe)
-}
-
-func referencesSpan(fe FieldExpression) bool {
 	switch e := fe.(type) {
 	case *BinaryOperation:
 		if e == nil {
 			return false
 		}
-		return referencesSpan(e.LHS) || referencesSpan(e.RHS)
+		return ReferencesSpan(e.LHS) || ReferencesSpan(e.RHS)
 	case UnaryOperation:
-		return referencesSpan(e.Expression)
+		return ReferencesSpan(e.Expression)
 	case Attribute:
 		return true
 	}
