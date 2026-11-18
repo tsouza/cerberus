@@ -198,7 +198,7 @@ func lowerSortByLabel(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.No
 		// zero-comparator stable sort.
 		return inner, nil
 	}
-	desc := c.Func.Name == "sort_by_label_desc"
+	desc := c.Func.Name == fnSortByLabelDesc
 	keys := make([]chplan.OrderKey, 0, len(c.Args)-1)
 	for i := 1; i < len(c.Args); i++ {
 		name, err := stringArg(c.Args[i], c.Func.Name, fmt.Sprintf("label_%d", i))

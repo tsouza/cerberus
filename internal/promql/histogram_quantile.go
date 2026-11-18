@@ -325,8 +325,8 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		// for the shaping aggregations above. A sample with no parseable
 		// `le` drops out of that reassembly, so a non-bucket argument
 		// still answers the reference's empty vector — and an argument
-		// whose label algebra already proves it carries no `le`
-		// (mayCarryBucketBound: `sum(up)`, `vector(1)`, …), or whose own
+		// whose label algebra already rules out `le` (mayCarryBucketBound:
+		// `sum(up)`, `vector(1)`, `up * 2`, `abs(up)`, …), or whose own
 		// lowering already folded it to zero rows (planProvablyEmpty),
 		// folds to that empty vector without being evaluated at all.
 		//
