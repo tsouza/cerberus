@@ -338,8 +338,9 @@ func TestSpanFreeOperandOfTopLevelOr(t *testing.T) {
 		{`{ kind = server || true } | coalesce()`, `{ kind = server } | coalesce()`},
 		{`{ kind = server || true } | select(span.foo) | by(span.foo)`, `{ kind = server } | select(span.foo) | by(span.foo)`},
 		{`{ kind = server || true } | rate() by (span.foo)`, `{ kind = server } | rate() by (span.foo)`},
-		// A span-free NOT is dropped even when a sibling is compound, or
-		// when the filter shares the fetch request with another one.
+		// Where the operand is kept, a span-free NOT over a comparison still
+		// lowers as OR's identity element, as v1.24.0 lowered it. Tempo
+		// answers both differently (#4402); flip these when that is fixed.
 		{`{ (kind = server && span.foo = "x") || !("a" = "b") }`, `{ kind = server && span.foo = "x" }`},
 		{`{ kind = server || !("a" = "b") } && { kind = client }`, `{ kind = server } && { kind = client }`},
 	} {
@@ -364,6 +365,17 @@ func TestSpanFreeOperandOfTopLevelOr(t *testing.T) {
 		{`{ kind = server || true } > { kind = client }`, `{ kind = server } > { kind = client }`},
 		{`{ kind = server || true } | by(span.foo)`, `{ kind = server } | by(span.foo)`},
 		{`{ kind = server || true } | avg(duration) > 1s`, `{ kind = server } | avg(duration) > 1s`},
+		// The by() stage before a metrics function is dropped from the plan,
+		// but Tempo still extracts its condition.
+		{`{ kind = server || true } | by(span.foo) | rate()`, `{ kind = server } | by(span.foo) | rate()`},
+		// Event and instrumentation conditions are not matched per span.
+		{`{ event.foo = "x" || true }`, `{ event.foo = "x" }`},
+		{`{ instrumentation.foo = "x" || true }`, `{ instrumentation.foo = "x" }`},
+		// Beside a sibling filter, a double negation and a NOT over a
+		// compound operand are evaluated, as v1.24.0 evaluated them.
+		{`{ kind = server || !!("a" = "a") } && { kind = client }`, `{ kind = server } && { kind = client }`},
+		{`{ kind = server || !(("a" = "b") && ("c" = "d")) } && { kind = client }`, `{ kind = server } && { kind = client }`},
+		{`{ trace:rootName = "x" || !!("a" = "a") }`, `{ trace:rootName = "x" }`},
 	} {
 		if got, dropped := spec.PrintChplan(lower(t, tc.q)), spec.PrintChplan(lower(t, tc.dropped)); got == dropped {
 			t.Errorf("Lower(%q) plan is the plan of %q; want the span-free operand kept:\n%s", tc.q, tc.dropped, got)

@@ -221,8 +221,9 @@ func withImplicitSpansetFilter(p traceql.Pipeline) traceql.Pipeline {
 // conditions only (stagesAddNoFetchCondition). Second, every span-referencing
 // operand is one span-level condition (singleFetchCondition). Anywhere else
 // the spans Tempo fetches depend on conditions outside the OR's own operands,
-// and neither dropping nor evaluating the operand gives its answer (#4402):
-// the filter lowers as it is.
+// and the filter keeps the lowering v1.24.0 gave it (lowerTopLevelOr). That
+// lowering is Tempo's answer in some of those shapes and not in others
+// (#4402).
 func withoutFetchlessOrOperands(p traceql.Pipeline) traceql.Pipeline {
 	if len(p.Elements) == 0 {
 		return p
@@ -249,12 +250,8 @@ func withoutFetchlessOrOperands(p traceql.Pipeline) traceql.Pipeline {
 	if len(kept) == len(operands) {
 		return p
 	}
-	pred := kept[0]
-	for _, e := range kept[1:] {
-		pred = &traceql.BinaryOperation{Op: traceql.OpOr, LHS: pred, RHS: e}
-	}
 	elements := slices.Clone(p.Elements)
-	elements[0] = &traceql.SpansetFilter{Expression: pred}
+	elements[0] = &traceql.SpansetFilter{Expression: orOf(kept)}
 	return traceql.Pipeline{Elements: elements}
 }
 
@@ -1276,39 +1273,59 @@ func negate(e traceql.FieldExpression, s schema.Traces, ctx notContext) (chplan.
 	return &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{inner}}, nil
 }
 
-// lowerTopLevelOr lowers an OR that is the whole spanset filter predicate,
-// beside a span-referencing operand, with every span-free NOT operand of its
-// chain dropped as OR's identity element.
+// lowerTopLevelOr lowers an OR that is the whole spanset filter predicate and
+// references a span, with each span-free NOT operand that rule 4 of
+// lowerUnaryNot drops (orIdentityNot) dropped as OR's identity element.
 //
-// Reference Tempo's parser folds the NOT to a Static `true`, and which spans
-// that operand lets through depends on the spans the fetch layer returns. When
-// the filter alone decides those spans, withoutFetchlessOrOperands has already
-// dropped the operand, which is Tempo's answer. Everywhere else neither the
-// dropped nor the evaluated operand is Tempo's answer (#4402); dropping keeps
-// the answer cerberus has always given, as rule 4 of lowerUnaryNot does for a
-// NOT over a comparison. A span-free operand that is not a NOT keeps its
-// evaluated lowering there, so `{ (A && B) || !false }` and
-// `{ (A && B) || !("a" = "b") }` answer differently, where Tempo answers both
-// alike (#4402). An OR that references no span is a Static in reference and is
-// evaluated whole. The remaining operands lower exactly as they would inside
-// the OR, as OR operands.
+// It applies where withoutFetchlessOrOperands keeps the span-free operands,
+// and it gives the filter the lowering v1.24.0 gave it. Reference Tempo's
+// parser folds every span-free NOT to a Static `true`, whose answer there
+// depends on the spans the rest of the query fetches: beside a trace-scoped
+// condition Tempo fetches every span, so evaluating the operand is its
+// answer, and beside a compound operand neither lowering is (#4402). A
+// span-free operand that is not such a NOT keeps its evaluated lowering, so
+// `{ (A && B) || !false }` and `{ (A && B) || !("a" = "b") }` answer
+// differently, where Tempo answers both alike (#4402). An OR that references
+// no span is a Static in reference and is evaluated whole. The remaining
+// operands lower exactly as they would inside the OR, as OR operands.
 func lowerTopLevelOr(b *traceql.BinaryOperation, s schema.Traces) (chplan.Expr, error) {
 	if !traceql.ReferencesSpan(b) {
 		return lowerFieldExpr(b, s)
 	}
 	operands := orChainOperands(b)
 	kept := slices.DeleteFunc(slices.Clone(operands), func(e traceql.FieldExpression) bool {
-		_, isNot := asUnaryNot(e)
-		return isNot && !traceql.ReferencesSpan(e)
+		return !traceql.ReferencesSpan(e) && orIdentityNot(e)
 	})
 	if len(kept) == len(operands) {
 		return lowerFieldExpr(b, s)
 	}
-	pred := kept[0]
-	for _, e := range kept[1:] {
+	return lowerBooleanFieldExpr(orOf(kept), s, notContextOrOperand)
+}
+
+// orIdentityNot reports whether rule 4 of lowerUnaryNot, as v1.24.0 applied
+// it to every OR operand, lowers e as OR's identity element: e is a NOT that
+// remains after pairs of NOTs cancel (rule 1), over an operand that is not
+// itself a logical AND or OR. A double negation lowers as its operand, and a
+// NOT over a compound operand is evaluated.
+func orIdentityNot(e traceql.FieldExpression) bool {
+	operand, ok := asUnaryNot(e)
+	if !ok {
+		return false
+	}
+	if inner, ok := asUnaryNot(operand); ok {
+		return orIdentityNot(inner)
+	}
+	return !isCompoundBoolean(operand)
+}
+
+// orOf joins operands, of which there is at least one, into a left-deep
+// logical OR chain.
+func orOf(operands []traceql.FieldExpression) traceql.FieldExpression {
+	pred := operands[0]
+	for _, e := range operands[1:] {
 		pred = &traceql.BinaryOperation{Op: traceql.OpOr, LHS: pred, RHS: e}
 	}
-	return lowerBooleanFieldExpr(pred, s, notContextOrOperand)
+	return pred
 }
 
 // orChainOperands flattens the logical OR tree rooted at b into its
