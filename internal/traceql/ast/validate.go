@@ -343,12 +343,9 @@ func validateSecondStage(ss SecondStageElement) error {
 // like the ones above, and the reference reaches them from the same
 // query-time validate() walk.
 //
-// The walk runs on the tree the grammar produced, BEFORE applyRewrites folds
-// a standalone `| by(X)` stage into the following aggregate's group-by
-// (MetricsAggregate.WithLeadingGroupBy). That ordering is what the reference
-// does too: its `by(...)` stage is a GroupOperation the metrics validator
-// never sees, so a fold-only key does not count against the ceiling in
-// either engine.
+// A standalone `| by(X)` stage before the aggregate is a GroupOperation the
+// metrics validator never sees, in the reference as here, so its key does not
+// count against the ceiling.
 func validateFirstStage(fs FirstStageElement) error {
 	switch a := fs.(type) {
 	case *MetricsAggregate:

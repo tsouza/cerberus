@@ -28,8 +28,8 @@ import (
 //     the cursor to sit exactly at end-of-line; one ending in `<_>`
 //     requires a NON-empty remainder ("foo bar baz" matches "<_> baz"
 //     but not "<_> bar");
-//  4. an empty line matches no pattern (an empty pattern is rejected at
-//     parse).
+//  4. an empty line matches only the empty pattern, and the empty
+//     pattern matches only the empty line.
 //
 // Crucially Test is first-occurrence greedy, NOT a backtracking
 // regex: "abab" does NOT match "<_>ab" (the first "ab" occurrence
@@ -76,9 +76,9 @@ func parsePatternLineFilter(match string) (patternLineFilter, error) {
 	for i, l := range runs {
 		lits[i] = string(l)
 	}
-	// With no literal run the pattern is a single `<_>` (consecutive
-	// captures are rejected), which ends on a capture and matches every
-	// non-empty line.
+	// With no literal run the pattern is either empty or a single `<_>`
+	// (consecutive captures are rejected); only the latter ends on a
+	// capture.
 	return patternLineFilter{
 		Literals:        lits,
 		FirstIsLiteral:  m.StartsWithLiteral(),
@@ -103,21 +103,22 @@ func patternLineFilterExpr(match string, negated bool, body chplan.Expr) (chplan
 // expr renders the Test() walk for one parsed pattern over `line`.
 func (p patternLineFilter) expr(line chplan.Expr) chplan.Expr {
 	lineLen := &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{line}}
+	endOp := chplan.OpEq // ends on a literal, or is empty: cursor must sit at end-of-line
+	if p.EndsWithCapture {
+		endOp = chplan.OpNe // ends on `<_>`: remainder must be non-empty
+	}
 	if len(p.Literals) == 0 {
-		// Pure `<_>`: the cursor never moves off 0 and the pattern ends
-		// on a wildcard — matches exactly the non-empty lines. Rendered
+		// No literal run: the cursor never moves off 0, so the end check
+		// alone decides — a lone `<_>` matches exactly the non-empty
+		// lines, the empty pattern exactly the empty ones. Rendered
 		// directly (an arrayFold over an empty `array()` has no element
 		// type for CH to bind the lambda against).
-		return &chplan.Binary{Op: chplan.OpNe, Left: lineLen, Right: &chplan.LitInt{V: 0}}
+		return &chplan.Binary{Op: endOp, Left: lineLen, Right: &chplan.LitInt{V: 0}}
 	}
 
 	cursor := p.foldExpr(line)
 	ok := &chplan.Binary{Op: chplan.OpGe, Left: cursor, Right: &chplan.LitInt{V: 0}}
 
-	endOp := chplan.OpEq // ends on a literal: cursor must sit at end-of-line
-	if p.EndsWithCapture {
-		endOp = chplan.OpNe // ends on `<_>`: remainder must be non-empty
-	}
 	endCheck := &chplan.Binary{Op: endOp, Left: p.foldExpr(line), Right: lineLen}
 
 	return &chplan.Binary{Op: chplan.OpAnd, Left: ok, Right: endCheck}
@@ -125,8 +126,7 @@ func (p patternLineFilter) expr(line chplan.Expr) chplan.Expr {
 
 // foldExpr renders the arrayFold cursor walk. Returns the final
 // 0-based cursor as Int64, or -1 when any literal failed to match
-// under the gap rules. With no literals the fold returns its init (0)
-// — the pure-`<_>` pattern — and the end check alone decides.
+// under the gap rules. expr never folds a pattern with no literal run.
 func (p patternLineFilter) foldExpr(line chplan.Expr) chplan.Expr {
 	const (
 		accParam = "_cerb_acc"

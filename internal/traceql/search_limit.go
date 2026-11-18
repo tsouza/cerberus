@@ -158,11 +158,10 @@ func stampNestedSetTraceLimit(plan chplan.Node, limit int64, start, end time.Tim
 // metrics query's chplan-leaf scans take their time bound from the
 // /api/metrics/query_range handler's RangeWindow wrap. But that wrap cannot
 // reach BELOW a WITH RECURSIVE, so a metrics pipeline over a structural /
-// nested-set source (`{ } >> { } | rate()`,
-// `{ nestedSetParent<0 } | by(nestedSetParent) | rate()`) would emit a
-// windowless recursive arm unless this stamp arms it too. On the metrics path
-// the emitter replaces the stamped [start,end] with the span the RangeWindow
-// reads (chplan.BoundMetricsPerTraceSubqueries), keeping the TimestampColumn
+// nested-set source (`{ } >> { } | rate()`, `{ nestedSetLeft > 0 } | rate()`)
+// would emit a windowless recursive arm unless this stamp arms it too. On the
+// metrics path the emitter replaces the stamped [start,end] with the span the
+// RangeWindow reads (chplan.BoundMetricsPerTraceSubqueries), keeping the TimestampColumn
 // this stamp set. The bound needs only a non-zero [start,end] + tsCol, NOT the
 // /api/search response trace limit — conflating the two would skip the
 // metrics path, which carries no limit.

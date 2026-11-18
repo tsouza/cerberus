@@ -12,22 +12,26 @@ import (
 )
 
 // TestLower_HistogramQuantile_NonBucketInputFoldsEmpty pins the
-// non-selector histogram_quantile fallback: reference Prometheus
-// accepts ANY instant-vector second argument and skips float samples
-// without an `le` label (info annotation, empty result) — cerberus's
-// OTel-CH model stores classic buckets as array rows, so float
-// pipelines provably carry no bucket data and the lowering folds to a
-// constant-false Filter (empty vector) instead of a 422.
+// non-selector histogram_quantile fallback for arguments whose label
+// algebra proves they carry no `le`: reference Prometheus accepts ANY
+// instant-vector second argument and skips float samples without an `le`
+// label (info annotation, empty result), so these fold to a constant-false
+// Filter (empty vector) instead of a 422 — and instead of reassembling a
+// bucket ladder from rows that cannot hold one. An argument that MAY carry
+// `le` (`up + up`: any series can) is not folded; the spec corpus pins its
+// answer against Prometheus (histogram_quantile_non_bucket_arithmetic_empty).
 func TestLower_HistogramQuantile_NonBucketInputFoldsEmpty(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{})
 
-	for _, q := range []string{
-		`histogram_quantile(0.9, sum(up))`,
-		`histogram_quantile(0.9, vector(1))`,
-		`histogram_quantile(0.9, up + up)`,
+	for q, wantFold := range map[string]bool{
+		`histogram_quantile(0.9, sum(up))`:               true,
+		`histogram_quantile(0.9, vector(1))`:             true,
+		`histogram_quantile(0.9, sum by (job) (up) * 2)`: true,
+		`histogram_quantile(0.9, up + up)`:               false,
+		`histogram_quantile(0.9, sum by (le) (up))`:      false,
 	} {
 		expr, err := p.ParseExpr(q)
 		if err != nil {
@@ -37,13 +41,14 @@ func TestLower_HistogramQuantile_NonBucketInputFoldsEmpty(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Lower(%q): %v", q, err)
 		}
-		f, ok := plan.(*chplan.Filter)
-		if !ok {
-			t.Fatalf("Lower(%q) = %T, want *chplan.Filter", q, plan)
+		f, isFilter := plan.(*chplan.Filter)
+		folded := false
+		if isFilter {
+			lit, ok := f.Predicate.(*chplan.LitBool)
+			folded = ok && !lit.V
 		}
-		lit, ok := f.Predicate.(*chplan.LitBool)
-		if !ok || lit.V {
-			t.Fatalf("Lower(%q) predicate = %#v, want LitBool{false}", q, f.Predicate)
+		if folded != wantFold {
+			t.Fatalf("Lower(%q) folded to constant-false = %v, want %v (root %T)", q, folded, wantFold, plan)
 		}
 	}
 }

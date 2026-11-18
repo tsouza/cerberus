@@ -112,15 +112,15 @@ func newTempoSpillHandler(rec *spillSettingsRecorder, variant tempoSpillHandler)
 // the engine's spill thresholds; without them it aborts at the memory cap
 // where the engine's statement over the same data spills.
 //
-// A statement whose DISTINCT a spill harms (harmful) carries every threshold
-// but the DISTINCT one: the name, kind and status intrinsic values, the
-// values of a LowCardinality materialized span or resource column, and the
-// span and resource tag names read off a Map column. Every other statement
-// carries all four, among them the event and link tag names, the plain-map,
-// auto-scope, event, link and numeric-materialized tag values, the
-// instrumentation-scope and JSON-path tag names, and the data-plane
-// statements, whose phase-A DISTINCT must be among them so a data-plane
-// DISTINCT keeping its threshold is checked rather than vacuously absent.
+// A statement the handler marks (harmful) carries every threshold but the
+// DISTINCT one: the name, kind and status intrinsic values, the values of a
+// LowCardinality materialized span or resource column, and the span, resource
+// and instrumentation-scope tag names read off a Map column. Every other
+// statement carries all four, among them the event and link tag names, the
+// plain-map, auto-scope, event, link and numeric-materialized tag values, the
+// JSON-path tag names, and the data-plane statements, whose phase-A DISTINCT
+// must be among them so a data-plane DISTINCT keeping its threshold is
+// checked rather than vacuously absent.
 func TestHandlerDispatches_CarryEngineSpillThresholds(t *testing.T) {
 	window := "&start=1700000000&end=1700003600"
 	values := func(tag string) string { return "/api/v2/search/tag/" + tag + "/values?" + window[1:] }
@@ -142,7 +142,8 @@ func TestHandlerDispatches_CarryEngineSpillThresholds(t *testing.T) {
 		{path: "/api/search/tags?" + window[1:], bypassing: nestedKeyStatements},
 		{path: "/api/v2/search/tags?scope=none" + window, bypassing: flatMapKeyStatements, harmful: true},
 		{path: "/api/v2/search/tags?scope=none" + window, bypassing: nestedKeyStatements},
-		{path: "/api/v2/search/tags?scope=instrumentation" + window, variant: scopeAttrsHandler, bypassing: everyStatement},
+		{path: "/api/search/tags?scope=instrumentation" + window, variant: scopeAttrsHandler, bypassing: everyStatement, harmful: true},
+		{path: "/api/v2/search/tags?scope=instrumentation" + window, variant: scopeAttrsHandler, bypassing: everyStatement, harmful: true},
 		{path: "/api/v2/search/tags?scope=span" + window, variant: jsonSpanAttrsHandler, bypassing: everyStatement},
 		{path: "/api/search/tag/name/values?" + window[1:], bypassing: everyStatement, harmful: true},
 		{path: values("name"), bypassing: everyStatement, harmful: true},
