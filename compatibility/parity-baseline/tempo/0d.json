@@ -5,6 +5,8 @@
   "cases": [
     "metrics_instant | metrics_avg_over_time_instant",
     "search | count_spans_per_trace",
-    "search | resource_service_name_regex_prefix_no_overmatch"
+    "search | resource_service_name_regex_prefix_no_overmatch",
+    "search | static_bool_and_not_static",
+    "search | static_bool_and_not_static_false"
   ]
 }
