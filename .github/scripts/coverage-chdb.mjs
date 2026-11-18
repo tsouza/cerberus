@@ -65,7 +65,10 @@ import process from 'node:process';
 
 import { capture, error, isNonEmptyFile, log } from './lib/gh.mjs';
 import { RATCHET_FANOUT } from './perf-coverage-fanout.mjs';
-import { COVERAGE_SHARDS, parseTestInventory, partitionTests, shardProfile, writePartitionReceipt } from './lib/coverage-partition.mjs';
+import {
+  COVERAGE_SHARDS, parseTestInventory, partitionTests, selectorProfile, shardProfile, writePartitionReceipt,
+} from './lib/coverage-partition.mjs';
+import { writeFoldedProfile } from './lib/coverage-fold.mjs';
 
 /** The composite build-tag set every chdb-tagged package in this lane needs. */
 export const CHDB_TAGS = 'chdb,agpl_oracle,chdb_agpl_oracle';
@@ -89,13 +92,17 @@ const COVERAGE_PROFILE = 'cover-chdb.out';
 const FANOUT_SCRIPT = new URL('./perf-coverage-fanout.mjs', import.meta.url);
 
 /**
- * argv for the main sweep's `go test` invocation. Exported so
+ * argv for the main sweep's `go test` invocation; with a partition plan, for
+ * the run of its selector `part`, which writes that run's own profile. The
+ * first run targets the whole tree, as an unsplit shard does, so every test
+ * binary runs once in the shard; a later run targets only the packages that
+ * own its selector's names. Exported so
  * coverage-chdb.test.mjs (and test/regression/tagged_test_enrollment_test.go's
  * readCoverageChdbTaggedRun) can verify its shape directly, the same pattern
  * perf-coverage-fanout.mjs's own legCommands() already established, instead
  * of parsing this file's source as unstructured text.
  */
-export function mainSweepArgv(coverpkg, plan = null) {
+export function mainSweepArgv(coverpkg, plan = null, part = 0) {
   return [
     'test',
     // Cached -coverpkg metadata can retain zero-count blocks from older source.
@@ -103,9 +110,9 @@ export function mainSweepArgv(coverpkg, plan = null) {
     '-timeout', `${MAIN_SWEEP_TIMEOUT_MINUTES}m`,
     '-tags', CHDB_TAGS,
     '-coverpkg', coverpkg,
-    '-coverprofile', plan ? shardProfile(plan.index) : COVERAGE_PROFILE,
-    ...(plan ? ['-json', '-run', plan.pattern] : []),
-    './...',
+    '-coverprofile', plan ? selectorProfile(plan.index, part) : COVERAGE_PROFILE,
+    ...(plan ? ['-json', '-run', plan.selectors[part].pattern] : []),
+    ...(part === 0 ? ['./...'] : plan.selectors[part].packages),
   ];
 }
 
@@ -145,7 +152,10 @@ export function pipeFilteredStdout(child, sink = process.stdout, reportLine = fi
   });
 }
 
-/** Runs the main `go test` sweep, resolving to its exit code. */
+/**
+ * Runs one `go test` of the main sweep, resolving to its exit code. With
+ * `passed`, it appends the key of every top-level test that passed.
+ */
 function runMainSweep(argv, env, cwd, go, stdout, passed = null) {
   return new Promise((resolve) => {
     const child = spawn(go, argv, {
@@ -158,7 +168,7 @@ function runMainSweep(argv, env, cwd, go, stdout, passed = null) {
     pipeFilteredStdout(child, stdout, passed ? (line) => {
       const event = JSON.parse(line);
       if (event.Action === 'pass' && event.Test && !event.Test.includes('/')) {
-        passed.add(`${event.Package}/${event.Test}`);
+        passed.push(`${event.Package}/${event.Test}`);
         return `${event.Package}/${event.Test}: PASS (${event.Elapsed}s)`;
       }
       if (event.Action === 'output') {
@@ -220,12 +230,13 @@ export async function main({ cwd = process.cwd(), env = process.env, go = env.GO
         for (let index = 1; index <= COVERAGE_SHARDS; index++) {
           const partition = partitionTests(inventory, index);
           const promql = partition.selected.filter((entry) => entry.package.endsWith('/internal/promql')).length;
-          log(`coverage partition ${index}/${COVERAGE_SHARDS}: ${partition.selected.length}/${inventory.length} tests; ${promql} internal/promql tests; selector ${Buffer.byteLength(partition.pattern)} bytes`);
+          const bytes = partition.selectors.map(({ pattern }) => Buffer.byteLength(pattern)).join(' + ');
+          log(`coverage partition ${index}/${COVERAGE_SHARDS}: ${partition.selected.length}/${inventory.length} tests; ${promql} internal/promql tests; ${partition.selectors.length} go test run(s), selector bytes ${bytes}`);
         }
         return 0;
       }
       plan = partitionTests(inventory, Number(env.COVERAGE_SHARD_INDEX));
-      log(`==> coverage partition ${plan.index}/${plan.count}: ${plan.selected.length}/${plan.inventory.length} tests`);
+      log(`==> coverage partition ${plan.index}/${plan.count}: ${plan.selected.length}/${plan.inventory.length} tests in ${plan.selectors.length} go test run(s)`);
     }
 
     const testEnv = {
@@ -234,10 +245,13 @@ export async function main({ cwd = process.cwd(), env = process.env, go = env.GO
       PERF_SHARD_INDEX: String(PERF_SHARD_INDEX),
       PERF_SHARD_COUNT: String(RATCHET_FANOUT),
     };
-    const passed = plan ? new Set() : null;
-    const code = await runMainSweep(mainSweepArgv(coverpkg, plan), testEnv, cwd, go, stdout, passed);
-    if (code !== 0) return code;
+    const passed = plan ? [] : null;
+    for (let part = 0; part < (plan ? plan.selectors.length : 1); part++) {
+      const code = await runMainSweep(mainSweepArgv(coverpkg, plan, part), testEnv, cwd, go, stdout, passed);
+      if (code !== 0) return code;
+    }
     if (plan) {
+      writeFoldedProfile(p(shardProfile(plan.index)), plan.selectors.map((_, part) => p(selectorProfile(plan.index, part))));
       const revision = capture('git', ['rev-parse', 'HEAD'], { cwd });
       if (revision.status !== 0) { error(revision.stderr); return revision.status; }
       writePartitionReceipt(cwd, plan, passed, revision.stdout.trim());
