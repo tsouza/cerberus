@@ -39,8 +39,8 @@ func isHistogramValueFn(fn string) bool {
 //     rows, the reference's empty result);
 //   - every other argument shape (aggregations, arithmetic, …) is a
 //     float pipeline by construction and folds to a constant-false
-//     Filter over its own lowering — the same posture as
-//     histogram_quantile's non-bucket fold.
+//     Filter over its own lowering: these functions skip every float
+//     sample, whatever its labels.
 //
 // Per-function value, computed per row from the exp-histogram columns
 // (Count, Sum, Scale, ZeroCount, Positive/Negative Offset+BucketCounts;

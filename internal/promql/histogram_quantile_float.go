@@ -1,6 +1,8 @@
 package promql
 
 import (
+	"slices"
+
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -68,11 +70,16 @@ const hqFloatMinRungs = 2
 //	          Filter <sample carries a parseable `le`>
 //	            <the argument, lowered as an ordinary float expression>
 //
-// The fan-out is the reason this route is GUARDED rather than universal.
-// It multiplies a histogram row into one row per bucket, and the classic
+// The fan-out is the reason this route is not the first choice. It
+// multiplies a histogram row into one row per bucket, and the classic
 // `sum by(le)` idiom — the hottest cost centre in the product — must keep
 // reaching the array-domain fold that reads the bucket arrays in place.
-// Only an aggregation with no fold gets here.
+// Only an argument the array-domain idioms cannot express gets here: an
+// aggregation with no fold, and — through
+// [lowerHistogramQuantileClassicFloatOverPlan] from lowerHistogramQuantile's
+// unrecognised-shape fallback — every other float expression whose samples
+// may carry `le` (range functions the idioms do not accept, instant
+// functions and arithmetic over a bucket selector, …).
 //
 // Range mode needs no separate lowering. The argument's own lowering
 // already fans across the step grid, stamping each row with its anchor, so
@@ -98,6 +105,9 @@ func lowerHistogramQuantileClassicFloat(
 	return lowerHistogramQuantileClassicFloatOverPlan(inner, phi, s, ctx), nil
 }
 
+// lowerHistogramQuantileClassicFloatOverPlan reassembles the ladder over an
+// argument already lowered as an ordinary float expression; see
+// [lowerHistogramQuantileClassicFloat].
 func lowerHistogramQuantileClassicFloatOverPlan(inner chplan.Node, phi phiArg, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	attrs := chplan.Expr(&chplan.ColumnRef{Name: s.AttributesColumn})
 
@@ -193,6 +203,7 @@ func lowerHistogramQuantileClassicFloatOverPlan(inner chplan.Node, phi phiArg, s
 		BucketCountsColumn:     s.BucketCountsColumn,
 		ExplicitBoundsColumn:   s.ExplicitBoundsColumn,
 		BucketCountsCumulative: true,
+		BucketCountsSigned:     true,
 		GroupBy: []chplan.Expr{
 			&chplan.ColumnRef{Name: s.AttributesColumn},
 			&chplan.ColumnRef{Name: s.TimestampColumn},
@@ -386,4 +397,87 @@ func hqFloatPairedLadderExpr() chplan.Expr {
 		&chplan.ColumnRef{Name: hqFloatSortedCountAlias}, &chplan.LitInt{V: -1},
 	}}
 	return &chplan.FuncCall{Fn: chplan.FnArrayConcat, Args: []chplan.Expr{pairedInterior, trailingCount}}
+}
+
+// mayCarryBucketBound reports whether e's output samples can carry an `le`
+// label, deciding it from the expression's label algebra alone. A false
+// answer is a proof: no sample of e can reach the float-domain ladder
+// reassembly, so histogram_quantile over e is the reference's empty
+// vector without evaluating it. Every shape the algebra below does not
+// settle answers true, which only costs the reassembly running over rows
+// it then drops.
+//
+//   - A reducing aggregation outputs exactly its grouping labels: `le`
+//     survives `by` only when listed, and `without` only when not listed
+//     and the operand may carry it. No grouping at all outputs no labels.
+//   - `topk` / `bottomk` / `limitk` / `limit_ratio` select samples and keep
+//     their label sets, so they carry `le` exactly when their operand does.
+//   - `count_values` outputs its grouping labels plus the label it mints,
+//     whose values are sample values: minting `le` makes them bounds.
+//   - A binary operation's output labels come from its vector operands
+//     (`group_left` / `group_right` copy them from the other operand), so
+//     it carries `le` only when one of them may.
+//   - `vector(s)` outputs one sample with no labels.
+func mayCarryBucketBound(e parser.Expr) bool {
+	switch n := e.(type) {
+	case *parser.ParenExpr:
+		return mayCarryBucketBound(n.Expr)
+	case *parser.StepInvariantExpr:
+		return mayCarryBucketBound(n.Expr)
+	case *parser.NumberLiteral, *parser.StringLiteral:
+		return false
+	case *parser.Call:
+		return n.Func.Name != "vector"
+	case *parser.BinaryExpr:
+		return mayCarryBucketBound(n.LHS) || mayCarryBucketBound(n.RHS)
+	case *parser.AggregateExpr:
+		switch n.Op {
+		case parser.TOPK, parser.BOTTOMK, parser.LIMITK, parser.LIMIT_RATIO:
+			return mayCarryBucketBound(n.Expr)
+		case parser.COUNT_VALUES:
+			minted, ok := n.Param.(*parser.StringLiteral)
+			if !ok || minted.Val == bucketBoundLabel {
+				return true
+			}
+			return groupingMayKeepBucketBound(n)
+		case parser.SUM, parser.AVG, parser.MIN, parser.MAX, parser.COUNT, parser.GROUP,
+			parser.STDDEV, parser.STDVAR, parser.QUANTILE:
+			return groupingMayKeepBucketBound(n)
+		}
+	}
+	return true
+}
+
+// groupingMayKeepBucketBound applies a reducing aggregation's grouping to
+// its operand's `le`: see [mayCarryBucketBound].
+func groupingMayKeepBucketBound(agg *parser.AggregateExpr) bool {
+	listed := slices.Contains(agg.Grouping, bucketBoundLabel)
+	if agg.Without == listed {
+		return false
+	}
+	return mayCarryBucketBound(agg.Expr)
+}
+
+// planProvablyEmpty reports whether inner's lowering already folded it to
+// zero rows: a constant-false Filter reached through nodes that can only
+// map or drop rows (a native-histogram argument under a function that
+// drops histogram samples, `max_over_time(h_exp_hist[5m])`, lowers so).
+// An Aggregate stops the walk, since one without grouping keys answers a
+// row over an empty input.
+func planProvablyEmpty(inner chplan.Node) bool {
+	for {
+		switch n := inner.(type) {
+		case *chplan.Filter:
+			if lit, ok := n.Predicate.(*chplan.LitBool); ok && !lit.V {
+				return true
+			}
+			inner = n.Input
+		case *chplan.Project:
+			inner = n.Input
+		case *chplan.OrderBy:
+			inner = n.Input
+		default:
+			return false
+		}
+	}
 }

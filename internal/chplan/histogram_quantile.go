@@ -71,6 +71,17 @@ type HistogramQuantile struct {
 	// disagree (see the note in chsql.histogramQuantileValueFrag).
 	BucketCountsCumulative bool
 
+	// BucketCountsSigned declares that the cumulative ladder holds
+	// evaluated float samples — the `le`-labelled samples of an ordinary
+	// float expression, reassembled per series — whose counts may be
+	// negative or NaN (`delta`, `deriv`, negation, …). Only meaningful
+	// with BucketCountsCumulative. A ladder whose total sits below
+	// phi * total has no rung reaching the rank; the emitter then answers
+	// from the trailing +Inf rung, as Prometheus's bucketQuantile does.
+	// Ladders folded from per-bucket counts are non-negative, never reach
+	// that case, and leave this false.
+	BucketCountsSigned bool
+
 	// GroupBy + GroupByAliases name the per-series projection from the
 	// inner subquery. The emitter projects each as `<expr> AS <alias>`
 	// in the outer SELECT so the wrapping Sample projection can pick
@@ -121,6 +132,7 @@ func (h *HistogramQuantile) Equal(other Node) bool {
 		h.BucketCountsColumn != o.BucketCountsColumn ||
 		h.ExplicitBoundsColumn != o.ExplicitBoundsColumn ||
 		h.BucketCountsCumulative != o.BucketCountsCumulative ||
+		h.BucketCountsSigned != o.BucketCountsSigned ||
 		h.MetricNameColumn != o.MetricNameColumn ||
 		h.AttributesColumn != o.AttributesColumn ||
 		h.TimestampColumn != o.TimestampColumn ||

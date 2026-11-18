@@ -4,6 +4,7 @@
   "bucket": "2a",
   "cases": [
     "metrics_instant | metrics_rate_instant",
+    "metrics_range | metrics_rate_after_leading_by",
     "search | scoped_span_kind_consumer"
   ]
 }

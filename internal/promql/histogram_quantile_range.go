@@ -341,15 +341,12 @@ func lowerHistogramQuantileClassicAggRange(
 	shaping := ctx.lowerers.ClassicBucketMerge.LowerClassicBucketMerge(shape.classicFold, shape.classicFoldIsSum, s)
 	collapse := &chplan.Aggregate{
 		Roles:              metricRoles(s),
-		Input:              classicBucketMergeInputGate(perSeries, s, ctx.resourceBounds.ClassicBucketMergeMaxEntries),
+		Input:              perSeries,
 		GroupBy:            append([]chplan.Expr{anchorRef}, userGroupBy...),
 		GroupByAliases:     append([]string{stepGridAnchorColumn}, userAliases...),
 		AggFuncs:           shaping.aggs,
 		DropEmptyOnNoGroup: true,
 	}
-	// The Aggregate reads the per-series rows through the bucket-merge
-	// guard, which bounds the merged entries across every step — see
-	// classic_bucket_merge_bound.go.
 	rebuilt, cumulative := shaping.reshape(collapse, []chplan.Projection{
 		{Expr: anchorRef, Alias: stepGridAnchorColumn},
 		{Expr: attrsRebuild, Alias: s.AttributesColumn},

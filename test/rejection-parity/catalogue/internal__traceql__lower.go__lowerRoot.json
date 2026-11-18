@@ -5,7 +5,7 @@
       "site": "internal/traceql/lower.go:lowerRoot#3bb91b26",
       "message": "traceql: empty pipeline",
       "class": "internal",
-      "rationale": "internal invariant: tempo's Parse never returns an empty pipeline without an error",
+      "rationale": "internal invariant: Parse never returns an empty pipeline without an error, since every pipeline the grammar admits opens with a spanset expression, a scalar filter, by() or select()",
       "evidence": {
         "guard": [
           "past returning if expr == nil",

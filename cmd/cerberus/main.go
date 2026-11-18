@@ -139,15 +139,15 @@ type apiHeads struct {
 	tempo *tempo.Handler
 }
 
-// resolveBoundOverrides resolves the six resource-bound safety-ceiling
+// resolveBoundOverrides resolves the resource-bound safety-ceiling
 // overrides run() threads into mountAPIHeads:
-// the three chsql sample-fanout knobs (CERBERUS_CH_RANGE_BUCKET_FANOUT_MAX_ROWS
+// the chsql sample-fanout knobs (CERBERUS_CH_RANGE_BUCKET_FANOUT_MAX_ROWS
 // / CERBERUS_CH_RANGE_LWR_FANOUT_MAX_ROWS / CERBERUS_CH_RATE_WINDOW_FANOUT_MAX_ROWS)
-// and the two PromQL-only histogram-merge cost-unit knobs
-// (CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS /
-// CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES, wired only onto the
+// and the PromQL-only histogram ceilings
+// (CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS and its siblings in
+// internal/promql/resource_bounds_env.go, wired only onto the
 // prom head's Handler.ResourceBounds — see newPromHandler's own doc for why
-// LogQL/TraceQL never see it), all five from issue #2667, plus issue #2733's
+// LogQL/TraceQL never see it), from issue #2667, plus issue #2733's
 // head-agnostic emitted-SQL statement-size bound
 // (CERBERUS_CH_MAX_EMITTED_SQL_BYTES). Both resolutions share the same
 // fail-fast contract as buildSolver's own solver.ConfigFrom above: a
@@ -163,7 +163,7 @@ type apiHeads struct {
 // cfg.ClickHouse.MaxQueryMemoryBytes is the loaded ClickHouse per-query
 // memory cap. It is not itself a bound: it is the byte budget cerberus issue
 // #3252's samples-per-series-per-window ceiling and the classic-histogram
-// bucket-merge ceiling are DERIVED from when no explicit override pins them,
+// per-series window ceiling are DERIVED from when no explicit override pins them,
 // in the same sentinel-0 shape
 // CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS already uses. Passing
 // it here rather than re-reading the env keeps ONE resolution of the cap —
@@ -185,9 +185,8 @@ func resolveBoundOverrides(cfg config.Config) (engine.ResourceBoundOverrides, pr
 
 // bootBounds is the server boot path's resolution of the resource bounds:
 // [resolveBoundOverrides], then one startup warning per retired setting the
-// configuration still sets. A retired setting is ignored rather than
-// rejected: the process starts on its replacement, or on the replacement's
-// default when that is unset.
+// configuration still sets. A retired setting is accepted and ignored: the
+// bounds resolve exactly as they do without it.
 func bootBounds(logger *slog.Logger, cfg config.Config) (engine.ResourceBoundOverrides, promql.ResourceBounds, error) {
 	resourceBounds, promResourceBounds, err := resolveBoundOverrides(cfg)
 	if err != nil {
