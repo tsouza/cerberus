@@ -10,7 +10,10 @@ package chopt
 // a wide column ahead of a selective one on a narrow column reads the wide
 // column for every row on 24.8 and for the narrow filter's rows on 24.10,
 // 25.3 and 26.8, and for every row again on 25.3 and 26.8 under
-// allow_reorder_prewhere_conditions=0.
+// allow_reorder_prewhere_conditions=0. The order concerns the conditions the
+// server moves to PREWHERE itself; an explicit PREWHERE the emitter writes
+// keeps a conjunct on a wide column out of it (chsql's partitionPrewhere),
+// so that conjunct runs after the PREWHERE on every build.
 var PrewhereReorderedSince = Version{Major: 24, Minor: 10}
 
 // PrewhereKeepsWhereOrder reports whether server runs a multi-step PREWHERE

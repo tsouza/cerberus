@@ -822,20 +822,24 @@ builds carry themselves:
 | The two `optimize_use_projection_filtering` gates    | `25.6` or later                             |
 
 The analyzer decision gets no such start: at boot it follows the reached
-builds alone.
-
-The PREWHERE order fact (`prewhere_in_where_order` in the boot and re-probe
-logs) holds only when a probe reached every node and every build is below
-`24.10`, which runs a multi-step PREWHERE in the order of the `WHERE`
-conjuncts rather than reordering them. While it holds, a LogQL range
-aggregation puts a `detected_level` filter ahead of a line filter written
-after it in the `SELECT` that reads the logs table. A probe that reaches
-only some of the nodes, reaches no node, or reads a build from `24.10` on
-clears it. Boot logs a `WARN`
+builds alone. Boot logs a `WARN`
 (`clickhouse fleet probe did not reach every node`) naming the builds it read.
 Until a probe reaches every node, the [re-probe](#re-probe) runs every 10
 seconds; the first probe that reaches every node decides every gate from the
 whole fleet, which lifts each one no node needs.
+
+The PREWHERE order fact (`prewhere_in_where_order` in the boot and re-probe
+logs) holds when a probe reached every node and every build is below
+`24.10`, which runs a multi-step PREWHERE in the order of the `WHERE`
+conjuncts rather than reordering them. While it holds, a LogQL range
+aggregation puts a `detected_level` filter ahead of a line filter written
+after it in the `SELECT` that reads the logs table. A probe that reads a
+build from `24.10` on clears it; a probe that misses a node and reads no
+such build leaves it as it was, which at boot is cleared. The fact
+concerns the conditions the server moves to PREWHERE itself: an explicit
+PREWHERE the emitter writes keeps a conjunct on a wide column, such as a
+line filter on `Body`, out of it, so that conjunct runs after the
+PREWHERE on every build.
 
 Feature floors are bare `major.minor` values, so every build of a floor's minor
 meets it. [Known-defective build](#known-defective-server-builds) ranges are
