@@ -170,3 +170,20 @@ func TestSearch_Regroup_UnsetTraceFields_ChDB(t *testing.T) {
 		})
 	}
 }
+
+// TestSearch_Coalesce_LimitKeepsTheNewestTraces_ChDB pins the answer of a
+// search ending in coalesce() as its limit falls below the number of matching
+// traces. The newest traces come back, newest first, each with its own root
+// and its whole extent, whether every span matches or only some do.
+func TestSearch_Coalesce_LimitKeepsTheNewestTraces_ChDB(t *testing.T) {
+	srv := newRegroupChDBServer(t)
+	newestFirst := []string{"GET /c", "GET /b", "GET /a"}
+	for limit := 1; limit <= len(newestFirst); limit++ {
+		t.Run("{ } | coalesce() limit="+strconv.Itoa(limit), func(t *testing.T) {
+			wantRegroupTraces(t, runRegroupSearch(t, srv, `{ } | coalesce()`, limit), newestFirst[:limit]...)
+		})
+	}
+	// The backend span alone matches; the summary still reports its trace's
+	// root and the trace's whole extent.
+	wantRegroupTraces(t, runRegroupSearch(t, srv, `{ resource.service.name = "backend" } | coalesce()`, 2), newestFirst[:2]...)
+}

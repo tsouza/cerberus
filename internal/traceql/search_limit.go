@@ -416,6 +416,60 @@ func stampSearchTraceLimit(plan chplan.Node, limit int64, start, end time.Time, 
 	return &chplan.SearchTraceLimit{Input: drain, Rank: rank, TraceLimit: limit}
 }
 
+// stampCoalesceTraceLimit bounds a search that ends in `| coalesce()` over a
+// plain-search row source (`{ <matchers> } | coalesce()`) to the newest
+// `limit` traces before the coalesce aggregate reads their spans.
+//
+// The coalesce aggregate (lowerCoalesce) keeps one row per span identity and
+// filters nothing, so every trace with a span in the window reaches the
+// search envelope. The envelope folds those rows to one per trace and keeps
+// the `limit` traces with the latest start (spansetRowsPerTrace,
+// boundNewestTraces in internal/api/tempo): the latest earliest-span
+// Timestamp, ties broken by TraceId ascending. SearchTraceLimit ranks the
+// row source's traces by the same key and keeps the same traces, so the
+// aggregate reads only their spans and each kept trace's envelope covers the
+// same rows as before. The ranked source is also the drained one (no Rank):
+// the aggregate's extent and span count read the request window alone.
+//
+// A by() keeps every span, so a coalesce() right after a by() over a
+// plain-search source reads that source and is bounded the same way. Any
+// other plan is returned unchanged: a coalesce() before another stage (whose
+// scalar filter can drop a trace the bound would have kept), and a coalesce()
+// over the spans a scalar filter passes, a spanset operation or a structural
+// source.
+func stampCoalesceTraceLimit(plan chplan.Node, limit int64, start, end time.Time, s schema.Traces) chplan.Node {
+	if limit <= 0 {
+		return plan
+	}
+	agg, ok := plan.(*chplan.Aggregate)
+	if !ok || !isCoalesceAggregate(agg, s) || !isPlainSearchShape(agg.Input) {
+		return plan
+	}
+	bounded := *agg
+	bounded.Input = &chplan.SearchTraceLimit{
+		Input:      boundSearchRowSource(agg.Input, start, end, start, end, s),
+		TraceLimit: limit,
+	}
+	return &bounded
+}
+
+// isCoalesceAggregate reports whether a is the aggregate lowerCoalesce
+// builds: grouped by the span identity alone, under the span-identity
+// aliases. A by() aggregate groups by TraceId and its key under the GroupKey
+// alias, and a spanset aggregate by TraceId alone.
+func isCoalesceAggregate(a *chplan.Aggregate, s schema.Traces) bool {
+	if len(a.GroupBy) != 2 || len(a.GroupByAliases) != 2 {
+		return false
+	}
+	for i, want := range []string{s.TraceIDColumn, s.SpanIDColumn} {
+		ref, ok := a.GroupBy[i].(*chplan.ColumnRef)
+		if !ok || ref.Qualifier != "" || ref.Name != want || a.GroupByAliases[i] != want {
+			return false
+		}
+	}
+	return true
+}
+
 // dropTraceScopedConjuncts removes from a plain-search row source
 // (isPlainSearchShape) every top-level conjunct of its span predicate that
 // depends on the trace alone: a `TraceId IN (subquery)` membership, such as a
