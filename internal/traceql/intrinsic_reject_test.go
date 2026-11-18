@@ -294,3 +294,68 @@ func TestChildCountAnswersOneStatusClassForEveryOperator(t *testing.T) {
 		t.Errorf("Parse(%q): want a rejection (upstream forbids `<intrinsic> = nil`), got none", rejected)
 	}
 }
+
+// TestSpanFreeOperandOfTopLevelOr pins how a span-free operand of a logical
+// OR lowers. Reference Tempo folds a span-free expression to a Static, and
+// its fetch layer fetches an OR filter's spans by the span-referencing
+// operands' conditions only, so in the filter's top-level OR chain such an
+// operand adds no span: the plan is the remaining operands' plan. An OR
+// nested under an AND, and an OR that references no span at all, are
+// evaluated (see lowerTopLevelOr).
+func TestSpanFreeOperandOfTopLevelOr(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelTraces()
+
+	lower := func(t *testing.T, q string) chplan.Node {
+		t.Helper()
+		expr, err := tempo.Parse(q)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", q, err)
+		}
+		plan, err := traceql.Lower(context.Background(), expr, s)
+		if err != nil {
+			t.Fatalf("Lower(%q): %v", q, err)
+		}
+		return plan
+	}
+
+	for _, tc := range []struct{ q, same string }{
+		{`{ kind = server || !("a" = "b") }`, `{ kind = server }`},
+		{`{ !("a" = "b") || kind = server }`, `{ kind = server }`},
+		{`{ kind = server || !("a" = "a") }`, `{ kind = server }`},
+		{`{ kind = server || true }`, `{ kind = server }`},
+		{`{ true || kind = server }`, `{ kind = server }`},
+		{`{ kind = server || ("a" = "a") }`, `{ kind = server }`},
+		{`{ kind = server || kind = client || true }`, `{ kind = server || kind = client }`},
+		{`{ (kind = server || !("a" = "b")) || kind = client }`, `{ kind = server || kind = client }`},
+		{`{ kind = server || span.foo != nil || true }`, `{ kind = server || span.foo != nil }`},
+		// A span-free NOT is dropped even when a sibling is compound.
+		{`{ (kind = server && span.foo = "x") || !("a" = "b") }`, `{ kind = server && span.foo = "x" }`},
+	} {
+		if got, want := spec.PrintChplan(lower(t, tc.q)), spec.PrintChplan(lower(t, tc.same)); got != want {
+			t.Errorf("Lower(%q) plan =\n%s\nwant (same as %q):\n%s", tc.q, got, tc.same, want)
+		}
+	}
+
+	// Evaluated, not dropped: the predicate keeps the NOT as SQL not(...).
+	for _, q := range []string{
+		`{ (kind = server || !("a" = "b")) && kind = client }`,
+		`{ kind = client && (kind = server || !("a" = "b")) }`,
+		`{ ("a" = "b") || !("a" = "b") }`,
+	} {
+		filter, ok := lower(t, q).(*chplan.Filter)
+		if !ok {
+			t.Fatalf("Lower(%q): want *chplan.Filter", q)
+		}
+		evaluated := false
+		chplan.InspectExpr(filter.Predicate, func(e chplan.Expr) bool {
+			if call, ok := e.(*chplan.FuncCall); ok && call.Fn == chplan.FnNot {
+				evaluated = true
+			}
+			return true
+		})
+		if !evaluated {
+			t.Errorf("Lower(%q): predicate %#v has no not(...); want the span-free NOT evaluated", q, filter.Predicate)
+		}
+	}
+}

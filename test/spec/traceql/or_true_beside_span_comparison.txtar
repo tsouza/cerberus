@@ -1,0 +1,22 @@
+A `true` literal as an operand of the filter's top-level OR beside a
+span-referencing comparison. Reference Tempo's fetch layer fetches only the
+spans the comparison's condition selects, and the literal hands it no
+condition, so the answer is the Server span alone, not every span.
+
+-- query.traceql --
+{ kind = server || true }
+-- seed --
+CREATE TABLE otel_traces (
+    SpanId String,
+    SpanKind String,
+    TraceId String
+) ENGINE = MergeTree ORDER BY SpanId;
+INSERT INTO otel_traces (SpanId, SpanKind, TraceId) VALUES
+    ('aaaa', 'Server', 'a0000000000000000000000000000001'),
+    ('bbbb', 'Client', 'a0000000000000000000000000000001'),
+    ('cccc', 'Client', 'a0000000000000000000000000000002');
+-- expected_rows --
+[]
+-- parity_exempt --
+reason: reference-fetch-layer
+detail: `{ kind = server || true }` has a span-free operand of the filter's top-level OR, which reference /api/search fetches no span for; internal/traceql/lower.go's lowerTopLevelOr drops it

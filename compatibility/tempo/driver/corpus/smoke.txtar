@@ -1504,9 +1504,11 @@ search
 #     and the `nil` static the grammar's Static rule lists for the
 #     presence checks), against a value the seeder writes.
 #   * Static booleans: the string-comparison seed `{ "test" = "test" }`
-#     composed with the grammar's `!` and `&&`. Reference Tempo folds a
-#     span-free expression before execution, so the NOT is evaluated, not
-#     dropped as an AND operand's identity element.
+#     composed with the grammar's `!`, `&&` and `||`. Reference Tempo folds a
+#     span-free expression to a Static before execution. A Static is
+#     evaluated as an AND operand, as the whole filter and under a nested
+#     OR; as an operand of the top-level OR beside a span-referencing
+#     comparison it hands the fetch layer no condition, so it adds no span.
 #   * Cross-scope comparison: the attribute seeds `{ span.a != 3 }` /
 #     `{ resource.a != 3 }` with both operands made attributes.
 #
@@ -1541,6 +1543,66 @@ search
 1
 -- expected_max_traces --
 500
+
+-- name --
+static_bool_top_not_static
+# The NOT over a static comparison as the whole filter: `!false` is true for
+# every span, so every trace of the fixture (100 rooted + the orphan)
+# matches. A backend that answers a top-level NOT as constant-false matches
+# none.
+-- query --
+{ !("test" = "other") }
+-- endpoint --
+search
+-- expected_min_traces --
+101
+-- expected_max_traces --
+101
+
+-- name --
+static_bool_or_not_static_beside_span
+# The NOT over a static comparison as an operand of the top-level OR beside
+# a span-referencing comparison. Reference folds `!false` to a Static, which
+# hands its fetch layer no condition, so only the 25 checkout traces the
+# sibling's condition fetches match. A backend that evaluates the NOT as
+# true for every span matches all 101 traces.
+-- query --
+{ resource.service.name = "checkout" || !("test" = "other") }
+-- endpoint --
+search
+-- expected_min_traces --
+25
+-- expected_max_traces --
+25
+
+-- name --
+static_bool_or_true_beside_span
+# The literal `true` as an operand of the top-level OR beside a
+# span-referencing comparison: the same fetch-layer restriction as above, so
+# the 25 checkout traces match, not all 101.
+-- query --
+{ resource.service.name = "checkout" || true }
+-- endpoint --
+search
+-- expected_min_traces --
+25
+-- expected_max_traces --
+25
+
+-- name --
+static_bool_nested_or_not_static
+# The same NOT under an OR nested inside an AND: reference evaluates the
+# folded `true` there, so the OR holds for every span and every trace's
+# Server root matches (all 101 traces). A backend that drops the NOT as the
+# OR's identity element matches only the 25 checkout traces.
+-- query --
+{ (resource.service.name = "checkout" || !("test" = "other")) && kind = server }
+-- endpoint --
+search
+-- expected_min_traces --
+101
+-- expected_max_traces --
+101
 
 -- name --
 scoped_span_kind_consumer
