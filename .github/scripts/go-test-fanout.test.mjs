@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -184,4 +185,24 @@ test('main exits 1 on an argv it cannot run faithfully', () => {
   const res = spawnSync(process.execPath, [SCRIPT, 'go', 'test', '-run', 'X', './a/...'], { encoding: 'utf8' });
   assert.equal(res.status, 1);
   assert.match(res.stdout + res.stderr, /cannot be passed/);
+});
+
+test('a partition past the argument budget runs as one process per selector, each judged on its own tests', () => {
+  const names = Array.from({ length: 6000 }, (_, i) => `Test${createHash('sha256').update(String(i)).digest('hex')}`);
+  const inventories = new Map([[PROM, inventoryOf(PROM, names)]]);
+  const legs = planCommands({ go: 'go', flags: FLAGS, importPaths: [PROM], inventories });
+  assert.ok(legs.length > FANOUT[PROM], 'a partition splits into several processes');
+  const seen = new Set();
+  for (const leg of legs) {
+    const selector = leg.argv[leg.argv.indexOf('-run') + 1];
+    assert.ok(Buffer.byteLength(selector) <= 64 * 1024, `${leg.name} fits the argument budget`);
+    const regex = new RegExp(selector);
+    const own = leg.plan.selected.map((t) => t.name);
+    assert.deepEqual(names.filter((n) => regex.test(n)), own.slice().sort((a, b) => names.indexOf(a) - names.indexOf(b)));
+    for (const name of own) { assert.ok(!seen.has(name), `${name} runs once`); seen.add(name); }
+    const passes = own.map((name) => JSON.stringify({ Action: 'pass', Package: PROM, Test: name })).join('\n');
+    assert.equal(judge(leg, 0, passes).ok, true);
+    assert.equal(judge(leg, 0, `${passes}\n${JSON.stringify({ Action: 'pass', Package: PROM, Test: own[0] })}`).ok, false);
+  }
+  assert.deepEqual(seen, new Set(names));
 });

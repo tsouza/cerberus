@@ -15,6 +15,8 @@ const digest = (value) => createHash('sha256').update(value).digest('hex');
 export const testKey = ({ package: pkg, name }) => `${pkg}/${name}`;
 export const shardProfile = (index) => `cover-chdb-part-${index}.out`;
 export const shardManifest = (index) => `cover-chdb-part-${index}.json`;
+// One `go test` run's profile inside shard index, folded into shardProfile.
+export const selectorProfile = (index, part) => `cover-chdb-run-${index}-${part + 1}.out`;
 
 // Factor shared name prefixes instead of placing thousands of full names into
 // one OS argument. All characters are Go identifier characters, not regex tokens.
@@ -35,6 +37,27 @@ export function testSelector(names) {
     return branches.length === 1 ? branches[0] : `(?:${branches.join('|')})`;
   };
   return `^${render(root)}$`;
+}
+
+// Splits sorted names into runs of consecutive names whose selector fits the
+// argument budget. Adding a name never shortens a selector, so the longest
+// run that fits is found by bisection.
+export function selectorRuns(names, budget = maxRunPatternBytes) {
+  const fits = (start, end) => Buffer.byteLength(testSelector(names.slice(start, end))) <= budget;
+  const runs = [];
+  for (let start = 0; start < names.length;) {
+    if (!fits(start, start + 1)) throw new Error(`test name ${names[start]} alone exceeds the argument budget`);
+    let lo = start + 1;
+    let hi = names.length;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (fits(start, mid)) lo = mid; else hi = mid - 1;
+    }
+    const run = names.slice(start, lo);
+    runs.push({ pattern: testSelector(run), names: run });
+    start = lo;
+  }
+  return runs;
 }
 
 export function parseTestInventory(jsonLines) {
@@ -67,16 +90,38 @@ export function partitionTests(inventory, index, count = COVERAGE_SHARDS) {
   });
   if (!selected.length) throw new Error(`test shard ${index}/${count} is empty`);
   const names = [...new Set(selected.map(({ name }) => name))].sort();
-  const pattern = testSelector(names);
-  if (Buffer.byteLength(pattern) > maxRunPatternBytes) throw new Error(`test selector is ${Buffer.byteLength(pattern)} bytes for ${names.length} names, exceeding the argument budget; increase the complete shard count`);
-  return { index, count, inventory, selected, pattern };
+  // Each selector is one `go test -run` argument; a shard whose names do not
+  // fit one runs them as several. packages are the ones that own the
+  // selector's names: a run after the first needs no other test binary.
+  const selectors = selectorRuns(names).map((run) => {
+    const own = new Set(run.names);
+    const packages = [...new Set(selected.filter(({ name }) => own.has(name)).map(({ package: pkg }) => pkg))].sort();
+    return { ...run, packages };
+  });
+  return { index, count, inventory, selected, selectors };
 }
 
+// The part of plan's selected tests that one selector of it runs.
+export function selectorTests(plan, selector) {
+  const names = new Set(selector.names);
+  return plan.selected.filter(({ name }) => names.has(name));
+}
+
+// passed lists every top-level pass the runs reported, repeats included: a
+// selected test must pass exactly once, and nothing else may run.
 export function assertExecuted(plan, passed) {
   const expected = new Set(plan.selected.map(testKey));
-  const missing = [...expected].filter((key) => !passed.has(key));
-  const unexpected = [...passed].filter((key) => !expected.has(key));
-  if (missing.length || unexpected.length) throw new Error(`test execution mismatch: missing=${missing.join(',')} unexpected=${unexpected.join(',')}`);
+  const seen = new Set();
+  const repeated = [];
+  for (const key of passed) {
+    if (seen.has(key)) repeated.push(key);
+    seen.add(key);
+  }
+  const missing = [...expected].filter((key) => !seen.has(key));
+  const unexpected = [...seen].filter((key) => !expected.has(key));
+  if (missing.length || unexpected.length || repeated.length) {
+    throw new Error(`test execution mismatch: missing=${missing.join(',')} unexpected=${unexpected.join(',')} repeated=${repeated.join(',')}`);
+  }
 }
 
 export function writePartitionReceipt(cwd, plan, passed, revision) {
@@ -100,7 +145,8 @@ export function mergeCoveragePartitions(cwd, count = COVERAGE_SHARDS, expectedRe
     const receipt = JSON.parse(readFileSync(join(cwd, shardManifest(index)), 'utf8'));
     const plan = partitionTests(receipt.inventory, index, count);
     if (receipt.index !== index || receipt.count !== count ||
-        JSON.stringify(receipt.selected) !== JSON.stringify(plan.selected) || receipt.pattern !== plan.pattern) {
+        JSON.stringify(receipt.selected) !== JSON.stringify(plan.selected) ||
+        JSON.stringify(receipt.selectors) !== JSON.stringify(plan.selectors)) {
       throw new Error(`coverage shard ${index} does not match its complete partition`);
     }
     const currentInventory = digest(JSON.stringify(receipt.inventory));
@@ -109,7 +155,7 @@ export function mergeCoveragePartitions(cwd, count = COVERAGE_SHARDS, expectedRe
         (expectedRevision && receipt.revision !== expectedRevision)) {
       throw new Error('coverage shard inventories or revisions differ');
     }
-    assertExecuted(plan, new Set(receipt.passed));
+    assertExecuted(plan, receipt.passed);
     const profile = join(cwd, shardProfile(index));
     if (digest(readFileSync(profile)) !== receipt.profileDigest) throw new Error(`coverage shard ${index} profile digest differs`);
     profiles.push(profile);
