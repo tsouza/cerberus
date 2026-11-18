@@ -66,7 +66,9 @@ func TestRangeAggregationFiltersRunWhereTheTableIsRead(t *testing.T) {
 // range aggregation evaluates where the table is read keep the order the
 // pipeline gives them: a detected_level filter written ahead of a line
 // filter runs ahead of it, so ClickHouse's multi-step PREWHERE reads the
-// line only for the rows the level keeps.
+// line only for the rows the level keeps. That holds when a filter between
+// them reads LogAttributes whole and stays above the scan: the level
+// filter still runs where the table is read, ahead of the line.
 func TestRangeAggregationScanFiltersKeepTheirOrder(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -76,6 +78,8 @@ func TestRangeAggregationScanFiltersKeepTheirOrder(t *testing.T) {
 	}{
 		{`sum(count_over_time({job="wide"} | detected_level="error" |= "orders/5" [5m]))`, "lower(`_logql_level_source`)", "position(`Body`"},
 		{`sum(count_over_time({job="wide"} |= "orders/5" | detected_level="error" [5m]))`, "position(`Body`", "lower(`_logql_level_source`)"},
+		{`sum(count_over_time({job="wide"} | detected_level="error" | tenant!="tenant-7" |= "orders/5" [5m]))`, "lower(`_logql_level_source`)", "position(`Body`"},
+		{`sum(count_over_time({job="wide"} | detected_level="error" | json | status >= 400 |= "orders/5" [5m]))`, "lower(`_logql_level_source`)", "position(`Body`"},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			t.Parallel()
@@ -133,7 +137,9 @@ func TestRangeAggregationMultiplyingValuesStayNested(t *testing.T) {
 // through mapContains, stays above the scan, and so does the
 // detected_level source; a range aggregation whose grouping label reads
 // LogAttributes whole leaves the source above the scan too, and one that
-// groups by detected_level alone moves it into the scan's scope.
+// groups by detected_level alone moves it into the scan's scope. A level
+// filter that a line filter follows moves the source into the scan's scope
+// even so, with the whole-map label filter still above it.
 func TestRangeAggregationWholeMapReadsStayAboveTheScan(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -143,6 +149,7 @@ func TestRangeAggregationWholeMapReadsStayAboveTheScan(t *testing.T) {
 		{`sum(count_over_time({job="wide"} | tenant="tenant-7" [5m]))`, false},
 		{`sum by (env) (rate({job="api"}[5m]))`, false},
 		{`sum by (detected_level) (count_over_time({job="api"}[5m]))`, true},
+		{`sum(count_over_time({job="wide"} | detected_level="error" | tenant!="tenant-7" |= "orders/5" [5m]))`, true},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			t.Parallel()

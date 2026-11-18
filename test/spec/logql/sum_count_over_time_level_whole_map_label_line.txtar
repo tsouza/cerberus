@@ -1,0 +1,20 @@
+-- query.logql --
+sum(count_over_time({job="api"} | detected_level="error" | tenant!="t7" |= "failed" [5m]))
+-- seed --
+CREATE TABLE otel_logs (
+    Timestamp DateTime64(9),
+    Body String,
+    SeverityText LowCardinality(String) DEFAULT '',
+    SeverityNumber UInt8 DEFAULT 0,
+    ResourceAttributes Map(String, String),
+    LogAttributes Map(String, String)
+) ENGINE = Memory;
+INSERT INTO otel_logs (Timestamp, Body, SeverityText, ResourceAttributes, LogAttributes) VALUES
+    (toDateTime64('2025-12-31 23:57:00', 9), 'e1 request failed',   'ERROR', map('job', 'api'), map('tenant', 't1')),
+    (toDateTime64('2025-12-31 23:57:10', 9), 'e2 request failed',   'ERROR', map('job', 'api'), map('tenant', 't7')),
+    (toDateTime64('2025-12-31 23:57:20', 9), 'e3 request retried',  'ERROR', map('job', 'api'), map('tenant', 't1')),
+    (toDateTime64('2025-12-31 23:57:30', 9), 'i1 request failed',   'INFO',  map('job', 'api'), map('tenant', 't1')),
+    (toDateTime64('2025-12-31 23:57:40', 9), 'e4 failed opening db', 'error', map('job', 'api'), map());
+-- parity_exempt --
+reason: structured-metadata-unobservable
+detail: seed populates SeverityText and the tenant structured metadata, which upstream's in-process querier discards before the pipeline runs, so the detected_level and tenant filters would be answered over different data on the two sides

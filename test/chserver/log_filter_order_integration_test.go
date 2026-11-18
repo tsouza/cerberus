@@ -30,8 +30,9 @@ const logFilterOrderQuery = `{service_name="tempo", pod="pod-8"} | detected_leve
 // The seeded stream: logFilterOrderInfoRows info lines spread over the
 // window's first logFilterOrderInfoSpan, then logFilterOrderErrorRows error
 // lines in its last minute, every logFilterOrderFailedEvery-th of them
-// carrying "failed". Every body is logFilterOrderBodyBytes long, so the body
-// column dwarfs every column the level filter reads.
+// carrying "failed", each with a status of 500 in its structured metadata.
+// Every body is logFilterOrderBodyBytes long, so the body column dwarfs
+// every column the level filter reads.
 const (
 	logFilterOrderInfoRows    = 98_304 // twelve 8192-row granules
 	logFilterOrderErrorRows   = 1_000
@@ -57,33 +58,7 @@ var (
 // line filter first reads every body in the stream.
 func TestLogQueryLevelFilterSparesTheBody(t *testing.T) {
 	ctx := context.Background()
-	s := startServer(ctx, t, logFilterOrderImage)
-	if err := ddl.Apply(ctx, s.admin.Conn(), []ddl.Signal{ddl.Logs}); err != nil {
-		t.Fatalf("apply the logs schema: %v", err)
-	}
-	seedLogFilterOrder(ctx, t, s)
-
-	var bodyBytes uint64
-	if err := s.admin.Conn().QueryRow(ctx, "SELECT sum(length(Body)) FROM otel_logs").Scan(&bodyBytes); err != nil {
-		t.Fatalf("measure the body column: %v", err)
-	}
-
-	client := s.client(t, adminUser, adminPassword, chclient.Config{})
-	mux := http.NewServeMux()
-	loki.New(client, schema.DefaultOTelLogs(), nil).Mount(mux)
-	path := "/loki/api/v1/query_range?" + url.Values{
-		"query": {logFilterOrderQuery},
-		"start": {strconv.FormatInt(logFilterOrderStart.UnixNano(), 10)},
-		"end":   {strconv.FormatInt(logFilterOrderEnd.UnixNano(), 10)},
-		"limit": {strconv.Itoa(logFilterOrderLimit)},
-	}.Encode()
-	qid := "log-filter-order-" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	req := httptest.NewRequest(http.MethodGet, path, nil).WithContext(chclient.WithQueryID(ctx, qid))
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("HTTP %d: %s", rec.Code, rec.Body.String())
-	}
+	s, mux, bodyBytes := startLogFilterOrder(ctx, t)
 	var body struct {
 		Data struct {
 			Result []struct {
@@ -91,9 +66,10 @@ func TestLogQueryLevelFilterSparesTheBody(t *testing.T) {
 			} `json:"result"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
-	}
+	readBytes := queryLogFilterOrder(ctx, t, s, mux, url.Values{
+		"query": {logFilterOrderQuery},
+		"limit": {strconv.Itoa(logFilterOrderLimit)},
+	}, &body)
 	lines := 0
 	for _, stream := range body.Data.Result {
 		lines += len(stream.Values)
@@ -101,13 +77,105 @@ func TestLogQueryLevelFilterSparesTheBody(t *testing.T) {
 	if want := logFilterOrderErrorRows / logFilterOrderFailedEvery; lines != want {
 		t.Errorf("the query returned %d lines; want the %d error lines that say failed", lines, want)
 	}
+	requireBodySpared(t, s, readBytes, bodyBytes)
+}
 
+// logFilterOrderStep is the range aggregations' step and range: windows that
+// do not overlap, so the counts add up to the matching lines.
+const logFilterOrderStep = time.Hour
+
+// TestRangeAggregationLevelFilterSparesTheBody runs range aggregations that
+// filter on the detected level, then on a label that reads LogAttributes
+// whole, then on the line, and requires each to read fewer bytes than the
+// body column holds, as the log query does. The whole-map filter stays above
+// the scan; the level filter still has to run where the table is read, ahead
+// of the line filter, or the scan reads every body in the stream.
+func TestRangeAggregationLevelFilterSparesTheBody(t *testing.T) {
+	ctx := context.Background()
+	s, mux, bodyBytes := startLogFilterOrder(ctx, t)
+	for _, query := range []string{
+		`sum(count_over_time({service_name="tempo", pod="pod-8"} | detected_level="error" | tenant!="tenant-7" |~ "(?i)failed" [1h]))`,
+		`sum(count_over_time({service_name="tempo", pod="pod-8"} | detected_level="error" | json | status >= 400 |~ "(?i)failed" [1h]))`,
+	} {
+		t.Run(query, func(t *testing.T) {
+			var body struct {
+				Data struct {
+					Result []struct {
+						Values [][2]any `json:"values"`
+					} `json:"result"`
+				} `json:"data"`
+			}
+			readBytes := queryLogFilterOrder(ctx, t, s, mux, url.Values{
+				"query": {query},
+				"step":  {strconv.FormatFloat(logFilterOrderStep.Seconds(), 'f', -1, 64)},
+			}, &body)
+			total := 0
+			for _, series := range body.Data.Result {
+				for _, v := range series.Values {
+					n, err := strconv.Atoi(v[1].(string))
+					if err != nil {
+						t.Fatalf("sample value %v: %v", v[1], err)
+					}
+					total += n
+				}
+			}
+			if want := logFilterOrderErrorRows / logFilterOrderFailedEvery; total != want {
+				t.Errorf("the query counted %d lines; want the %d error lines that say failed", total, want)
+			}
+			requireBodySpared(t, s, readBytes, bodyBytes)
+		})
+	}
+}
+
+// startLogFilterOrder starts the floor server, seeds the stream and mounts
+// the Loki API over it. It returns the server, the mux and the bytes the
+// body column holds.
+func startLogFilterOrder(ctx context.Context, t *testing.T) (*server, *http.ServeMux, uint64) {
+	t.Helper()
+	s := startServer(ctx, t, logFilterOrderImage)
+	if err := ddl.Apply(ctx, s.admin.Conn(), []ddl.Signal{ddl.Logs}); err != nil {
+		t.Fatalf("apply the logs schema: %v", err)
+	}
+	seedLogFilterOrder(ctx, t, s)
+	var bodyBytes uint64
+	if err := s.admin.Conn().QueryRow(ctx, "SELECT sum(length(Body)) FROM otel_logs").Scan(&bodyBytes); err != nil {
+		t.Fatalf("measure the body column: %v", err)
+	}
+	client := s.client(t, adminUser, adminPassword, chclient.Config{})
+	mux := http.NewServeMux()
+	loki.New(client, schema.DefaultOTelLogs(), nil).Mount(mux)
+	return s, mux, bodyBytes
+}
+
+// queryLogFilterOrder sends a query_range over the seeded window with params,
+// decodes the answer into out, and returns the bytes the statement read.
+func queryLogFilterOrder(ctx context.Context, t *testing.T, s *server, mux *http.ServeMux, params url.Values, out any) uint64 {
+	t.Helper()
+	params.Set("start", strconv.FormatInt(logFilterOrderStart.UnixNano(), 10))
+	params.Set("end", strconv.FormatInt(logFilterOrderEnd.UnixNano(), 10))
+	qid := "log-filter-order-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	req := httptest.NewRequest(http.MethodGet, "/loki/api/v1/query_range?"+params.Encode(), nil).
+		WithContext(chclient.WithQueryID(ctx, qid))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HTTP %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), out); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+	}
 	s.flushLogs(ctx, t)
 	var readBytes uint64
 	if err := s.admin.Conn().QueryRow(ctx,
 		"SELECT read_bytes FROM system.query_log WHERE type = 'QueryFinish' AND query_id = ?", qid).Scan(&readBytes); err != nil {
 		t.Fatalf("read query_log for %s: %v", qid, err)
 	}
+	return readBytes
+}
+
+// requireBodySpared fails t unless readBytes is below bodyBytes.
+func requireBodySpared(t *testing.T, s *server, readBytes, bodyBytes uint64) {
+	t.Helper()
 	t.Logf("%s: the query read %d bytes; the body column holds %d", s.version, readBytes, bodyBytes)
 	if readBytes >= bodyBytes {
 		t.Errorf("the query read %d bytes, no fewer than the %d the body column holds: "+
@@ -126,10 +194,10 @@ func seedLogFilterOrder(ctx context.Context, t *testing.T, s *server) {
 		`leftPad(concat('handled request ', toString(number), ' '), ?, 'x'), `+resource+` FROM numbers(?)`,
 		logFilterOrderStart, infoStep.Nanoseconds(), logFilterOrderBodyBytes, logFilterOrderInfoRows)
 	errorAt := logFilterOrderEnd.Add(-time.Minute)
-	s.exec(ctx, t, columns+
+	s.exec(ctx, t, `INSERT INTO otel_logs (Timestamp, ServiceName, SeverityText, SeverityNumber, Body, ResourceAttributes, LogAttributes) `+
 		`SELECT toDateTime64(?, 9) + toIntervalMillisecond(number), 'tempo', 'ERROR', 17, `+
 		`leftPad(concat(if(number % ? = 0, 'request failed ', 'request retried '), toString(number), ' '), ?, 'x'), `+
-		resource+` FROM numbers(?)`,
+		resource+`, map('status', '500') FROM numbers(?)`,
 		errorAt, logFilterOrderFailedEvery, logFilterOrderBodyBytes, logFilterOrderErrorRows)
 	s.exec(ctx, t, "OPTIMIZE TABLE otel_logs FINAL")
 }
