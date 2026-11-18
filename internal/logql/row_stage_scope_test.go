@@ -135,6 +135,31 @@ func TestRangeAggregationLevelFilterLeadsWhereOrderHolds(t *testing.T) {
 	}
 }
 
+// TestRangeAggregationFilterBetweenLevelAndLineJoinsThemWhereOrderHolds pins
+// that in WHERE order a filter the pipeline runs between the level filter
+// and the line filter runs between them in the SELECT that reads otel_logs,
+// even when its value multiplies the parser's labels past the scope's
+// expansion bound: the stage reads up to the line filter in pipeline order,
+// so the line is read only for the rows both filters keep.
+func TestRangeAggregationFilterBetweenLevelAndLineJoinsThemWhereOrderHolds(t *testing.T) {
+	t.Parallel()
+	const query = `sum(count_over_time({job="wide"} | detected_level="error" | json | status >= 400 |= "orders/5" [5m]))`
+	sql, _ := rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{PrewhereInWhereOrder: true})
+	scope := scopeAround(t, sql, "FROM `otel_logs`")
+	where := scope[strings.Index(scope, "FROM `otel_logs`"):]
+	level := strings.Index(where, "lower(`_logql_level_source`)")
+	status := strings.Index(where, "toFloat64OrZero(")
+	line := strings.Index(where, "position(`Body`")
+	if level < 0 || status < level || line < status {
+		t.Errorf("the WHERE of the SELECT reading otel_logs does not run level, status, line in that order: %s", where)
+	}
+	sql, _ = rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{})
+	scope = scopeAround(t, sql, "FROM `otel_logs`")
+	if strings.Contains(scope[strings.Index(scope, "FROM `otel_logs`"):], "toFloat64OrZero(") {
+		t.Errorf("on a reordering server the status filter runs where the table is read: %s", scope)
+	}
+}
+
 // TestRangeAggregationLevelFilterThatCannotMoveKeepsTheLineAtTheScan pins
 // the other side: a level filter on the normalised level, which stays a
 // SELECT above the scan, leaves the line filter in the scan's predicates in

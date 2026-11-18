@@ -47,7 +47,9 @@ const maxScanScopeExpansion = 3
 //   - with inWhereOrder, which reports that the servers run a multi-step
 //     PREWHERE in the order of the WHERE conjuncts, the rule above is lifted
 //     up to the filter [orderedScanPrefix] finds, when that keeps the first
-//     filter it names in the scan's scope;
+//     filter it names in the scan's scope, and a filter conjunct after that
+//     first one and up to that filter joins it whatever the scope's
+//     expansion, as long as it reads only values in the scope;
 //   - a moved layer that reads another value goes back to its place
 //     unless a moved filter reads it.
 //
@@ -80,10 +82,10 @@ func (r *rowLayers) gatherAtScan(maps []string, inWhereOrder bool, consumer ...c
 	slices.Reverse(items)
 
 	reads := stageMapReads(maps, consumer, items)
-	g := r.gather(base, items, reads, -1)
+	g := r.gather(base, items, reads, -1, nil)
 	if inWhereOrder {
 		if through, first := orderedScanPrefix(base, items, r.values(maps), reads); first != nil {
-			if ordered := r.gather(base, items, reads, through); slices.Contains(ordered.filtered, first) {
+			if ordered := r.gather(base, items, reads, through, first); slices.Contains(ordered.filtered, first) {
 				g = ordered
 			}
 		}
@@ -93,14 +95,14 @@ func (r *rowLayers) gatherAtScan(maps []string, inWhereOrder bool, consumer ...c
 
 // gather walks items, the stack over base, and returns what it moves into
 // the scan's scope, folds into the scan's filter and leaves above, with
-// keyedThrough as [scanGather.keyedThrough].
-func (r *rowLayers) gather(base chplan.Node, items []chplan.Node, reads stageMaps, keyedThrough int) scanGather {
+// keyedThrough and first as [scanGather]'s.
+func (r *rowLayers) gather(base chplan.Node, items []chplan.Node, reads stageMaps, keyedThrough int, first chplan.Expr) scanGather {
 	aliases := map[string]bool{}
 	for _, layer := range r.layers {
 		aliases[layer.Projections[0].Alias] = true
 	}
 	scope := scanScope{aliases: aliases, defs: map[string]chplan.Expr{}, expanded: map[string]int{}}
-	g := scanGather{reads: reads, base: base, keyedThrough: keyedThrough}
+	g := scanGather{reads: reads, base: base, keyedThrough: keyedThrough, first: first}
 	for i, item := range items {
 		switch n := item.(type) {
 		case *chplan.Project:
@@ -123,6 +125,11 @@ type scanGather struct {
 	// conjunct may move although it reads a map column the stage reads as
 	// a whole, by key or whole ([orderedScanPrefix]); -1 when none may.
 	keyedThrough int
+	// first is the conjunct [orderedScanPrefix] names first. Once it has
+	// moved, a conjunct up to keyedThrough that reads only values in the
+	// scope joins it there whatever the scope's expansion, so the scan
+	// reads the stage up to the line filter in pipeline order.
+	first chplan.Expr
 	// base is the stream scan with the conjuncts folded into its filter.
 	base chplan.Node
 	// layers are the moved layers, bottom first, and layerAt each one's
@@ -139,6 +146,12 @@ type scanRest struct {
 	at        int
 	layer     *chplan.Project
 	conjuncts []chplan.Expr
+}
+
+// joinsFirst reports whether a conjunct at place i in the stack follows
+// first, moved, up to keyedThrough.
+func (g *scanGather) joinsFirst(i int) bool {
+	return i <= g.keyedThrough && g.first != nil && slices.Contains(g.filtered, g.first)
 }
 
 // movable reports whether e, at place i in the stack, may join scope.
@@ -173,6 +186,9 @@ func (g *scanGather) takeFilter(scope *scanScope, i int, n *chplan.Filter) {
 		case !scope.readsLayer(conjunct):
 			// Behind a moved filter it joins the moved ones in order; it
 			// reads no value, so it adds nothing to expand.
+			g.filtered = append(g.filtered, conjunct)
+		case g.joinsFirst(i) && scope.readsOnlyScope(conjunct):
+			scope.add(conjunct)
 			g.filtered = append(g.filtered, conjunct)
 		case g.movable(scope, i, conjunct):
 			scope.add(conjunct)
@@ -374,6 +390,11 @@ func (s *scanScope) readsLayer(e chplan.Expr) bool {
 // no alias outside the scope and keeps the scope within
 // [maxScanScopeExpansion] once added.
 func (s *scanScope) admits(e chplan.Expr) bool {
+	return s.readsOnlyScope(e) && s.expandedTotal+s.expandedSize(e) <= maxScanScopeExpansion*(s.text+exprSize(e))
+}
+
+// readsOnlyScope reports whether e reads no alias outside the scope.
+func (s *scanScope) readsOnlyScope(e chplan.Expr) bool {
 	outside := false
 	chplan.InspectExpr(e, func(sub chplan.Expr) bool {
 		if ref, ok := sub.(*chplan.ColumnRef); ok && s.aliases[ref.Name] {
@@ -383,7 +404,7 @@ func (s *scanScope) admits(e chplan.Expr) bool {
 		}
 		return !outside
 	})
-	return !outside && s.expandedTotal+s.expandedSize(e) <= maxScanScopeExpansion*(s.text+exprSize(e))
+	return !outside
 }
 
 // add counts e into the scope's sizes.
