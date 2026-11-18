@@ -3711,7 +3711,7 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   (1000x wider, defeating #2429's resource bound), `internal/engine/
   spill.go`'s `spillThreshold` (inflated, disabling the external-group-by/sort
   spill safety net), the emitter's PREWHERE split, its partition,
-  `move_to_prewhere`'s auto range and the in-order aggregation stamp — and
+  `move_to_prewhere`'s auto range and the native-histogram analyzer hazard — and
   asserts the mutation's own recipe FAILS under each,
   via an exact-string replacement that throws if the target text has drifted
   rather than silently mutating nothing. A mutation counts as caught only
