@@ -20,6 +20,9 @@ INSERT INTO otel_logs (Body, SeverityText) VALUES
   [{"msg": "request denied", "status": 403}, {"detected_level": "error", "job": "api", "msg": "request denied", "status": "403"}, "1970-01-01T00:00:00Z", {}],
   [{"msg": "request failed", "status": 503}, {"detected_level": "error", "job": "api", "msg": "request failed", "status": "503"}, "1970-01-01T00:00:00Z", {}]
 ]
+-- parity_exempt --
+reason: log-query-answer
+detail: log query `{job="api"} | detected_level="error" | json | status >= 400 |= "request"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args --
 [0] string = ""
 [1] string = "detected_level"

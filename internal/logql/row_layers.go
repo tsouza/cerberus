@@ -359,7 +359,7 @@ type tableReads map[tableRead]bool
 // in t, or is a key of a column t reads whole.
 func (t tableReads) covers(reads tableReads) bool {
 	for read := range reads {
-		if !t[read] && !(read.keyed && t[tableRead{column: read.column}]) {
+		if !t[read] && (!read.keyed || !t[tableRead{column: read.column}]) {
 			return false
 		}
 	}

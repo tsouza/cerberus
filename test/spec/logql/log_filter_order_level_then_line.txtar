@@ -20,6 +20,9 @@ INSERT INTO otel_logs (Body, SeverityText) VALUES
   ["e1 request FAILED upstream", {"detected_level": "error", "job": "api"}, "1970-01-01T00:00:00Z", {}],
   ["e3 failed opening db", {"detected_level": "error", "job": "api"}, "1970-01-01T00:00:00Z", {}]
 ]
+-- parity_exempt --
+reason: log-query-answer
+detail: log query `{job="api"} | detected_level="error" |~ "(?i)failed"` answers with log lines: the reference returns logqlmodel.Streams and cerberus the log rows (line, labels, timestamp, structured metadata) its lowering projects, which have no element-wise correspondence
 -- args --
 [0] string = ""
 [1] string = "detected_level"
