@@ -4,6 +4,7 @@
   "bucket": "29",
   "cases": [
     "search | dotted_attr_name_collision",
-    "search | scoped_span_id_not_nil"
+    "search | scoped_span_id_not_nil",
+    "search | static_bool_or_true_beside_span"
   ]
 }
