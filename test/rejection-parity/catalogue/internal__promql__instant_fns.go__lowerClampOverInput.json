@@ -33,7 +33,7 @@
       "class": "",
       "evidence": {
         "guard": [
-          "past exhaustive switch c.Func.Name over [case \"clamp_max\", fnClampMin; case \"clamp\"]"
+          "past exhaustive switch c.Func.Name over [case fnClampMax, fnClampMin; case \"clamp\"]"
         ],
         "callers": [
           "lowerClamp",
@@ -49,7 +49,7 @@
       "class": "",
       "evidence": {
         "guard": [
-          "case \"clamp_max\", fnClampMin of switch c.Func.Name",
+          "case fnClampMax, fnClampMin of switch c.Func.Name",
           "if len(c.Args) != 2"
         ],
         "callers": [

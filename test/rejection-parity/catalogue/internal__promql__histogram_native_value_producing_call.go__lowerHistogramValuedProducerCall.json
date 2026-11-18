@@ -7,7 +7,7 @@
       "class": "",
       "evidence": {
         "guard": [
-          "past exhaustive switch call.Func.Name over [case \"info\"; case \"sort_by_label\", fnSortByLabelDesc]"
+          "past exhaustive switch call.Func.Name over [case \"info\"; case fnSortByLabel, fnSortByLabelDesc]"
         ],
         "callers": [
           "lowerExpHistogramValuedShape"
