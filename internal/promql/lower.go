@@ -1876,7 +1876,7 @@ func deltaPrefixAggregateEligibleFunc(funcName string) bool {
 // the tier's own bucketing discards to detect a counter reset between them.
 func downsampleTierEligibleFunc(funcName string) bool {
 	switch funcName {
-	case "irate", "idelta", "last_over_time":
+	case "irate", "idelta", lastOverTimeWindowFn:
 		return true
 	}
 	return false
@@ -1933,7 +1933,7 @@ func attachDownsampleTierArm(
 		rw.DownsampleTierInput = buildDownsampleTierArm(vs.LabelMatchers, s, rangeCtx)
 		return
 	}
-	if funcName == "last_over_time" && rangeVectorSingleGaugeTable(vs, s, rangeCtx) {
+	if funcName == lastOverTimeWindowFn && rangeVectorSingleGaugeTable(vs, s, rangeCtx) {
 		rw.DownsampleTierInput = buildDownsampleTierArm(vs.LabelMatchers, s, rangeCtx)
 	}
 }
@@ -2952,6 +2952,14 @@ const (
 	fnLabelJoin    = "label_join"
 )
 
+// PromQL function names more than one lowering path dispatches on.
+const (
+	fnClampMin        = "clamp_min"
+	fnClampMax        = "clamp_max"
+	fnSortByLabel     = "sort_by_label"
+	fnSortByLabelDesc = "sort_by_label_desc"
+)
+
 // lowerCall dispatches PromQL function calls. The arg shape decides the
 // path: a MatrixSelector means a range-vector function (rate, increase,
 // *_over_time); the clamp family takes a vector + scalar bounds; everything
@@ -2992,7 +3000,7 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	switch c.Func.Name {
 	case "absent":
 		return lowerAbsent(c, s, ctx)
-	case "clamp", "clamp_min", "clamp_max":
+	case "clamp", fnClampMin, fnClampMax:
 		return lowerClamp(c, s, ctx)
 	case "histogram_quantile":
 		return lowerHistogramQuantile(c, s, ctx)
@@ -3013,7 +3021,7 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerDateFn(c, s, ctx)
 	case "sort", "sort_desc":
 		return lowerSort(c, s, ctx)
-	case "sort_by_label", "sort_by_label_desc":
+	case fnSortByLabel, fnSortByLabelDesc:
 		return lowerSortByLabel(c, s, ctx)
 	case "scalar", fnMinOf, fnMaxOf:
 		return lowerScalarTopLevel(c, s, ctx)
@@ -3591,7 +3599,7 @@ func lowerRangeVectorCallFanout(c *parser.Call, s schema.Metrics, ctx lowerCtx, 
 		return ctx.lowerers.Irate.LowerIrate(rw, s)
 	case "idelta":
 		return ctx.lowerers.Idelta.LowerIdelta(rw, s)
-	case "last_over_time":
+	case lastOverTimeWindowFn:
 		return ctx.lowerers.LastOverTime.LowerLastOverTime(rw, s)
 	// sum_over_time / avg_over_time / first_over_time / stddev_over_time /
 	// stdvar_over_time / mad_over_time (cerberus issue #2761, widened by
@@ -4045,7 +4053,7 @@ func nativeTSGridInstantNode(rw *chplan.RangeWindow, wantFunc string, s schema.M
 // exists to SYNTHESISE that same shape only for the plain fan-out
 // RangeWindow (whose own output carries no MetricName column at all).
 func nativeLastOverTimeNode(rw *chplan.RangeWindow, s schema.Metrics) *chplan.RangeWindowStaleResample {
-	if rw.Func != "last_over_time" {
+	if rw.Func != lastOverTimeWindowFn {
 		return nil
 	}
 	if rw.Identity || rw.Step <= 0 || rw.Start.IsZero() || rw.End.IsZero() {
@@ -4423,7 +4431,7 @@ func isIdentityColumnRef(x chplan.Expr, name string) bool {
 //	prometheus/prometheus@cerberus-parser/promql/engine.go
 //	`dropName := (e.Func.Name != "last_over_time" && e.Func.Name != "first_over_time")`
 func rangeFnPreservesName(fn string) bool {
-	return fn == "last_over_time" || fn == "first_over_time"
+	return fn == lastOverTimeWindowFn || fn == "first_over_time"
 }
 
 // preservedNameExpr picks the expression a preserve-name wrapper should

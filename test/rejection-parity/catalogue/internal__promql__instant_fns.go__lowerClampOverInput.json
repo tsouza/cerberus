@@ -34,7 +34,7 @@
       "rationale": "The ordinary caller lowerClamp is selected by lowerCall only for clamp, clamp_min, or clamp_max. The shared dispatcher lowerMathCall invokes this kernel only from its explicit case for those same three names; its mixed-root input is checked by mathCallOverMixedExpHistogramSetOp. lowerSubqueryIdentityMathReorder, the third caller, dispatches on the identical three-name switch inside lowerSubqueryOverCall before ever calling this kernel. All three routes handle exactly clamp/clamp_min/clamp_max, so the trailing unknown-function error requires an internally fabricated call, not a parsed query.",
       "evidence": {
         "guard": [
-          "past exhaustive switch c.Func.Name over [case \"clamp_max\", \"clamp_min\"; case \"clamp\"]"
+          "past exhaustive switch c.Func.Name over [case fnClampMax, fnClampMin; case \"clamp\"]"
         ],
         "callers": [
           "lowerClamp",
@@ -59,7 +59,7 @@
       "rationale": "The PromQL parser enforces the two-argument signatures of clamp_min and clamp_max. lowerClamp forwards the original parsed call from lowerCall, while the shared dispatcher lowerMathCall and its direct-root recognizer mathCallOverMixedExpHistogramSetOp preserve that call and validate this family's arity. lowerSubqueryIdentityMathReorder, the third caller, reaches this kernel only from lowerSubqueryOverCall's own clamp_max/clamp_min case over the SAME unmodified parsed call. None of the three routes changes the argument slice, so the two-argument guard cannot fail for a parsed query.",
       "evidence": {
         "guard": [
-          "case \"clamp_max\", \"clamp_min\" of switch c.Func.Name",
+          "case fnClampMax, fnClampMin of switch c.Func.Name",
           "if len(c.Args) != 2"
         ],
         "callers": [
