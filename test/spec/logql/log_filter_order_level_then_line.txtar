@@ -16,4 +16,149 @@ INSERT INTO otel_logs (Body, SeverityText) VALUES
     ('w1 failed to warm cache', 'WARN'),
     ('e3 failed opening db', 'error');
 -- expected_rows --
-[]
+[
+  ["e1 request FAILED upstream", {"detected_level": "error", "job": "api"}, "1970-01-01T00:00:00Z", {}],
+  ["e3 failed opening db", {"detected_level": "error", "job": "api"}, "1970-01-01T00:00:00Z", {}]
+]
+-- args --
+[0] string = ""
+[1] string = "detected_level"
+[2] string = ""
+[3] string = "detected_level"
+[4] string = ""
+[5] string = "detected_level"
+[6] string = "level"
+[7] string = ""
+[8] string = "level"
+[9] string = "log.level"
+[10] string = ""
+[11] string = "log.level"
+[12] string = "severity"
+[13] string = ""
+[14] string = "severity"
+[15] string = "severity_text"
+[16] string = ""
+[17] string = "severity_text"
+[18] string = ""
+[19] int64 = 0
+[20] string = ""
+[21] int64 = 4
+[22] string = "trace"
+[23] int64 = 8
+[24] string = "debug"
+[25] int64 = 12
+[26] string = "info"
+[27] int64 = 16
+[28] string = "warn"
+[29] int64 = 20
+[30] string = "error"
+[31] int64 = 24
+[32] string = "fatal"
+[33] string = ""
+[34] string = ""
+[35] string = "unknown"
+[36] string = "trace"
+[37] string = "trc"
+[38] string = "trace"
+[39] string = "debug"
+[40] string = "dbg"
+[41] string = "debug"
+[42] string = "info"
+[43] string = "inf"
+[44] string = "information"
+[45] string = "info"
+[46] string = "warn"
+[47] string = "wrn"
+[48] string = "warning"
+[49] string = "warn"
+[50] string = "error"
+[51] string = "err"
+[52] string = "error"
+[53] string = "critical"
+[54] string = "critical"
+[55] string = "fatal"
+[56] string = "fatal"
+[57] string = "job"
+[58] string = "api"
+[59] string = "error"
+[60] string = "(?i)failed"
+-- args_optimized --
+[0] string = ""
+[1] string = "detected_level"
+[2] string = ""
+[3] string = "detected_level"
+[4] string = ""
+[5] string = "detected_level"
+[6] string = "level"
+[7] string = ""
+[8] string = "level"
+[9] string = "log.level"
+[10] string = ""
+[11] string = "log.level"
+[12] string = "severity"
+[13] string = ""
+[14] string = "severity"
+[15] string = "severity_text"
+[16] string = ""
+[17] string = "severity_text"
+[18] string = ""
+[19] int64 = 0
+[20] string = ""
+[21] int64 = 4
+[22] string = "trace"
+[23] int64 = 8
+[24] string = "debug"
+[25] int64 = 12
+[26] string = "info"
+[27] int64 = 16
+[28] string = "warn"
+[29] int64 = 20
+[30] string = "error"
+[31] int64 = 24
+[32] string = "fatal"
+[33] string = ""
+[34] string = ""
+[35] string = "unknown"
+[36] string = "trace"
+[37] string = "trc"
+[38] string = "trace"
+[39] string = "debug"
+[40] string = "dbg"
+[41] string = "debug"
+[42] string = "info"
+[43] string = "inf"
+[44] string = "information"
+[45] string = "info"
+[46] string = "warn"
+[47] string = "wrn"
+[48] string = "warning"
+[49] string = "warn"
+[50] string = "error"
+[51] string = "err"
+[52] string = "error"
+[53] string = "critical"
+[54] string = "critical"
+[55] string = "fatal"
+[56] string = "fatal"
+[57] string = "job"
+[58] string = "api"
+[59] string = "error"
+[60] string = "(?i)failed"
+-- chplan --
+Project [Body AS Line, FnMapMerge(ResourceAttributes, FnMapFilter((k, v) -> (v != ""), FnMap("detected_level", _logql_detected_level))) AS Attributes, Timestamp AS TimeUnix, FnToJSONString(FnMapFilter((k, v) -> (v != ""), LogAttributes)) AS Metadata] oneScopeRows
+  Filter predicate=((_logql_detected_level = "error") AND lineContent(Body, "(?i)failed", regex))
+    Project [Body, LogAttributes, ResourceAttributes, Timestamp, FnMultiIf((FnLower(_logql_level_source) = ""), "unknown", ((FnLower(_logql_level_source) = "trace") OR (FnLower(_logql_level_source) = "trc")), "trace", ((FnLower(_logql_level_source) = "debug") OR (FnLower(_logql_level_source) = "dbg")), "debug", (((FnLower(_logql_level_source) = "info") OR (FnLower(_logql_level_source) = "inf")) OR (FnLower(_logql_level_source) = "information")), "info", (((FnLower(_logql_level_source) = "warn") OR (FnLower(_logql_level_source) = "wrn")) OR (FnLower(_logql_level_source) = "warning")), "warn", ((FnLower(_logql_level_source) = "error") OR (FnLower(_logql_level_source) = "err")), "error", (FnLower(_logql_level_source) = "critical"), "critical", (FnLower(_logql_level_source) = "fatal"), "fatal", _logql_level_source) AS _logql_detected_level]
+      Project [Body, LogAttributes, ResourceAttributes, Timestamp, FnMultiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], FnMultiIf((SeverityText != ""), SeverityText, FnMultiIf((SeverityNumber <= 0), "", (SeverityNumber <= 4), "trace", (SeverityNumber <= 8), "debug", (SeverityNumber <= 12), "info", (SeverityNumber <= 16), "warn", (SeverityNumber <= 20), "error", (SeverityNumber <= 24), "fatal", ""))) AS _logql_level_source]
+        Filter predicate=(ResourceAttributes["job"] = "api")
+          Scan(otel_logs)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT `Body` AS `Line`, mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`))) AS `Attributes`, `Timestamp` AS `TimeUnix`, toJSONString(mapFilter((k, v) -> (v != ?), `LogAttributes`)) AS `Metadata` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `Timestamp`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level` FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND ((`_logql_detected_level` = ?) AND match(`Body`, ?)))
+-- sql_optimized --
+SELECT `Body` AS `Line`, mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`))) AS `Attributes`, `Timestamp` AS `TimeUnix`, toJSONString(mapFilter((k, v) -> (v != ?), `LogAttributes`)) AS `Metadata` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `Timestamp`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level` FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND ((`_logql_detected_level` = ?) AND match(`Body`, ?)))
