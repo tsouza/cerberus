@@ -87,7 +87,7 @@ func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s sc
 		return nil, err
 	}
 
-	attr, nullable, err := metricsAggregateAttr(op, agg.Attribute(), s)
+	attr, nullable, err := metricsAggregateAttr(op, agg.Attribute(), materializedCarriedBy(prev.RowType(), s))
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +95,7 @@ func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s sc
 		prev = keepNumericObservations(prev, attr)
 	}
 
-	groupBy, groupAliases, groupDisplay, err := lowerMetricsGroupBy(agg.GroupBy(), s)
+	groupBy, groupAliases, groupDisplay, err := lowerMetricsGroupBy(agg.GroupBy(), prev.RowType(), s)
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +155,7 @@ func lowerMetricsAggregate(prev chplan.Node, agg *traceql.MetricsAggregate, s sc
 // — so we just unwrap the accessor fields and produce the same
 // chplan.MetricsAggregate node.
 func lowerAverageOverTime(prev chplan.Node, agg *traceql.AverageOverTimeAggregator, s schema.Traces) (chplan.Node, error) {
-	attr, nullable, err := metricsAggregateAttr(traceql.MetricsAggregateAvgOverTime, agg.Attribute(), s)
+	attr, nullable, err := metricsAggregateAttr(traceql.MetricsAggregateAvgOverTime, agg.Attribute(), materializedCarriedBy(prev.RowType(), s))
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +163,7 @@ func lowerAverageOverTime(prev chplan.Node, agg *traceql.AverageOverTimeAggregat
 		prev = keepNumericObservations(prev, attr)
 	}
 
-	groupBy, groupAliases, groupDisplay, err := lowerMetricsGroupBy(agg.GroupBy(), s)
+	groupBy, groupAliases, groupDisplay, err := lowerMetricsGroupBy(agg.GroupBy(), prev.RowType(), s)
 	if err != nil {
 		return nil, err
 	}
@@ -351,12 +351,12 @@ func lowerMetricsHistogramOverTime(prev chplan.Node, agg *traceql.MetricsAggrega
 	if attr == (traceql.Attribute{}) {
 		return nil, fmt.Errorf("traceql: histogram_over_time requires an attribute operand")
 	}
-	attrExpr, err := lowerAttribute(attr, s)
+	attrExpr, err := lowerAttribute(attr, materializedCarriedBy(prev.RowType(), s))
 	if err != nil {
 		return nil, err
 	}
 
-	groupBy, groupAliases, groupDisplay, err := lowerMetricsGroupBy(agg.GroupBy(), s)
+	groupBy, groupAliases, groupDisplay, err := lowerMetricsGroupBy(agg.GroupBy(), prev.RowType(), s)
 	if err != nil {
 		return nil, err
 	}
@@ -400,9 +400,14 @@ func lowerMetricsHistogramOverTime(prev chplan.Node, agg *traceql.MetricsAggrega
 //     `labelsFor` loop). The SQL emitter ignores this slice; only the
 //     /api/metrics handler reads it.
 //
+// A group key is an output, so a materialized attribute read in it keeps
+// its column only where readAttributeOutputFrom allows it over row, the
+// row type of the spans being grouped: a numeric-kind column, or one row
+// does not carry, is read through the attribute map instead.
+//
 // Returns (nil, nil, nil, nil) when the `by(...)` list is empty — that
 // matches chplan.Aggregate's convention for "no grouping".
-func lowerMetricsGroupBy(attrs []traceql.Attribute, s schema.Traces) ([]chplan.Expr, []string, []string, error) {
+func lowerMetricsGroupBy(attrs []traceql.Attribute, row chplan.Schema, s schema.Traces) ([]chplan.Expr, []string, []string, error) {
 	if len(attrs) == 0 {
 		return nil, nil, nil, nil
 	}
@@ -417,6 +422,7 @@ func lowerMetricsGroupBy(attrs []traceql.Attribute, s schema.Traces) ([]chplan.E
 		if err != nil {
 			return nil, nil, nil, err
 		}
+		readAttributeOutputFrom(expr, row)
 		exprs = append(exprs, wireNormalizeGroupValue(a, expr))
 		// SQL alias is the bare attribute path (`a.Name` is set by
 		// traceql.NewAttribute / NewScopedAttribute / NewIntrinsic to
