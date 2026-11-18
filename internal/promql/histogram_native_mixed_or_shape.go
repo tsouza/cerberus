@@ -47,7 +47,7 @@ func isMixedRelationShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx) bool
 			return false
 		}
 		switch e.Func.Name {
-		case "sort_by_label", "sort_by_label_desc", fnLabelReplace, fnLabelJoin, "info":
+		case "sort_by_label", fnSortByLabelDesc, fnLabelReplace, fnLabelJoin, "info":
 			return isMixedRelationShape(e.Args[0], s, ctx)
 		}
 		if expHistogramTypePreservingWindowFn(e.Func.Name) {

@@ -470,7 +470,7 @@ func subqueryIdentityWindow(
 func subqueryIdentityValuePreserving(fn string) bool {
 	switch fn {
 	case fnLabelReplace, fnLabelJoin, "info",
-		"sort", "sort_desc", "sort_by_label", "sort_by_label_desc":
+		"sort", "sort_desc", "sort_by_label", fnSortByLabelDesc:
 		return true
 	}
 	return false
@@ -524,7 +524,7 @@ func lowerSubqueryIdentityMathReorder(
 	// instantFnCH tail — so it reaches [lowerRoundOverInput] rather than
 	// being rejected by the arity check below.
 	switch call.Func.Name {
-	case "clamp", "clamp_min", "clamp_max":
+	case "clamp", fnClampMin, "clamp_max":
 		plan, err := lowerClampOverInput(call, s, rangeCtx, load, ordinaryGuarded)
 		return plan, true, err
 	case "round":
@@ -2271,7 +2271,7 @@ var instantTransformFns = map[string]struct{}{
 	"log10":     {},
 	"sgn":       {},
 	"clamp":     {},
-	"clamp_min": {},
+	fnClampMin:  {},
 	"clamp_max": {},
 
 	// Trigonometric family + degree/radian conversion — the same
@@ -2319,10 +2319,10 @@ var instantTransformFns = map[string]struct{}{
 	// Sorting: reference discards the ordering when it folds each
 	// anchor's instant result into the subquery's matrix, so these are
 	// identity on the sample set.
-	"sort":               {},
-	"sort_desc":          {},
-	"sort_by_label":      {},
-	"sort_by_label_desc": {},
+	"sort":            {},
+	"sort_desc":       {},
+	"sort_by_label":   {},
+	fnSortByLabelDesc: {},
 
 	// Native-histogram value accessors: arithmetic over a single
 	// exp-histogram row's own columns.

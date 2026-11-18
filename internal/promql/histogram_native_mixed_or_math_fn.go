@@ -17,7 +17,7 @@ func mathCallOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx 
 		return nil, nil, false
 	}
 	switch call.Func.Name {
-	case "clamp_min", "clamp_max":
+	case fnClampMin, "clamp_max":
 		if len(call.Args) != 2 {
 			return nil, nil, false
 		}
