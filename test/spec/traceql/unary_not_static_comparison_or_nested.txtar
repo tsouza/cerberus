@@ -17,8 +17,38 @@ INSERT INTO otel_traces (SpanId, SpanKind, TraceId) VALUES
     ('bbbb', 'Client', 'a0000000000000000000000000000001'),
     ('cccc', 'Client', 'a0000000000000000000000000000002');
 -- expected_rows --
-[]
+[
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "bbbb", "__cerberus_traceID": "a0000000000000000000000000000001"}, "1970-01-01T00:00:00Z", 0],
+  ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "cccc", "__cerberus_traceID": "a0000000000000000000000000000002"}, "1970-01-01T00:00:00Z", 0]
+]
 -- parity --
 oracle: tempo
 endpoint: /api/search
 scope: full
+-- args --
+[0] string = "Client"
+[1] string = "Server"
+[2] string = "a"
+[3] string = "b"
+-- args_optimized --
+[0] string = "__cerberus_traceID"
+[1] string = "__cerberus_parentSpanID"
+[2] string = "__cerberus_spanID"
+[3] string = "Client"
+[4] string = "Server"
+[5] string = "a"
+[6] string = "b"
+-- chplan --
+Filter predicate=(((SpanKind = "Server") OR FnNot(("a" = "b"))) AND (SpanKind = "Client"))
+  Scan(otel_traces)
+-- settings --
+enable_analyzer=1
+enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+log_comment=cerb:project
+max_bytes_before_external_group_by=536870912
+max_bytes_before_external_sort=536870912
+use_query_condition_cache=1
+-- sql --
+SELECT * FROM `otel_traces` PREWHERE (`SpanKind` = ?) WHERE ((`SpanKind` = ?) OR not((? = ?)))
+-- sql_optimized --
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanKind`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` PREWHERE (`SpanKind` = ?) WHERE ((`SpanKind` = ?) OR not((? = ?))))
