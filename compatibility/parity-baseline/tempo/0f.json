@@ -3,6 +3,7 @@
   "head": "tempo",
   "bucket": "0f",
   "cases": [
+    "metrics_range | metrics_rate_after_group_aggregate_filter",
     "search | bare_aggregate_stage_rejected",
     "search | cross_scope_attribute_never_equal",
     "search | scoped_trace_root_service",
