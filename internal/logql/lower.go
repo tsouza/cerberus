@@ -90,6 +90,14 @@ type lowerCtx struct {
 	LogLineLimit    int64
 	LogLineBackward bool
 
+	// PrewhereInWhereOrder is the logs table's
+	// chplan.SchemaStrategies.PrewhereInWhereOrder, threaded from
+	// [LowerOpts] down to [rowLayers.gatherAtScan] — the only reader.
+	// false (the default — every non-Opts entry point leaves it unset)
+	// keeps the range aggregation's row stage in the arrangement a server
+	// that reorders PREWHERE conditions reads best.
+	PrewhereInWhereOrder bool
+
 	// logLineWindow marks a lowering whose top-level expression returns
 	// LOG LINES rather than a numeric series, which decides whether the
 	// pre-scan clamp [andFoldTimeWindow] folds treats `End` as inclusive.
@@ -257,6 +265,11 @@ type LowerOpts struct {
 	// `direction` — see lowerCtx.LogLineLimit's doc comment.
 	LogLineLimit    int64
 	LogLineBackward bool
+
+	// PrewhereInWhereOrder is the logs table's
+	// chplan.SchemaStrategies.PrewhereInWhereOrder — see
+	// lowerCtx.PrewhereInWhereOrder's doc comment.
+	PrewhereInWhereOrder bool
 }
 
 // LowerAtRangeOpts is the options-carrying variant of [LowerAtRange]. The
@@ -266,12 +279,13 @@ type LowerOpts struct {
 // (default, byte-identical) behaviour.
 func LowerAtRangeOpts(ctx context.Context, expr syntax.Expr, s schema.Logs, start, end time.Time, step time.Duration, opts LowerOpts) (chplan.Node, error) {
 	return lowerWithCtx(ctx, expr, s, lowerCtx{
-		Start:               start,
-		End:                 end,
-		Step:                step,
-		TextIndexLineFilter: opts.TextIndexLineFilter,
-		LogLineLimit:        opts.LogLineLimit,
-		LogLineBackward:     opts.LogLineBackward,
+		Start:                start,
+		End:                  end,
+		Step:                 step,
+		TextIndexLineFilter:  opts.TextIndexLineFilter,
+		LogLineLimit:         opts.LogLineLimit,
+		LogLineBackward:      opts.LogLineBackward,
+		PrewhereInWhereOrder: opts.PrewhereInWhereOrder,
 	})
 }
 

@@ -822,7 +822,16 @@ builds carry themselves:
 | The two `optimize_use_projection_filtering` gates    | `25.6` or later                             |
 
 The analyzer decision gets no such start: at boot it follows the reached
-builds alone. Boot logs a `WARN`
+builds alone.
+
+The PREWHERE order fact (`prewhere_in_where_order` in the boot and re-probe
+logs) holds only when a probe reached every node and every build is below
+`24.10`, which runs a multi-step PREWHERE in the order of the `WHERE`
+conjuncts rather than reordering them. While it holds, a LogQL range
+aggregation puts a `detected_level` filter ahead of a line filter written
+after it in the `SELECT` that reads the logs table. A probe that reaches
+only some of the nodes, reaches no node, or reads a build from `24.10` on
+clears it. Boot logs a `WARN`
 (`clickhouse fleet probe did not reach every node`) naming the builds it read.
 Until a probe reaches every node, the [re-probe](#re-probe) runs every 10
 seconds; the first probe that reaches every node decides every gate from the

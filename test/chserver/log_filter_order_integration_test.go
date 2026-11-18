@@ -14,6 +14,8 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/loki"
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chopt"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
@@ -22,6 +24,10 @@ import (
 // a server that runs a multi-step PREWHERE in the order of the WHERE
 // conjuncts.
 const logFilterOrderImage = "clickhouse/clickhouse-server:24.8.14.39-alpine"
+
+// logFilterReorderImage is a server that reorders the conditions it moves
+// into PREWHERE (chopt.PrewhereReorderedSince).
+const logFilterReorderImage = "clickhouse/clickhouse-server:26.8.36.3-alpine"
 
 // logFilterOrderQuery filters on the detected level first and on the line
 // second, as the Loki compatibility corpus's log query does.
@@ -58,7 +64,7 @@ var (
 // line filter first reads every body in the stream.
 func TestLogQueryLevelFilterSparesTheBody(t *testing.T) {
 	ctx := context.Background()
-	s, mux, bodyBytes := startLogFilterOrder(ctx, t)
+	s, mux, bodyBytes := startLogFilterOrder(ctx, t, logFilterOrderImage, true)
 	var body struct {
 		Data struct {
 			Result []struct {
@@ -84,19 +90,25 @@ func TestLogQueryLevelFilterSparesTheBody(t *testing.T) {
 // do not overlap, so the counts add up to the matching lines.
 const logFilterOrderStep = time.Hour
 
-// TestRangeAggregationLevelFilterSparesTheBody runs range aggregations that
-// filter on the detected level, then on a label that reads LogAttributes
-// whole, then on the line, and requires each to read fewer bytes than the
-// body column holds, as the log query does. The whole-map filter stays above
-// the scan; the level filter still has to run where the table is read, ahead
-// of the line filter, or the scan reads every body in the stream.
+// logFilterOrderRangeQueries filter on the detected level, then on a label
+// that reads LogAttributes whole, then on the line.
+var logFilterOrderRangeQueries = []string{
+	`sum(count_over_time({service_name="tempo", pod="pod-8"} | detected_level="error" | tenant!="tenant-7" |~ "(?i)failed" [1h]))`,
+	`sum(count_over_time({service_name="tempo", pod="pod-8"} | detected_level="error" | json | status >= 400 |~ "(?i)failed" [1h]))`,
+}
+
+// TestRangeAggregationLevelFilterSparesTheBody runs logFilterOrderRangeQueries
+// on the floor server, with the strategies its build resolves to, and
+// requires each to read fewer bytes than the body column holds, as the log
+// query does. The level filter has to run where the table is read, ahead of
+// the line filter, or the scan reads every body in the stream.
 func TestRangeAggregationLevelFilterSparesTheBody(t *testing.T) {
 	ctx := context.Background()
-	s, mux, bodyBytes := startLogFilterOrder(ctx, t)
-	for _, query := range []string{
-		`sum(count_over_time({service_name="tempo", pod="pod-8"} | detected_level="error" | tenant!="tenant-7" |~ "(?i)failed" [1h]))`,
-		`sum(count_over_time({service_name="tempo", pod="pod-8"} | detected_level="error" | json | status >= 400 |~ "(?i)failed" [1h]))`,
-	} {
+	s, mux, bodyBytes := startLogFilterOrder(ctx, t, logFilterOrderImage, true)
+	if !chopt.PrewhereKeepsWhereOrder(s.version) {
+		t.Fatalf("%s reorders PREWHERE conditions; the test needs a build that keeps WHERE order", s.version)
+	}
+	for _, query := range logFilterOrderRangeQueries {
 		t.Run(query, func(t *testing.T) {
 			var body struct {
 				Data struct {
@@ -127,12 +139,46 @@ func TestRangeAggregationLevelFilterSparesTheBody(t *testing.T) {
 	}
 }
 
-// startLogFilterOrder starts the floor server, seeds the stream and mounts
-// the Loki API over it. It returns the server, the mux and the bytes the
-// body column holds.
-func startLogFilterOrder(ctx context.Context, t *testing.T) (*server, *http.ServeMux, uint64) {
+// TestRangeAggregationOnAReorderingServerKeepsItsStatement runs
+// logFilterOrderRangeQueries on a server that reorders PREWHERE conditions,
+// once with the strategies its build resolves to and once with
+// PrewhereInWhereOrder unset, and requires the two runs to send the same
+// statement and read the same bytes: on such a server the order the plan
+// writes the filters in buys nothing, so it renders what it rendered before
+// the order mattered.
+func TestRangeAggregationOnAReorderingServerKeepsItsStatement(t *testing.T) {
+	ctx := context.Background()
+	s, resolved, _ := startLogFilterOrder(ctx, t, logFilterReorderImage, true)
+	if chopt.PrewhereKeepsWhereOrder(s.version) {
+		t.Fatalf("%s keeps WHERE order; the test needs a build that reorders PREWHERE conditions", s.version)
+	}
+	unset := logFilterOrderMux(t, s, false)
+	for _, query := range logFilterOrderRangeQueries {
+		t.Run(query, func(t *testing.T) {
+			params := func() url.Values {
+				return url.Values{"query": {query}, "step": {strconv.FormatFloat(logFilterOrderStep.Seconds(), 'f', -1, 64)}}
+			}
+			var a, b json.RawMessage
+			readResolved, sqlResolved := queryLogFilterOrderStatement(ctx, t, s, resolved, params(), &a)
+			readUnset, sqlUnset := queryLogFilterOrderStatement(ctx, t, s, unset, params(), &b)
+			if sqlResolved != sqlUnset {
+				t.Errorf("the resolved strategies change the statement on %s:\n%s\n%s", s.version, sqlResolved, sqlUnset)
+			}
+			if readResolved != readUnset || string(a) != string(b) {
+				t.Errorf("the resolved strategies read %d bytes and answer %s; unset, %d bytes and %s", readResolved, a, readUnset, b)
+			}
+		})
+	}
+}
+
+// startLogFilterOrder starts image, seeds the stream and mounts the Loki API
+// over it (logFilterOrderMux), with the strategies the server's build
+// resolves to when resolved is set and with PrewhereInWhereOrder unset
+// otherwise. It returns the server, the mux and the bytes the body column
+// holds.
+func startLogFilterOrder(ctx context.Context, t *testing.T, image string, resolved bool) (*server, *http.ServeMux, uint64) {
 	t.Helper()
-	s := startServer(ctx, t, logFilterOrderImage)
+	s := startServer(ctx, t, image)
 	if err := ddl.Apply(ctx, s.admin.Conn(), []ddl.Signal{ddl.Logs}); err != nil {
 		t.Fatalf("apply the logs schema: %v", err)
 	}
@@ -141,15 +187,34 @@ func startLogFilterOrder(ctx context.Context, t *testing.T) (*server, *http.Serv
 	if err := s.admin.Conn().QueryRow(ctx, "SELECT sum(length(Body)) FROM otel_logs").Scan(&bodyBytes); err != nil {
 		t.Fatalf("measure the body column: %v", err)
 	}
-	client := s.client(t, adminUser, adminPassword, chclient.Config{})
+	return s, logFilterOrderMux(t, s, resolved), bodyBytes
+}
+
+// logFilterOrderMux mounts the Loki API over s. With resolved, the handler
+// renders under the PrewhereInWhereOrder s's build resolves to
+// (chopt.PrewhereKeepsWhereOrder); otherwise under it unset.
+func logFilterOrderMux(t *testing.T, s *server, resolved bool) *http.ServeMux {
+	t.Helper()
+	cell := chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{})
+	cell.SetPrewhereInWhereOrder(resolved && chopt.PrewhereKeepsWhereOrder(s.version))
+	h := loki.New(s.client(t, adminUser, adminPassword, chclient.Config{}), schema.DefaultOTelLogs(), nil)
+	h.Strategies = cell
 	mux := http.NewServeMux()
-	loki.New(client, schema.DefaultOTelLogs(), nil).Mount(mux)
-	return s, mux, bodyBytes
+	h.Mount(mux)
+	return mux
 }
 
 // queryLogFilterOrder sends a query_range over the seeded window with params,
 // decodes the answer into out, and returns the bytes the statement read.
 func queryLogFilterOrder(ctx context.Context, t *testing.T, s *server, mux *http.ServeMux, params url.Values, out any) uint64 {
+	t.Helper()
+	readBytes, _ := queryLogFilterOrderStatement(ctx, t, s, mux, params, out)
+	return readBytes
+}
+
+// queryLogFilterOrderStatement is queryLogFilterOrder that also returns the
+// statement the server ran.
+func queryLogFilterOrderStatement(ctx context.Context, t *testing.T, s *server, mux *http.ServeMux, params url.Values, out any) (uint64, string) {
 	t.Helper()
 	params.Set("start", strconv.FormatInt(logFilterOrderStart.UnixNano(), 10))
 	params.Set("end", strconv.FormatInt(logFilterOrderEnd.UnixNano(), 10))
@@ -166,11 +231,12 @@ func queryLogFilterOrder(ctx context.Context, t *testing.T, s *server, mux *http
 	}
 	s.flushLogs(ctx, t)
 	var readBytes uint64
+	var statement string
 	if err := s.admin.Conn().QueryRow(ctx,
-		"SELECT read_bytes FROM system.query_log WHERE type = 'QueryFinish' AND query_id = ?", qid).Scan(&readBytes); err != nil {
+		"SELECT read_bytes, query FROM system.query_log WHERE type = 'QueryFinish' AND query_id = ?", qid).Scan(&readBytes, &statement); err != nil {
 		t.Fatalf("read query_log for %s: %v", qid, err)
 	}
-	return readBytes
+	return readBytes, statement
 }
 
 // requireBodySpared fails t unless readBytes is below bodyBytes.

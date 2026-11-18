@@ -393,7 +393,8 @@ func reprobeCHOptimizations(
 			next.FleetIncomplete = !fleet.Complete
 			next.FleetHeld = fleet.Held
 		}
-		next.Set = next.Set.WithAnalyzerMandatory(analyzerMandatory).WithShapeDefects(shapeDefects)
+		next.Set = next.Set.WithAnalyzerMandatory(analyzerMandatory).WithShapeDefects(shapeDefects).
+			WithPrewhereInWhereOrder(prewhereInWhereOrderOnFleet(fleet))
 		prev := live.get()
 		schedule(next)
 		if next.Set.Equal(prev.Set) && next.ResolvedVersion == prev.ResolvedVersion && next.QueryWorkload == prev.QueryWorkload {
@@ -425,6 +426,8 @@ func reprobeCHOptimizations(
 			"previous_analyzer_mandatory", prev.Set.AnalyzerMandatory(),
 			"native_histogram_analyzer_faster", next.Set.NativeHistogramAnalyzerFaster(),
 			"previous_native_histogram_analyzer_faster", prev.Set.NativeHistogramAnalyzerFaster(),
+			"prewhere_in_where_order", next.Set.PrewhereInWhereOrder(),
+			"previous_prewhere_in_where_order", prev.Set.PrewhereInWhereOrder(),
 			"shape_defects", strings.Join(next.Set.ShapeDefectIDs(), ","),
 			"previous_shape_defects", strings.Join(prev.Set.ShapeDefectIDs(), ","),
 		)

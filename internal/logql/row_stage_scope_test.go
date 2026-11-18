@@ -16,8 +16,15 @@ import (
 // rangeAggregationSQL renders q as a range query over one day.
 func rangeAggregationSQL(t *testing.T, q string) (string, chplan.Node) {
 	t.Helper()
+	return rangeAggregationSQLUnder(t, q, chplan.SchemaStrategies{})
+}
+
+// rangeAggregationSQLUnder renders q as a range query over one day under
+// strategies.
+func rangeAggregationSQLUnder(t *testing.T, q string, strategies chplan.SchemaStrategies) (string, chplan.Node) {
+	t.Helper()
 	start := time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC)
-	l := &logql.Lang{Schema: schema.DefaultOTelLogs(), Start: start, End: start.Add(24 * time.Hour), Step: time.Hour}
+	l := &logql.Lang{Schema: schema.DefaultOTelLogs(), Start: start, End: start.Add(24 * time.Hour), Step: time.Hour, Strategies: strategies}
 	dr, err := (&engine.Engine{Optimizer: optimizer.Default()}).DryRunSQL(context.Background(), l, q)
 	if err != nil {
 		t.Fatalf("DryRunSQL(%q): %v", q, err)
@@ -66,9 +73,7 @@ func TestRangeAggregationFiltersRunWhereTheTableIsRead(t *testing.T) {
 // range aggregation evaluates where the table is read keep the order the
 // pipeline gives them: a detected_level filter written ahead of a line
 // filter runs ahead of it, so ClickHouse's multi-step PREWHERE reads the
-// line only for the rows the level keeps. That holds when a filter between
-// them reads LogAttributes whole and stays above the scan: the level
-// filter still runs where the table is read, ahead of the line.
+// line only for the rows the level keeps.
 func TestRangeAggregationScanFiltersKeepTheirOrder(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -78,8 +83,6 @@ func TestRangeAggregationScanFiltersKeepTheirOrder(t *testing.T) {
 	}{
 		{`sum(count_over_time({job="wide"} | detected_level="error" |= "orders/5" [5m]))`, "lower(`_logql_level_source`)", "position(`Body`"},
 		{`sum(count_over_time({job="wide"} |= "orders/5" | detected_level="error" [5m]))`, "position(`Body`", "lower(`_logql_level_source`)"},
-		{`sum(count_over_time({job="wide"} | detected_level="error" | tenant!="tenant-7" |= "orders/5" [5m]))`, "lower(`_logql_level_source`)", "position(`Body`"},
-		{`sum(count_over_time({job="wide"} | detected_level="error" | json | status >= 400 |= "orders/5" [5m]))`, "lower(`_logql_level_source`)", "position(`Body`"},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			t.Parallel()
@@ -90,6 +93,60 @@ func TestRangeAggregationScanFiltersKeepTheirOrder(t *testing.T) {
 				t.Errorf("the SELECT reading otel_logs does not read %s ahead of %s: %s", tc.first, tc.then, scope)
 			}
 		})
+	}
+}
+
+// levelThenLineBehindAWholeMapRead are range aggregations whose level filter
+// a line filter follows, with a filter that reads LogAttributes whole in
+// between or a grouping label that reads it whole.
+var levelThenLineBehindAWholeMapRead = []string{
+	`sum(count_over_time({job="wide"} | detected_level="error" | tenant!="tenant-7" |= "orders/5" [5m]))`,
+	`sum(count_over_time({job="wide"} | detected_level="error" | json | status >= 400 |= "orders/5" [5m]))`,
+	`sum by (tenant) (count_over_time({job="wide"} | detected_level="error" |= "orders/5" [5m]))`,
+	`sum(bytes_over_time({job="wide"} | detected_level!="info" | tenant!="tenant-7" |= "request" [5m]))`,
+}
+
+// TestRangeAggregationLevelFilterLeadsWhereOrderHolds pins that on servers
+// that run a multi-step PREWHERE in WHERE order
+// (chplan.SchemaStrategies.PrewhereInWhereOrder) a level filter that a line
+// filter follows runs in the SELECT that reads otel_logs, ahead of the line
+// filter, even when the stage reads LogAttributes whole: ClickHouse then
+// reads the body only for the rows the level keeps. On every other server
+// the statement is the one a reordering server reads best: the line filter
+// joins the scan's predicates and the level source stays above.
+func TestRangeAggregationLevelFilterLeadsWhereOrderHolds(t *testing.T) {
+	t.Parallel()
+	const level, line = "lower(`_logql_level_source`)", "position(`Body`"
+	for _, query := range levelThenLineBehindAWholeMapRead {
+		t.Run(query, func(t *testing.T) {
+			t.Parallel()
+			sql, _ := rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{PrewhereInWhereOrder: true})
+			scope := scopeAround(t, sql, "FROM `otel_logs`")
+			first, then := strings.Index(scope, level), strings.Index(scope, line)
+			if first < 0 || then < 0 || first > then {
+				t.Errorf("in WHERE order, the SELECT reading otel_logs does not read %s ahead of %s: %s", level, line, scope)
+			}
+			sql, _ = rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{})
+			scope = scopeAround(t, sql, "FROM `otel_logs`")
+			if strings.Contains(scope, "AS `_logql_level_source`") || !strings.Contains(scope, line) {
+				t.Errorf("on a reordering server, the SELECT reading otel_logs defines the level source or does not read the line: %s", scope)
+			}
+		})
+	}
+}
+
+// TestRangeAggregationLevelFilterThatCannotMoveKeepsTheLineAtTheScan pins
+// the other side: a level filter on the normalised level, which stays a
+// SELECT above the scan, leaves the line filter in the scan's predicates in
+// WHERE order too, with the whole-map filter above, as a reordering server
+// reads it. Nothing reads the body for fewer rows by moving the rest.
+func TestRangeAggregationLevelFilterThatCannotMoveKeepsTheLineAtTheScan(t *testing.T) {
+	t.Parallel()
+	const query = `sum(rate({job="wide"} | detected_level=~"err.*" | tenant!="tenant-7" |= "orders/5" [5m]))`
+	inOrder, _ := rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{PrewhereInWhereOrder: true})
+	reordering, _ := rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{})
+	if inOrder != reordering {
+		t.Errorf("in WHERE order the statement differs from a reordering server's:\n%s\n%s", inOrder, reordering)
 	}
 }
 
@@ -137,9 +194,7 @@ func TestRangeAggregationMultiplyingValuesStayNested(t *testing.T) {
 // through mapContains, stays above the scan, and so does the
 // detected_level source; a range aggregation whose grouping label reads
 // LogAttributes whole leaves the source above the scan too, and one that
-// groups by detected_level alone moves it into the scan's scope. A level
-// filter that a line filter follows moves the source into the scan's scope
-// even so, with the whole-map label filter still above it.
+// groups by detected_level alone moves it into the scan's scope.
 func TestRangeAggregationWholeMapReadsStayAboveTheScan(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -149,7 +204,6 @@ func TestRangeAggregationWholeMapReadsStayAboveTheScan(t *testing.T) {
 		{`sum(count_over_time({job="wide"} | tenant="tenant-7" [5m]))`, false},
 		{`sum by (env) (rate({job="api"}[5m]))`, false},
 		{`sum by (detected_level) (count_over_time({job="api"}[5m]))`, true},
-		{`sum(count_over_time({job="wide"} | detected_level="error" | tenant!="tenant-7" |= "orders/5" [5m]))`, true},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			t.Parallel()

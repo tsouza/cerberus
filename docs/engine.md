@@ -555,13 +555,14 @@ The emitter is also CH-native rather than ANSI-ish:
   `detected_level` equality, an OR of them, or an inequality reads the
   level source rather than the normalised level. A filter conjunct that
   reads a map column as a whole stays where it is, and nothing that
-  reads a key of a map column the stage reads as a whole moves, except
-  the first filter conjunct that reads a layer and no map column as a
-  whole, with the values it reads, when a later conjunct that reads no
-  layer reads a table column the scan's filter and that first conjunct
-  do not already read: that later conjunct then runs behind it in the
-  scan's scope. The layers above the moved part render one `SELECT`
-  each. The chain
+  reads a key of a map column the stage reads as a whole moves. When
+  every server runs a multi-step PREWHERE in `WHERE` order
+  (`SchemaStrategies.PrewhereInWhereOrder`), a later conjunct that reads
+  no layer and a table column the scan's filter and the first filter
+  conjunct reading a layer do not already read lifts that rule for
+  everything up to it, as long as the first conjunct then moves: it
+  runs behind the first conjunct in the scan's scope. The layers above
+  the moved part render one `SELECT` each. The chain
   stays nested when an alias is defined twice, when an alias is named
   like a table column that the scan's filter or a node at or below the
   alias's own layer reads, or when the chain with every alias read
