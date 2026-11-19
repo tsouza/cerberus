@@ -58,9 +58,11 @@ const maxScanScopeExpansion = 3
 //     moves into the scan's scope while the scope stays within
 //     [maxScanScopeExpansion];
 //   - none of this happens to a filter conjunct whose own text reads a
-//     map column as a whole, and a value or a conjunct that reads a layer
-//     does not move when its own text reads a key of a map column the
-//     stage reads as a whole;
+//     map column as a whole, except, without inWhereOrder, one that
+//     [wholeMapFiltersAhead] names, which folds or joins the moved filter
+//     as a conjunct that reads no layer does; and a value or a conjunct
+//     that reads a layer does not move when its own text reads a key of a
+//     map column the stage reads as a whole;
 //   - with inWhereOrder, which reports that the servers run a multi-step
 //     PREWHERE in the order of the WHERE conjuncts, the rule above is lifted
 //     up to the filter [orderedScanPrefix] finds, when that keeps the first
@@ -78,8 +80,9 @@ const maxScanScopeExpansion = 3
 // unwrap conversion reads its parts many times — in its own SELECT, where
 // it reads the value below it as a column. A map the stage reads as a
 // whole is read whole wherever it is read; a key subcolumn read of it in
-// the scan's scope only reads it a second time, and a predicate on the
-// whole map in the scan's scope reads it ahead of the rows it filters.
+// the scan's scope only reads it a second time, and on a server that keeps
+// WHERE order a predicate on the whole map in the scan's scope reads it
+// ahead of the rows the conjuncts after it filter.
 //
 // The conjuncts in the scan's scope keep the order the stage gives them,
 // which is the pipeline's: a server that keeps WHERE order
@@ -101,27 +104,35 @@ func (r *rowLayers) gatherAtScan(maps []string, inWhereOrder bool, consumer ...c
 	slices.Reverse(items)
 
 	reads := stageMapReads(maps, consumer, items)
-	g := r.gather(base, items, reads, -1, nil)
-	if inWhereOrder {
-		if through, first := orderedScanPrefix(base, items, r.values(maps), reads); first != nil {
-			if ordered := r.gather(base, items, reads, through, first); slices.Contains(ordered.filtered, first) {
-				g = ordered
-			}
+	values := r.values(maps)
+	if !inWhereOrder {
+		r.node = r.rebuild(r.gather(base, items, reads, -1, nil, wholeMapFiltersAhead(items, values, reads)))
+		return
+	}
+	g := r.gather(base, items, reads, -1, nil, nil)
+	if through, first := orderedScanPrefix(base, items, values, reads); first != nil {
+		if ordered := r.gather(base, items, reads, through, first, nil); slices.Contains(ordered.filtered, first) {
+			g = ordered
 		}
 	}
-	r.node = rebuildAtScan(g.base, g.layers, g.filtered, g.above, &r.atScan)
+	r.node = r.rebuild(g)
+}
+
+// rebuild stacks what g moved over the scan, then what it left above.
+func (r *rowLayers) rebuild(g scanGather) chplan.Node {
+	return rebuildAtScan(g.base, g.layers, g.filtered, g.above, &r.atScan)
 }
 
 // gather walks items, the stack over base, and returns what it moves into
 // the scan's scope, folds into the scan's filter and leaves above, with
-// keyedThrough and first as [scanGather]'s.
-func (r *rowLayers) gather(base chplan.Node, items []chplan.Node, reads stageMaps, keyedThrough int, first chplan.Expr) scanGather {
+// keyedThrough, first and wholeAtScan as [scanGather]'s.
+func (r *rowLayers) gather(base chplan.Node, items []chplan.Node, reads stageMaps, keyedThrough int, first chplan.Expr, wholeAtScan []chplan.Expr) scanGather {
 	aliases := map[string]bool{}
 	for _, layer := range r.layers {
 		aliases[layer.Projections[0].Alias] = true
 	}
 	scope := scanScope{aliases: aliases, defs: map[string]chplan.Expr{}, expanded: map[string]int{}}
-	g := scanGather{reads: reads, base: base, keyedThrough: keyedThrough, first: first}
+	g := scanGather{reads: reads, base: base, keyedThrough: keyedThrough, first: first, wholeAtScan: wholeAtScan}
 	for i, item := range items {
 		switch n := item.(type) {
 		case *chplan.Project:
@@ -150,6 +161,9 @@ type scanGather struct {
 	// keyedThrough that does, so the scan reads the stage up to the line
 	// filter in pipeline order.
 	first chplan.Expr
+	// wholeAtScan are the filter conjuncts reading a map column as a whole
+	// that [wholeMapFiltersAhead] names, which run where the table is read.
+	wholeAtScan []chplan.Expr
 	// base is the stream scan with the conjuncts folded into its filter.
 	base chplan.Node
 	// layers are the moved layers, bottom first, and layerAt each one's
@@ -199,7 +213,7 @@ func (g *scanGather) takeFilter(scope *scanScope, i int, n *chplan.Filter) {
 	var kept []chplan.Expr
 	for _, conjunct := range conjuncts(n.Predicate) {
 		switch {
-		case g.reads.readsWhole(conjunct) && i > g.keyedThrough:
+		case g.reads.readsWhole(conjunct) && i > g.keyedThrough && !slices.Contains(g.wholeAtScan, conjunct):
 			kept = append(kept, conjunct)
 		case !scope.readsLayer(conjunct) && (len(g.filtered) == 0 || g.reads.readsWholeKey(conjunct) && !g.joinsFirst(i)):
 			g.base = andFilter(g.base, conjunct)
@@ -266,6 +280,39 @@ func orderedScanPrefix(base chplan.Node, items []chplan.Node, values layerValues
 		}
 	}
 	return -1, nil
+}
+
+// wholeMapFiltersAhead finds, in items, each filter conjunct that reads a
+// map column as a whole and no layer when a conjunct the pipeline runs
+// after it reads no layer and no map column as a whole: a label filter on
+// a stored label ahead of a line filter, for one. That later conjunct runs
+// in the scan's filter, and a server that orders a multi-step PREWHERE
+// itself then runs the conjunct found in PREWHERE with it, reading the
+// columns the stage reads past the scan's filter — the series key's whole
+// ResourceAttributes, for one — only for the granules both keep. Left above
+// the scan, the conjunct runs after those columns are read for every
+// granule the later conjunct keeps. Without such a later conjunct, the
+// server runs a filter left directly above the scan in PREWHERE itself, and
+// the conjunct stays there.
+func wholeMapFiltersAhead(items []chplan.Node, values layerValues, reads stageMaps) []chplan.Expr {
+	var pending, ahead []chplan.Expr
+	for _, item := range items {
+		f, ok := item.(*chplan.Filter)
+		if !ok {
+			continue
+		}
+		for _, conjunct := range conjuncts(f.Predicate) {
+			switch {
+			case values.reads(conjunct):
+			case reads.readsWhole(conjunct):
+				pending = append(pending, conjunct)
+			default:
+				ahead = append(ahead, pending...)
+				pending = nil
+			}
+		}
+	}
+	return ahead
 }
 
 // demote sends back to its place a moved layer that reads another value

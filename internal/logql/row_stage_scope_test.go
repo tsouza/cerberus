@@ -277,6 +277,36 @@ func TestRangeAggregationWholeMapReadsStayAboveTheScan(t *testing.T) {
 	}
 }
 
+// TestRangeAggregationWholeMapFilterLeadsALineFilterOnAReorderingServer
+// pins that on a server that orders a multi-step PREWHERE itself, a label
+// filter that reads LogAttributes whole runs in the SELECT that reads
+// otel_logs when a line filter the pipeline runs after it runs there:
+// ClickHouse then runs both in PREWHERE and reads the columns the stage
+// reads past them only for the granules both keep. The detected_level
+// source stays above the scan.
+func TestRangeAggregationWholeMapFilterLeadsALineFilterOnAReorderingServer(t *testing.T) {
+	t.Parallel()
+	const tenant, line = "mapContains(`LogAttributes`, ?)", "position(`Body`"
+	for _, query := range []string{
+		`sum(count_over_time({job="wide"} | tenant="tenant-7" |= "orders/5" [5m]))`,
+		`sum(count_over_time({service_name="tempo", pod="pod-8"} | tenant="tenant-7" |= "status=500" [1h]))`,
+		`sum(count_over_time({job="wide"} | detected_level="error" | tenant="tenant-7" |= "orders/5" [5m]))`,
+		`sum by (detected_level) (count_over_time({job="wide"} | detected_level=~"err.*" | tenant!="tenant-7" |= "orders/5" [5m]))`,
+	} {
+		t.Run(query, func(t *testing.T) {
+			t.Parallel()
+			sql, _ := rangeAggregationSQL(t, query)
+			scope := scopeAround(t, sql, "FROM `otel_logs`")
+			if !strings.Contains(scope, tenant) || !strings.Contains(scope, line) {
+				t.Errorf("on a reordering server, the SELECT reading otel_logs does not read both %s and %s: %s", tenant, line, scope)
+			}
+			if strings.Contains(scope, "AS `_logql_level_source`") {
+				t.Errorf("on a reordering server, the SELECT reading otel_logs defines the level source: %s", scope)
+			}
+		})
+	}
+}
+
 // TestLogQueryRowStageIsOneScope pins the other side: a log query's label
 // filter reads the labels map in the SELECT that defines it.
 func TestLogQueryRowStageIsOneScope(t *testing.T) {
