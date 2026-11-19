@@ -386,14 +386,103 @@ func TestMapTypeCastFree_WindowProjectOwesItsMaps(t *testing.T) {
 			chplan.CanonicalAttributesExpr(&chplan.ColumnRef{Name: "Attributes"}),
 		}}, Alias: "n"},
 	}}
-	top := &chplan.Project{Input: window, Projections: []chplan.Projection{{Expr: &chplan.ColumnRef{Name: "Value"}}}}
+	filterKey := chplan.CanonicalAttributesExpr(&chplan.ColumnRef{Name: "Value"}).(*chplan.FuncCall)
+	top := &chplan.Project{
+		Input: &chplan.Filter{Input: window, Predicate: &chplan.Binary{
+			Op: chplan.OpEq, Left: filterKey, Right: &chplan.ColumnRef{Name: "Value"},
+		}},
+		Projections: []chplan.Projection{{Expr: &chplan.ColumnRef{Name: "Value"}}},
+	}
 	free := mapTypeCastFree(top)
+	if !free[filterKey] {
+		t.Errorf("a canonical key a Filter above the window consumes is cast")
+	}
 	if free[attrs] {
 		t.Errorf("a Map a window partitions by renders uncast")
 	}
 	for f := range free {
-		if f.Fn == chplan.FnMapSort {
+		if f.Fn == chplan.FnMapSort && f != filterKey {
 			t.Errorf("the window's PARTITION BY key renders uncast")
+		}
+	}
+}
+
+// A canonical key in a projection no operator reads is free like any Map
+// call; an unaliased computed projection is owed whenever any column of its
+// Project is, here the one a sort above carries.
+func TestMapTypeCastFree_UnnamedAndKeyProjections(t *testing.T) {
+	t.Parallel()
+	key := chplan.CanonicalAttributesExpr(&chplan.ColumnRef{Name: "Attributes"}).(*chplan.FuncCall)
+	unnamed := &chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{
+		&chplan.ColumnRef{Name: "Attributes"}, &chplan.ColumnRef{Name: "Extra"},
+	}}
+	inner := &chplan.Project{
+		Input: &chplan.Scan{Table: "otel_logs"},
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: "Body"}},
+			{Expr: key, Alias: "Key"},
+			{Expr: unnamed},
+		},
+	}
+	free := mapTypeCastFree(inner)
+	if !free[key] || !free[unnamed] {
+		t.Errorf("projections of the statement's result are cast: key free %v, unnamed free %v", free[key], free[unnamed])
+	}
+	reader := &chplan.OrderBy{
+		Input: &chplan.Project{Input: inner, Projections: []chplan.Projection{{Expr: &chplan.ColumnRef{Name: "Body"}}}},
+		Keys:  []chplan.OrderKey{{Expr: &chplan.ColumnRef{Name: "Body"}}},
+	}
+	free = mapTypeCastFree(reader)
+	if !free[key] {
+		t.Errorf("a key projection nothing above reads is cast")
+	}
+	if free[unnamed] {
+		t.Errorf("an unnamed computed projection renders uncast while its Project's columns are read")
+	}
+}
+
+// A node two Projects read owes the union of what they read, and every
+// column once a spilling node reads it directly too.
+func TestMapTypeCastFree_SharedNodeOwesTheUnion(t *testing.T) {
+	t.Parallel()
+	col := func(name string) *chplan.ColumnRef { return &chplan.ColumnRef{Name: name} }
+	merged := &chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{col("Attributes"), col("Extra")}}
+	shared := &chplan.Project{
+		Input: &chplan.Scan{Table: "otel_logs"},
+		Projections: []chplan.Projection{
+			{Expr: col("A")},
+			{Expr: col("B")},
+			{Expr: col("C")},
+			{Expr: merged, Alias: "M"},
+		},
+	}
+	readA := &chplan.Project{Input: shared, Projections: []chplan.Projection{{Expr: col("A")}}}
+	readBC := &chplan.Project{Input: shared, Projections: []chplan.Projection{{Expr: col("B")}, {Expr: col("C")}}}
+	if free := mapTypeCastFree(&chplan.UnionAll{Inputs: []chplan.Node{readA, readBC}}); !free[merged] {
+		t.Errorf("a Map neither reader reads is cast")
+	}
+	readM := &chplan.Project{Input: shared, Projections: []chplan.Projection{{Expr: col("M")}}}
+	if free := mapTypeCastFree(&chplan.UnionAll{Inputs: []chplan.Node{readA, readBC, readM}}); free[merged] {
+		t.Errorf("a Map one of three readers reads renders uncast")
+	}
+	if free := mapTypeCastFree(&chplan.UnionAll{Inputs: []chplan.Node{readA, readBC, shared}}); free[merged] {
+		t.Errorf("a Map the UnionAll reads directly renders uncast")
+	}
+}
+
+// An operand of a canonical key that fails to render fails the key.
+func TestExprCanonicalMap_OperandErrorSurfaces(t *testing.T) {
+	t.Parallel()
+	key := chplan.CanonicalAttributesExpr(&chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{
+		&chplan.FuncCall{Fn: chplan.FnMapSort, Args: []chplan.Expr{
+			&chplan.ColumnRef{Name: "Attributes"}, &chplan.ColumnRef{Name: "Extra"},
+		}},
+		&chplan.ColumnRef{Name: "Extra"},
+	}})
+	for _, strategies := range []SchemaStrategies{{}, typeCastStrategies} {
+		b := &Builder{strategies: strategies}
+		if err := b.Expr(key); err == nil {
+			t.Errorf("strategies %+v: a key over an unrenderable operand renders without error: %s", strategies, b.sb.String())
 		}
 	}
 }

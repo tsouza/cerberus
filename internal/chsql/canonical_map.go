@@ -133,16 +133,7 @@ func mapTypeCastFree(n chplan.Node) map[*chplan.FuncCall]bool {
 		case *chplan.Filter:
 			collectMapTypeCastCalls(free, v.Predicate)
 		case *chplan.Project:
-			if projectSorts(v) {
-				chplan.InspectNodeExprs(node, func(e chplan.Expr) { collectMapTypeCastCalls(bound, e) })
-				continue
-			}
-			for _, pr := range v.Projections {
-				collectMapTypeCastCalls(pickCastSet(d.owes(projectionName(pr)), bound, free), pr.Expr)
-			}
-			for _, pr := range v.Replacements {
-				collectMapTypeCastCalls(pickCastSet(d.owes(pr.Alias), bound, free), pr.Expr)
-			}
+			classifyProjectMapCalls(v, d, bound, free)
 		default:
 			chplan.InspectNodeExprs(node, func(e chplan.Expr) { collectMapTypeCastCalls(bound, e) })
 		}
@@ -151,6 +142,22 @@ func mapTypeCastFree(n chplan.Node) map[*chplan.FuncCall]bool {
 		delete(free, f)
 	}
 	return free
+}
+
+// classifyProjectMapCalls adds the Map calls of p, whose output owes d,
+// into bound or free: every call of a Project that sorts is bound, and
+// otherwise a projection's calls follow whether d owes the projection.
+func classifyProjectMapCalls(p *chplan.Project, d castDemand, bound, free map[*chplan.FuncCall]bool) {
+	if projectSorts(p) {
+		chplan.InspectNodeExprs(p, func(e chplan.Expr) { collectMapTypeCastCalls(bound, e) })
+		return
+	}
+	for _, pr := range p.Projections {
+		collectMapTypeCastCalls(pickCastSet(d.owes(projectionName(pr)), bound, free), pr.Expr)
+	}
+	for _, pr := range p.Replacements {
+		collectMapTypeCastCalls(pickCastSet(d.owes(pr.Alias), bound, free), pr.Expr)
+	}
 }
 
 // pickCastSet returns bound when the expression it classifies is owed,
@@ -228,7 +235,7 @@ func (d castDemand) union(o castDemand) castDemand {
 	if d.all || o.all {
 		return castDemand{all: true}
 	}
-	cols := make(map[string]bool, len(d.cols)+len(o.cols))
+	cols := map[string]bool{}
 	for c := range d.cols {
 		cols[c] = true
 	}
