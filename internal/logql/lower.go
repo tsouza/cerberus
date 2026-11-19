@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
@@ -433,10 +434,14 @@ func lowerMatchers(e *syntax.MatchersExpr, s schema.Logs, lc lowerCtx) chplan.No
 	return &chplan.Filter{Input: scan, Predicate: pred}
 }
 
+// pipelineLabelsAliasPrefix prefixes the column a [rowLayers] stack
+// defines for a pipeline stage's labels map.
+const pipelineLabelsAliasPrefix = "_logql_labels_"
+
 // pipelineLabelsAlias names the column a [rowLayers] stack defines for
 // the labels map stage i of a pipeline produces.
 func pipelineLabelsAlias(i int) string {
-	return "_logql_labels_" + strconv.Itoa(i)
+	return pipelineLabelsAliasPrefix + strconv.Itoa(i)
 }
 
 // lowerPipelineStages lowers e's stages onto rows, which already holds
@@ -2275,16 +2280,17 @@ func attributeLookupExpr(labelsMap chplan.Expr, key string) chplan.Expr {
 	if !format.PromLabelNeedsDottedFallback(key) {
 		return &chplan.MapAccess{Map: labelsMap, Key: &chplan.LitString{V: key}}
 	}
-	// Dotted-fallback is meaningful only when `labelsMap` points at the
-	// OTel-shaped ResourceAttributes column directly — that's where
-	// keys can be stored in dotted form. After a parser stage (`|
-	// logfmt`, `| json`) the labels map is a mapConcat(...) /
-	// mapApply(...) wrapper whose extracted keys come from the log
-	// payload, NOT from OTel semantic conventions, so dotted-fallback
-	// would just duplicate the complex sub-expression three times for
-	// no semantic gain. Restrict the fallback to bare ColumnRef
-	// carriers; everything else takes the single-MapAccess fast path.
-	if _, isBareCol := labelsMap.(*chplan.ColumnRef); !isBareCol {
+	// Dotted-fallback is meaningful only when `labelsMap` points at an
+	// OTel-shaped map column directly — that's where keys can be stored
+	// in dotted form. After a parser stage (`| logfmt`, `| json`) the
+	// labels map is a mapConcat(...) / mapApply(...) wrapper, or the
+	// column a row layer defines for it ([pipelineLabelsAlias]), whose
+	// extracted keys come from the log payload, NOT from OTel semantic
+	// conventions, so dotted-fallback would only add lookups of the
+	// payload map under spellings the parser never writes. Restrict the
+	// fallback to bare ColumnRef carriers other than a pipeline labels
+	// column; everything else takes the single-MapAccess fast path.
+	if col, isBareCol := labelsMap.(*chplan.ColumnRef); !isBareCol || strings.HasPrefix(col.Name, pipelineLabelsAliasPrefix) {
 		return &chplan.MapAccess{Map: labelsMap, Key: &chplan.LitString{V: key}}
 	}
 	candidates := format.PromLabelToOTelCandidates(key)
