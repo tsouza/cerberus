@@ -744,7 +744,7 @@ func expandQualifiedStar(query string, tableCols map[string][]string) string {
 	// The inner relation may itself be a BARE TABLE SCAN (`SELECT *
 	// FROM <table> ...`, no subquery) rather than a subquery with its
 	// own projection list to borrow from — exactly the shape
-	// emitSearchTraceLimit's drain produces (`SELECT s.* FROM (SELECT *
+	// emitSearchTraceLimit's outer drain produces (`SELECT s.* FROM (SELECT *
 	// FROM otel_traces ...) AS s ...`). The recursive ExpandStarProjection
 	// call above cannot rewrite that inner star (there is no nested
 	// subquery to name-discover against), so it comes back unchanged and
