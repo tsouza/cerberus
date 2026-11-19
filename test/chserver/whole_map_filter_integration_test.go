@@ -14,13 +14,14 @@ import (
 )
 
 // wholeMapFilterQueries filter on a stored label, which reads LogAttributes
-// whole, and then on the line, with and without a detected_level filter
-// ahead of them. The label filter is a negation, which no index on the
+// whole and on the line, in either order, with and without a detected_level
+// filter ahead of them. The label filter is a negation, which no index on the
 // attribute values serves, and the stream selector reads one key of
 // ResourceAttributes.
 var wholeMapFilterQueries = []string{
 	`sum(count_over_time({job="wide"} | tenant!="tenant-7" |= "status=500" [1h]))`,
 	`sum(count_over_time({job="wide"} | detected_level="error" | tenant!="tenant-7" |= "status=500" [1h]))`,
+	`sum(count_over_time({job="wide"} |= "status=500" | tenant!="tenant-7" [1h]))`,
 }
 
 // The seeded stream: wholeMapFilterDroppedRows lines of tenant-7 over the
@@ -79,7 +80,11 @@ func TestRangeAggregationWholeMapFilterSparesTheResource(t *testing.T) {
 			total := 0
 			for _, series := range body.Data.Result {
 				for _, v := range series.Values {
-					n, err := strconv.Atoi(v[1].(string))
+					text, ok := v[1].(string)
+					if !ok {
+						t.Fatalf("sample value %v is not a string", v[1])
+					}
+					n, err := strconv.Atoi(text)
 					if err != nil {
 						t.Fatalf("sample value %v: %v", v[1], err)
 					}

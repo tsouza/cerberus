@@ -246,7 +246,8 @@ func TestRangeAggregationMultiplyingValuesStayNested(t *testing.T) {
 // TestRangeAggregationWholeMapReadsStayAboveTheScan pins that a map the
 // stage reads as a whole keeps the scan's scope from reading it again by
 // key: a label filter on a stored label, which reads LogAttributes whole
-// through mapContains, stays above the scan, and so does the
+// through mapContains, stays above the scan when no line filter runs in the
+// scan's filter, and so does the
 // detected_level source; a range aggregation whose grouping label reads
 // LogAttributes whole leaves the source above the scan too, and one that
 // groups by detected_level alone moves it into the scan's scope.
@@ -280,7 +281,7 @@ func TestRangeAggregationWholeMapReadsStayAboveTheScan(t *testing.T) {
 // TestRangeAggregationWholeMapFilterLeadsALineFilterOnAReorderingServer
 // pins that on a server that orders a multi-step PREWHERE itself, a label
 // filter that reads LogAttributes whole runs in the SELECT that reads
-// otel_logs when a line filter the pipeline runs after it runs there:
+// otel_logs when a line filter, written before or after it, runs there:
 // ClickHouse then runs both in PREWHERE and reads the columns the stage
 // reads past them only for the granules both keep. The detected_level
 // source stays above the scan.
@@ -290,6 +291,8 @@ func TestRangeAggregationWholeMapFilterLeadsALineFilterOnAReorderingServer(t *te
 	for _, query := range []string{
 		`sum(count_over_time({job="wide"} | tenant="tenant-7" |= "orders/5" [5m]))`,
 		`sum(count_over_time({service_name="tempo", pod="pod-8"} | tenant="tenant-7" |= "status=500" [1h]))`,
+		`sum(count_over_time({job="wide"} |= "orders/5" | tenant!="tenant-7" [5m]))`,
+		`sum(count_over_time({job="wide"} |= "orders/5" | detected_level="error" | tenant="tenant-7" [5m]))`,
 		`sum(count_over_time({job="wide"} | detected_level="error" | tenant="tenant-7" |= "orders/5" [5m]))`,
 		`sum by (detected_level) (count_over_time({job="wide"} | detected_level=~"err.*" | tenant!="tenant-7" |= "orders/5" [5m]))`,
 	} {

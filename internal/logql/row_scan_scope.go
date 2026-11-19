@@ -59,7 +59,7 @@ const maxScanScopeExpansion = 3
 //     [maxScanScopeExpansion];
 //   - none of this happens to a filter conjunct whose own text reads a
 //     map column as a whole, except, without inWhereOrder, one that
-//     [wholeMapFiltersAhead] names, which folds or joins the moved filter
+//     [wholeMapFiltersAhead] returns, which folds or joins the moved filter
 //     as a conjunct that reads no layer does; and a value or a conjunct
 //     that reads a layer does not move when its own text reads a key of a
 //     map column the stage reads as a whole;
@@ -162,7 +162,7 @@ type scanGather struct {
 	// filter in pipeline order.
 	first chplan.Expr
 	// wholeAtScan are the filter conjuncts reading a map column as a whole
-	// that [wholeMapFiltersAhead] names, which run where the table is read.
+	// that [wholeMapFiltersAhead] returns, which run where the table is read.
 	wholeAtScan []chplan.Expr
 	// base is the stream scan with the conjuncts folded into its filter.
 	base chplan.Node
@@ -282,20 +282,25 @@ func orderedScanPrefix(base chplan.Node, items []chplan.Node, values layerValues
 	return -1, nil
 }
 
-// wholeMapFiltersAhead finds, in items, each filter conjunct that reads a
-// map column as a whole and no layer when a conjunct the pipeline runs
-// after it reads no layer and no map column as a whole: a label filter on
-// a stored label ahead of a line filter, for one. That later conjunct runs
-// in the scan's filter, and a server that orders a multi-step PREWHERE
-// itself then runs the conjunct found in PREWHERE with it, reading the
-// columns the stage reads past the scan's filter — the series key's whole
-// ResourceAttributes, for one — only for the granules both keep. Left above
-// the scan, the conjunct runs after those columns are read for every
-// granule the later conjunct keeps. Without such a later conjunct, the
-// server runs a filter left directly above the scan in PREWHERE itself, and
-// the conjunct stays there.
+// wholeMapFiltersAhead returns, when some filter conjunct of items reads
+// no layer and no map column as a whole, each filter conjunct that reads a
+// map column as a whole and no layer: a label filter on a stored label
+// beside a line filter, for one, on either side of it. The conjunct that
+// reads no whole map runs in the scan's filter, and on a server that orders
+// a multi-step PREWHERE itself the conjunct found then runs in PREWHERE with
+// it, so the columns the stage reads past the scan's filter — the series
+// key's whole ResourceAttributes, for one — are read only for the granules
+// both keep; left above the scan, the conjunct runs after those columns are
+// read for every granule the scan's filter keeps. The server chooses the
+// order of the two by its own measure, so it may read the whole map for
+// rows the other conjunct drops, as the scan's WHERE of every release up to
+// the per-row stage did. With no conjunct that reads no whole map, the
+// scan's filter holds the stream selector alone, the server runs a filter
+// left directly above the scan in PREWHERE itself, and the conjunct stays
+// there.
 func wholeMapFiltersAhead(items []chplan.Node, values layerValues, reads stageMaps) []chplan.Expr {
-	var pending, ahead []chplan.Expr
+	var whole []chplan.Expr
+	trigger := false
 	for _, item := range items {
 		f, ok := item.(*chplan.Filter)
 		if !ok {
@@ -305,14 +310,16 @@ func wholeMapFiltersAhead(items []chplan.Node, values layerValues, reads stageMa
 			switch {
 			case values.reads(conjunct):
 			case reads.readsWhole(conjunct):
-				pending = append(pending, conjunct)
+				whole = append(whole, conjunct)
 			default:
-				ahead = append(ahead, pending...)
-				pending = nil
+				trigger = true
 			}
 		}
 	}
-	return ahead
+	if !trigger {
+		return nil
+	}
+	return whole
 }
 
 // demote sends back to its place a moved layer that reads another value
