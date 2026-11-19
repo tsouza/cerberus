@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/native_resample_offset",
+  "fan_factor": 2,
+  "scan_rows": 2,
+  "peak_intermediate": 4,
+  "has_cross_join": false,
+  "has_array_join": true,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}
