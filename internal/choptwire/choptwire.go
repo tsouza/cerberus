@@ -430,6 +430,7 @@ func SettingsRules(set chopt.EnabledSet, metrics schema.Metrics, traces schema.T
 		TraceIDBitmapFilter:            set.Has(chopt.FeatureTraceIDBitmapFilter),
 		ResultCache:                    set.Has(chopt.FeatureResultCache),
 		LazyMaterialization:            set.Has(chopt.FeatureLazyMaterialization),
+		MergePlanFilters:               set.Has(chopt.FeatureMergePlanFilters),
 		AnalyzerMandatory:              set.AnalyzerMandatory(),
 		NativeHistogramAnalyzerFaster:  set.NativeHistogramAnalyzerFaster(),
 		// The fleet's shape defects gate one query shape each, whatever

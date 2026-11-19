@@ -221,7 +221,7 @@ func TestResolve_Auto_VersionBoundaries(t *testing.T) {
 		{
 			name:   "24.8 only aggregation_in_order",
 			server: v(24, 8),
-			want:   []string{FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache, FeatureCanonicalMapTypeCast},
+			want:   []string{FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache, FeatureCanonicalMapTypeCast, FeatureMergePlanFilters},
 		},
 		{
 			name:       "25.3 meets condition_cache's floor on a known-unsafe build, no native aggregates",
@@ -347,6 +347,49 @@ func TestResolve_Auto_JoinSpill_VersionBoundaries(t *testing.T) {
 	}
 }
 
+func TestResolve_MergePlanFilters_AutoRange(t *testing.T) {
+	// auto picks merge_plan_filters on [24.7, 24.11) only, the releases that
+	// have query_plan_merge_filters off by default, and is silent on either
+	// side. An explicit listing enables it on any server that knows the
+	// setting; below 24.7 enforcing refuses it.
+	cases := []struct {
+		name   string
+		server Version
+		want   bool
+	}{
+		{"24.6 below the setting's first release", v(24, 6), false},
+		{"24.7 the setting's first release", v(24, 7), true},
+		{"24.8 the supported floor", v(24, 8), true},
+		{"24.10.3.21 a build on the last line inside it", Version{Major: 24, Minor: 10, Patch: 3, Build: 21}, true},
+		{"24.11 the release that turns the setting on", v(24, 11), false},
+		{"26.8 above the auto range", v(26, 8), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			set, warns, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityAvailable, ResultCacheCapability: CapabilityAvailable}, tc.server)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if got := set.Has(FeatureMergePlanFilters); got != tc.want {
+				t.Errorf("server %v: auto merge_plan_filters = %v; want %v", tc.server, got, tc.want)
+			}
+			if slices.Contains(warnedFeatures(warns), FeatureMergePlanFilters) {
+				t.Errorf("auto warned about merge_plan_filters on %v: %v; want a silent skip", tc.server, warns)
+			}
+			explicit, _, err := Resolve(Config{Optimizations: FeatureMergePlanFilters, Mode: Enforcing}, tc.server)
+			if tc.server.Less(v(24, 7)) {
+				if err == nil {
+					t.Errorf("server %v: explicit merge_plan_filters under enforcing = %v; want an error, the server predates the setting", tc.server, explicit)
+				}
+				return
+			}
+			if err != nil || !explicit.Has(FeatureMergePlanFilters) {
+				t.Errorf("server %v: explicit merge_plan_filters under enforcing = %v, err %v; want it enabled", tc.server, explicit, err)
+			}
+		})
+	}
+}
+
 func TestResolve_MoveToPrewhere_AutoRange(t *testing.T) {
 	// auto picks move_to_prewhere on [24.11, 26.2) only and is silent on
 	// either side; every server runs its WHERE-only statement, so an
@@ -428,7 +471,8 @@ func TestResolve_Auto_OldServerExcludesUnsupportedStable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache, FeatureCanonicalMapTypeCast)
+	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache, FeatureCanonicalMapTypeCast,
+		FeatureMergePlanFilters)
 	if set.Has(FeatureConditionCache) {
 		t.Error("auto enabled condition_cache on 24.8; needs 25.3")
 	}
@@ -598,7 +642,7 @@ func TestResolve_AutoPlusOptIn_AutoSetStillVersionGated(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 	assertSet(t, set, FeatureExpHistogramTwoLevel, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureColumnarResultDecode, FeatureResultCache,
-		FeatureCanonicalMapTypeCast)
+		FeatureCanonicalMapTypeCast, FeatureMergePlanFilters)
 	if len(warns) != 0 {
 		t.Errorf("auto-skip in a composed selection emitted warnings %v; want none", warns)
 	}
@@ -816,6 +860,7 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureQueryLogUnion:                  {ID: FeatureQueryLogUnion, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresQueryLogUnionCapability: true},
 		FeatureMoveToPrewhere:                 {ID: FeatureMoveToPrewhere, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, AutoRange: VersionRange{From: v(24, 11), Until: v(26, 2)}},
 		FeatureCanonicalMapTypeCast:           {ID: FeatureCanonicalMapTypeCast, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, AutoRange: VersionRange{Until: v(25, 1)}},
+		FeatureMergePlanFilters:               {ID: FeatureMergePlanFilters, MinVersion: v(24, 7), Stability: Stable, AutoSelect: true, AutoRange: VersionRange{Until: v(24, 11)}, SettingOnly: true},
 	}
 	if len(reg) != len(want) {
 		t.Fatalf("registry has %d entries; want %d", len(reg), len(want))

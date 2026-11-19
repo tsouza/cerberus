@@ -86,6 +86,17 @@ const settingQueryPlanOptimizeLazyMaterialization = chopt.SettingQueryPlanOptimi
 // plan above. It gates which plan is picked, never a memory budget.
 const settingQueryPlanMaxLimitForLazyMaterialization = chopt.SettingQueryPlanMaxLimitForLazyMaterialization
 
+// settingQueryPlanMergeFilters is the ClickHouse setting that lets the
+// query plan merge a filter with the filters below it, which is how a filter
+// in a SELECT above the one that reads the table reaches that table's
+// PREWHERE. It is RESULT-EQUIVALENT (the same predicates keep the same rows)
+// and ships in ClickHouse 24.7, off by default until 24.11.
+//
+// perf-sentinel: neutral — a filter that reaches PREWHERE lets the table's
+// other columns be read only for the rows it keeps, which reads less, never
+// more.
+const settingQueryPlanMergeFilters = chopt.SettingQueryPlanMergeFilters
+
 // settingMinTableRowsToUseProjectionIndex is the ClickHouse setting (>= 25.11,
 // upstream PR #81021) that gates whether the optimizer will even CONSIDER a
 // lightweight (`_part_offset`-only) projection as a secondary index for
@@ -308,6 +319,14 @@ type SettingsRules struct {
 	// whose 0 this rule's co-stamp must not overwrite.
 	LazyMaterialization bool
 
+	// MergePlanFilters, when true, stamps query_plan_merge_filters=1 on a
+	// plan carrying a LogQL per-row stage (chplan.Project.OneScopeRows),
+	// which leaves a filter on a value it computes above the SELECT that
+	// reads the table. Driven by the merge_plan_filters registry feature,
+	// which auto picks on the releases that have the setting off by
+	// default (chopt.FeatureMergePlanFilters).
+	MergePlanFilters bool
+
 	// AnalyzerMandatory, when true, withholds the enable_analyzer=0 stamp
 	// applyNativeHistogramAnalyzerFix puts on a plan carrying the
 	// native-histogram analyzer hazard: a reachable node runs ClickHouse 26.9
@@ -407,6 +426,9 @@ func (r SettingsRules) enabledOpts() []string {
 	if r.LazyMaterialization {
 		opts = append(opts, "lazy_materialization")
 	}
+	if r.MergePlanFilters {
+		opts = append(opts, "merge_plan_filters")
+	}
 	if r.legacyAnalyzerPermitted() {
 		opts = append(opts, "native_histogram_legacy_analyzer")
 	}
@@ -492,6 +514,9 @@ func (r SettingsRules) applyFacts(ctx context.Context, f planShapeFacts) context
 			// is honored even if an operator disabled the analyzer.
 			ctx = chclient.WithQuerySetting(ctx, settingEnableAnalyzer, 1)
 		}
+	}
+	if r.MergePlanFilters && f.oneScopeRows {
+		ctx = chclient.WithQuerySetting(ctx, settingQueryPlanMergeFilters, 1)
 	}
 	if r.QueryWorkload != "" {
 		ctx = chclient.WithWorkloadSetting(ctx, r.QueryWorkload)

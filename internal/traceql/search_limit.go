@@ -5,6 +5,7 @@ package traceql
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"time"
 
@@ -407,49 +408,64 @@ func stampSearchTraceLimit(plan chplan.Node, limit int64, start, end time.Time, 
 	var drain chplan.Node
 	if drainStart, drainEnd, widened := drainWindow(start, end, s); widened {
 		source := dropTraceScopedConjuncts(chplan.CloneNode(plan), s.TraceIDColumn)
-		drain = boundSearchRowSource(source, drainStart, drainEnd, start, end, s)
+		drain = boundSearchRowSource(source, nil, drainStart, drainEnd, start, end, s)
 	}
-	rank := boundSearchRowSource(plan, start, end, start, end, s)
+	rank := boundSearchRowSource(plan, nil, start, end, start, end, s)
 	if drain == nil {
 		return &chplan.SearchTraceLimit{Input: rank, TraceLimit: limit}
 	}
 	return &chplan.SearchTraceLimit{Input: drain, Rank: rank, TraceLimit: limit}
 }
 
-// stampCoalesceTraceLimit bounds a search that ends in `| coalesce()` over a
-// plain-search row source (`{ <matchers> } | coalesce()`) to the newest
-// `limit` traces before the coalesce aggregate reads their spans.
+// stampEnvelopeAggregateTraceLimit bounds a search that ends in a stage that
+// keeps every span, `| coalesce()` or `| by(<key>)`, over a plain-search row
+// source (`{ <matchers> } | coalesce()`, `{ <matchers> } | by(kind)`), to the
+// newest `limit` traces before the stage's aggregate reads their spans.
 //
 // The coalesce aggregate (lowerCoalesce) keeps one row per span identity and
-// filters nothing, so every trace with a span in the window reaches the
-// search envelope. The envelope folds those rows to one per trace and keeps
-// the `limit` traces with the latest start (spansetRowsPerTrace,
+// the by() aggregate (groupAggregate) one row per trace and group key. Both
+// filter nothing, so every trace with a span in the window reaches the search
+// envelope. The envelope folds those rows to one per trace and keeps the
+// `limit` traces with the latest start (spansetRowsPerTrace,
 // boundNewestTraces in internal/api/tempo): the latest earliest-span
 // Timestamp, ties broken by TraceId ascending. SearchTraceLimit ranks the
 // row source's traces by the same key and keeps the same traces, so the
 // aggregate reads only their spans and each kept trace's envelope covers the
-// same rows as before. The ranked source is also the drained one (no Rank):
-// the aggregate's extent and span count read the request window alone.
+// same rows as before. The drained source reads the request window alone, so
+// the aggregate's extent and span count do too. It is also the ranked one,
+// except under a by() whose key reads a trace-scoped value: the spans then
+// carry their trace's value through a TraceLookupFilter with no predicate,
+// which keeps every span, so the traces are ranked over the spans without the
+// lookups (Rank), and only the drain computes them. The drained source's Scan
+// carries every column the aggregate reads, a by() key's among them.
 //
-// A by() keeps every span, so a coalesce() right after a by() over a
-// plain-search source reads that source and is bounded the same way. Any
-// other plan is returned unchanged: a coalesce() before another stage (whose
-// scalar filter can drop a trace the bound would have kept), and a coalesce()
-// over the spans a scalar filter passes, a spanset operation or a structural
-// source.
-func stampCoalesceTraceLimit(plan chplan.Node, limit int64, start, end time.Time, s schema.Traces) chplan.Node {
+// A by() keeps every span, so a coalesce() or another by() right after a by()
+// over a plain-search source reads that source and is bounded the same way.
+// Any other plan is returned unchanged: a stage before another stage (whose
+// scalar filter can drop a trace the bound would have kept), a stage over the
+// spans a scalar filter passes, a spanset operation or a structural source,
+// and a by() whose key numbers the spans first (a nested-set key), whose
+// source is no plain search.
+func stampEnvelopeAggregateTraceLimit(plan chplan.Node, limit int64, start, end time.Time, s schema.Traces) chplan.Node {
 	if limit <= 0 {
 		return plan
 	}
 	agg, ok := plan.(*chplan.Aggregate)
-	if !ok || !isCoalesceAggregate(agg, s) || !isPlainSearchShape(agg.Input) {
+	if !ok || (!isCoalesceAggregate(agg, s) && !isGroupAggregate(agg, s)) || !isPlainSearchShape(agg.Input) {
 		return plan
 	}
-	bounded := *agg
-	bounded.Input = &chplan.SearchTraceLimit{
-		Input:      boundSearchRowSource(agg.Input, start, end, start, end, s),
-		TraceLimit: limit,
+	var reads []chplan.Expr
+	chplan.InspectNodeExprs(agg, func(e chplan.Expr) { reads = append(reads, e) })
+	limited := &chplan.SearchTraceLimit{TraceLimit: limit}
+	if lookup, ok := agg.Input.(*chplan.TraceLookupFilter); ok && lookup.Predicate == nil {
+		// A lookup with no predicate only hands each span its trace's values
+		// (a by() key on a trace-scoped intrinsic) and keeps every span, so
+		// the traces rank the same over its Input, without the lookups.
+		limited.Rank = boundSearchRowSource(chplan.CloneNode(lookup.Input), nil, start, end, start, end, s)
 	}
+	limited.Input = boundSearchRowSource(agg.Input, reads, start, end, start, end, s)
+	bounded := *agg
+	bounded.Input = limited
 	return &bounded
 }
 
@@ -468,6 +484,28 @@ func isCoalesceAggregate(a *chplan.Aggregate, s schema.Traces) bool {
 		}
 	}
 	return true
+}
+
+// isGroupAggregate reports whether a is the aggregate groupAggregate builds
+// for a by() stage: grouped by TraceId and the group key under the TraceId
+// and GroupKey aliases, with a representative span identity as its first
+// aggregate. A spanset aggregate after a by() (groupPerSpanset) is grouped
+// the same way but computes the spanset's value first.
+func isGroupAggregate(a *chplan.Aggregate, s schema.Traces) bool {
+	if len(a.GroupBy) != 2 || len(a.GroupByAliases) != 2 || len(a.AggFuncs) == 0 {
+		return false
+	}
+	ref, ok := a.GroupBy[0].(*chplan.ColumnRef)
+	if !ok || ref.Qualifier != "" || ref.Name != s.TraceIDColumn ||
+		a.GroupByAliases[0] != aggTraceIDAlias || a.GroupByAliases[1] != groupKeyAlias {
+		return false
+	}
+	first := a.AggFuncs[0]
+	if first.Fn != chplan.FnAny || first.Alias != s.SpanIDColumn || len(first.Args) != 1 {
+		return false
+	}
+	span, ok := first.Args[0].(*chplan.ColumnRef)
+	return ok && span.Qualifier == "" && span.Name == s.SpanIDColumn
 }
 
 // dropTraceScopedConjuncts removes from a plain-search row source
@@ -530,18 +568,20 @@ func isPlainSearchShape(plan chplan.Node) bool {
 }
 
 // boundSearchRowSource folds the search windows into a plain-search row
-// source (isPlainSearchShape): its span rows read [rowsStart, rowsEnd], and
+// source (isPlainSearchShape), whose Scan also carries the columns the
+// expressions alsoRead (those of the node reading the source) reference: its
+// span rows read [rowsStart, rowsEnd], and
 // every per-trace subquery it carries — a TraceLookupFilter's lookups, a
 // membership subquery in either predicate — reads the per-trace window of the
 // request window [start, end] (perTraceWindow).
-func boundSearchRowSource(plan chplan.Node, rowsStart, rowsEnd, start, end time.Time, s schema.Traces) chplan.Node {
+func boundSearchRowSource(plan chplan.Node, alsoRead []chplan.Expr, rowsStart, rowsEnd, start, end time.Time, s schema.Traces) chplan.Node {
 	perTrace := perTraceWindow(start, end, s)
 	lookup, ok := plan.(*chplan.TraceLookupFilter)
 	if !ok {
-		input, _ := boundPlainSearchSource(plan, nil, rowsStart, rowsEnd, perTrace, s)
+		input, _ := boundPlainSearchSource(plan, alsoRead, rowsStart, rowsEnd, perTrace, s)
 		return input
 	}
-	input, _ := boundPlainSearchSource(lookup.Input, lookup.Predicate, rowsStart, rowsEnd, perTrace, s)
+	input, _ := boundPlainSearchSource(lookup.Input, append(slices.Clip(alsoRead), lookup.Predicate), rowsStart, rowsEnd, perTrace, s)
 	// The per-trace lookups and any membership subquery in the joined
 	// predicate scan the spans table too; stampSearchWindow does not enter the
 	// SearchTraceLimit built over this source, so they take the per-trace
@@ -563,10 +603,10 @@ func boundSearchRowSource(plan chplan.Node, rowsStart, rowsEnd, start, end time.
 // into its predicate, the per-trace window perTrace folded into every
 // membership subquery its predicate carries, and its Scan closed over the
 // columns the search response, the trace ranking, its own predicate and
-// alsoRead (the predicate of a TraceLookupFilter above it, nil otherwise) read
-// off a span row. ok is false for any other shape.
+// the expressions alsoRead (the predicate of a TraceLookupFilter above it, and
+// those of an aggregate reading it) reference off a span row. ok is false for any other shape.
 func boundPlainSearchSource(
-	plan chplan.Node, alsoRead chplan.Expr, start, end time.Time, perTrace chplan.Expr, s schema.Traces,
+	plan chplan.Node, alsoRead []chplan.Expr, start, end time.Time, perTrace chplan.Expr, s schema.Traces,
 ) (chplan.Node, bool) {
 	scan, pred, ok := plainSearchSource(plan)
 	if !ok {
@@ -596,7 +636,7 @@ func boundPlainSearchSource(
 	// the drain.
 	pred = andWindow(pred, start, end, s.TimestampColumn)
 	closedScan := *scan
-	closedScan.Columns = searchTraceLimitInputColumns(scan.Columns, conjoin(pred, alsoRead), s)
+	closedScan.Columns = searchTraceLimitInputColumns(scan.Columns, append([]chplan.Expr{pred}, alsoRead...), s)
 	scan = &closedScan
 
 	if pred == nil {
@@ -607,10 +647,12 @@ func boundPlainSearchSource(
 
 // searchTraceLimitInputColumns closes the plain-search Scan over the columns
 // consumed by the search response projection, the trace-ranking drain, and
-// the query predicate. A per-trace lookup column a TraceLookupFilter joins in
+// the query predicate, including the materialized attribute column a
+// FieldAccess lowered over the open span row reads in its map cell's place.
+// A per-trace lookup column a TraceLookupFilter joins in
 // (traceScopedLookups) is not a span column and stays out. SearchTraceLimit is only constructed for the bounded
 // search path, whose caller always applies the canonical sample projection.
-func searchTraceLimitInputColumns(existing []string, predicate chplan.Expr, s schema.Traces) []string {
+func searchTraceLimitInputColumns(existing []string, reads []chplan.Expr, s schema.Traces) []string {
 	columns := make(map[string]struct{}, len(existing))
 	add := func(name string) {
 		if name != "" {
@@ -627,12 +669,19 @@ func searchTraceLimitInputColumns(existing []string, predicate chplan.Expr, s sc
 	add(s.ResourceAttributesColumn)
 	add(s.TimestampColumn)
 	add(s.DurationColumn)
-	chplan.InspectExpr(predicate, func(expr chplan.Expr) bool {
-		if ref, ok := expr.(*chplan.ColumnRef); ok && !isTraceScopedLookupColumn(ref.Name) {
-			add(ref.Name)
-		}
-		return true
-	})
+	for _, e := range reads {
+		chplan.InspectExpr(e, func(expr chplan.Expr) bool {
+			switch v := expr.(type) {
+			case *chplan.ColumnRef:
+				if !isTraceScopedLookupColumn(v.Name) {
+					add(v.Name)
+				}
+			case *chplan.FieldAccess:
+				add(v.MaterializedColumn)
+			}
+			return true
+		})
+	}
 
 	result := make([]string, 0, len(columns))
 	for name := range columns {
