@@ -73,6 +73,9 @@ type planShapeFacts struct {
 	// trace-id column named at inspection time — the other half of
 	// eligibleForTraceIDBitmapFilter.
 	traceIDPredicate bool
+	// oneScopeRows: a Project marked chplan.Project.OneScopeRows, which
+	// reads a LogQL per-row stage in the SELECT over the table.
+	oneScopeRows bool
 	// hasNowExpr: a literal now()/now64() FuncCall anywhere in any Expr tree
 	// (the result-cache rule's second, independent leg).
 	hasNowExpr bool
@@ -206,6 +209,10 @@ func (f *planShapeFacts) recordNode(n chplan.Node, spine bool) {
 		f.hasJoin = true
 	}
 	switch v := n.(type) {
+	case *chplan.Project:
+		if v.OneScopeRows {
+			f.oneScopeRows = true
+		}
 	case *chplan.MetricsCompare:
 		f.hasCompare = true
 	case *chplan.StructuralJoin:

@@ -332,15 +332,18 @@ recorded before delegation is dropped with no buffering and no error.
 
 | Metric                                      | Type    | Attributes                 | Meaning                                                                                          |
 | ------------------------------------------- | ------- | -------------------------- | ------------------------------------------------------------------------------------------------ |
-| `cerberus_ch_unknown_name_rejections_total` | counter | `kind`, `name`, `action`   | Queries a ClickHouse node rejected because it does not know a setting or function cerberus sent. |
+| `cerberus_ch_unknown_name_rejections_total` | counter | `kind`, `name`, `action`   | Queries a ClickHouse node rejected over a setting or function cerberus sent.                     |
 
 `kind` is `setting` or `function` and `name` the rejected name. `action=retried`
 is a droppable setting: the query was sent again without the droppable settings
-the node cannot know. `action=surfaced` is every other rejection, a rejected
-retry included, returned to the client as HTTP 502. A non-zero rate on either
-means a node runs an older build than the optimization set in force was
-resolved against — a rolled-back or newly joined replica — and each rejection
-moves the next capability re-probe forward
+the node cannot know. `action=constrained` is a droppable setting a constraint
+of the user's settings profile refused: the query was sent again without that
+setting alone. `action=surfaced` is every other rejection, a rejected
+retry included, returned to the client as HTTP 502. A non-zero `retried` or
+`surfaced` rate on a name the node does not know means a node runs an older
+build than the optimization set in force was resolved against — a rolled-back
+or newly joined replica — and each such rejection moves the next capability
+re-probe forward. A profile's refusal moves no re-probe forward
 ([clickhouse-optimizations](clickhouse-optimizations.md#a-node-older-than-the-set-in-force)).
 The `retried` series of every droppable setting is exported at `0` from boot.
 

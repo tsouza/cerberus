@@ -5,14 +5,12 @@ import "testing"
 // TestDroppableSettings_TableIsConsistent pins what the retry relies on: each
 // entry belongs to a registered feature whose floor is at or above the
 // release that first knows the setting, so the feature never resolves in
-// against a server that would reject it; the setting is unknown to the
-// supported floor, or nothing could reject it; and an entry that shares its
+// against a server that would reject it; and an entry that shares its
 // name with a gate setting is restricted to a value other than the gate's
 // stamp (0), which is stamped against a wrong-result defect and must never be
 // dropped.
 func TestDroppableSettings_TableIsConsistent(t *testing.T) {
 	t.Parallel()
-	supportedFloor := Version{Major: 24, Minor: 8}
 	features := map[string]Feature{}
 	for _, f := range Registry() {
 		features[f.ID] = f
@@ -30,9 +28,6 @@ func TestDroppableSettings_TableIsConsistent(t *testing.T) {
 		}
 		if f.MinVersion.Less(s.Since) {
 			t.Errorf("%s: feature %s resolves in from %s, below %s, the first release that knows the setting", s.Name, s.Feature, f.MinVersion, s.Since)
-		}
-		if !supportedFloor.Less(s.Since) {
-			t.Errorf("%s: known since %s, at or below the supported floor %s; no node can reject it", s.Name, s.Since, supportedFloor)
 		}
 		if _, gate := GateSettingByName(s.Name); gate && (s.OnlyAt == nil || s.DroppableAt(gateStamp)) {
 			t.Errorf("%s: a gate setting is droppable at its gate stamp %v", s.Name, gateStamp)

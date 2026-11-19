@@ -221,7 +221,7 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			chopt.FeatureLagInFrameAdjacency:
 			// A RangeLowerers dispatch strategy (or a modifier on one) —
 			// composed by choptwire.RangeLowerers from the resolved set.
-		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter, chopt.FeatureTSThrowDuplicateSeriesIf, chopt.FeatureExpHistogramTwoLevel, chopt.FeatureHistogramAdaptiveAggregatorOff, chopt.FeatureMoveToPrewhere, chopt.FeatureCanonicalMapTypeCast:
+		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter, chopt.FeatureTSThrowDuplicateSeriesIf, chopt.FeatureExpHistogramTwoLevel, chopt.FeatureHistogramAdaptiveAggregatorOff, chopt.FeatureMoveToPrewhere, chopt.FeatureCanonicalMapTypeCast, chopt.FeatureMergePlanFilters:
 			// CH SETTINGS stamped at emit time, not a RangeLowerers dispatch
 			// strategy — no effect on which lowering table a query takes.
 			// FeatureJoinSpill mirrors the other two exactly: it stamps
@@ -278,7 +278,10 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// classifies is built, so it reaches neither promql.RangeLowerers
 			// nor the plan. FeatureCanonicalMapTypeCast likewise decides only
 			// how the emitter renders the canonical series key
-			// (SchemaStrategies.CanonicalMapTypeCast).
+			// (SchemaStrategies.CanonicalMapTypeCast). FeatureMergePlanFilters
+			// stamps query_plan_merge_filters=1 on a plan carrying a LogQL
+			// per-row stage, a plan-shape fact of a plan already built; PromQL
+			// never builds one.
 		default:
 			t.Fatalf("chopt feature %q is AutoSelect but nativeLowerers does not know whether it is a "+
 				"RangeLowerers strategy or an emit-time setting — update this helper and, if it is a "+
