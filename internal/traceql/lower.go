@@ -75,10 +75,10 @@ func Lower(ctx context.Context, expr *traceql.RootExpr, s schema.Traces) (chplan
 		// (the summaries-drain OOM). No-op unless the request set a limit AND the
 		// plan is a plain search — structural / set-op plans are left unchanged.
 		plan = stampSearchTraceLimit(plan, searchTraceLimit(ctx), start, end, s)
-		// Bound a plain search ending in coalesce() the same way, below the
-		// coalesce aggregate, so it groups only the spans of the traces the
-		// response keeps (see search_limit.go).
-		plan = stampCoalesceTraceLimit(plan, searchTraceLimit(ctx), start, end, s)
+		// Bound a plain search ending in coalesce() or a bare by() the same
+		// way, below the stage's aggregate, so it groups only the spans of the
+		// traces the response keeps (see search_limit.go).
+		plan = stampEnvelopeAggregateTraceLimit(plan, searchTraceLimit(ctx), start, end, s)
 		// Fold the request window into the leaf scans of the COMPOUND search
 		// shapes (&&/||, structural, select(nestedSet*), AGGREGATE) that
 		// stampSearchTraceLimit leaves untouched, so they scan only [start, end]
