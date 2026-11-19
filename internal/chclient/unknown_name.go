@@ -56,6 +56,12 @@ var (
 	// analysis is no longer supported. ..." (allow_experimental_analyzer, its
 	// alias, is named the same way).
 	analyzerMandatoryPattern = regexp.MustCompile(`Setting '([^']+)' cannot be disabled: the analyzer is mandatory`)
+	// settingConstraintPattern reads the setting a constraint of the user's
+	// settings profile refuses, off its SETTING_CONSTRAINT_VIOLATION: "Setting
+	// x should not be changed" for a CONST or READONLY constraint, "Setting x
+	// shouldn't be less than y" for a MIN, and "Setting x shouldn't be greater
+	// than y" for a MAX, worded the same over both protocols.
+	settingConstraintPattern = regexp.MustCompile(`Setting ([A-Za-z0-9_]+) (?:should not be changed|shouldn't be (?:less|greater) than)`)
 	// serverVersionPattern reads the build ClickHouse appends to an exception
 	// it answers over HTTP, "(version 26.6.8.7 (official build))". The native
 	// protocol carries no build in the exception.
@@ -97,6 +103,21 @@ func parseUnknownName(err error) (unknownName, bool) {
 		}
 	}
 	return unknownName{}, false
+}
+
+// parseSettingConstraint reports the setting a ClickHouse exception refused
+// because a constraint of the user's settings profile does not allow the
+// value the query set. ok is false for every other error.
+func parseSettingConstraint(err error) (string, bool) {
+	var ex *clickhouse.Exception
+	if err == nil || !errors.As(err, &ex) || ex.Code != chCodeSettingConstraintViolation {
+		return "", false
+	}
+	m := settingConstraintPattern.FindStringSubmatch(ex.Message)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
 }
 
 // parseAnalyzerMandatory reports the setting a ClickHouse exception refused
@@ -175,8 +196,9 @@ func wrapUnknownName(err error) error {
 }
 
 // UnknownNameRejection describes one query a ClickHouse node rejected because
-// it does not know a setting or function cerberus sent, or — AnalyzerMandatory
-// — because it refuses the enable_analyzer=0 cerberus sent.
+// it does not know a setting or function cerberus sent, because it refuses the
+// enable_analyzer=0 cerberus sent (AnalyzerMandatory), or because a constraint
+// of the user's settings profile refuses a droppable setting (Constrained).
 type UnknownNameRejection struct {
 	// Kind is "setting" or "function".
 	Kind string
@@ -184,21 +206,29 @@ type UnknownNameRejection struct {
 	// NodeVersion is the build the rejecting node reported, or "".
 	NodeVersion string
 	// Retried reports that the name was a chopt.DroppableSettings entry the
-	// query carried, so the query was sent again without the droppable
-	// settings released at or after it.
+	// query carried, so the query was sent again: without the droppable
+	// settings released at or after it, or, when Constrained, without that
+	// setting alone.
 	Retried bool
 	// AnalyzerMandatory reports that the node knows the setting Name but
 	// refused to disable the analyzer with it: the node runs a build whose
 	// analyzer is mandatory (chopt.AnalyzerMandatory), which the set in force
 	// does not account for. The query is not retried.
 	AnalyzerMandatory bool
+	// Constrained reports that the node knows the setting Name, a
+	// chopt.DroppableSettings entry the query carried, but a constraint of
+	// the user's settings profile refuses the value sent. The node's build is
+	// not at fault, so no capability re-probe is requested, whether or not the
+	// query was retried.
+	Constrained bool
 }
 
 // Actions an UnknownNameRejection ends in, the action attribute of
 // cerberus_ch_unknown_name_rejections_total.
 const (
-	rejectionActionRetried  = "retried"
-	rejectionActionSurfaced = "surfaced"
+	rejectionActionRetried     = "retried"
+	rejectionActionConstrained = "constrained"
+	rejectionActionSurfaced    = "surfaced"
 )
 
 // Attribute keys of cerberus_ch_unknown_name_rejections_total.
@@ -229,10 +259,11 @@ func newRejectionReporter(mp metric.MeterProvider) *rejectionReporter {
 	counter, err := mp.Meter(breakerMeterName).Int64Counter(
 		"cerberus_ch_unknown_name_rejections_total",
 		metric.WithDescription(
-			"Queries a ClickHouse node rejected because it does not know a setting or function cerberus sent: "+
-				"the node runs an older build than the optimization set in force was resolved against. "+
-				"action=retried: a droppable setting, the query was sent again without it and the droppable settings released after it. "+
-				"action=surfaced: the rejection was returned to the client. Each one requests an early capability re-probe.",
+			"Queries a ClickHouse node rejected over a setting or function cerberus sent. "+
+				"action=retried: the node does not know a droppable setting, because it runs an older build than the optimization set in force "+
+				"was resolved against; the query was sent again without it and the droppable settings released after it. "+
+				"action=constrained: a constraint of the user's settings profile refused a droppable setting; the query was sent again without it alone. "+
+				"action=surfaced: the rejection was returned to the client. Every rejection but a profile's requests an early capability re-probe.",
 		),
 		metric.WithUnit("{query}"),
 	)
@@ -256,20 +287,27 @@ func newGlobalRejectionReporter() *rejectionReporter {
 	return newRejectionReporter(otel.GetMeterProvider())
 }
 
-// report counts rej and hands it to the hook.
+// report counts rej and hands it to the hook, unless a settings profile's
+// constraint refused it (UnknownNameRejection.Constrained): a re-probe of the
+// fleet's builds cannot change that answer.
 func (r *rejectionReporter) report(rej UnknownNameRejection) {
 	if r == nil {
 		return
 	}
 	r.count(rej)
-	r.notify(rej)
+	if !rej.Constrained {
+		r.notify(rej)
+	}
 }
 
 // count adds rej to cerberus_ch_unknown_name_rejections_total.
 func (r *rejectionReporter) count(rej UnknownNameRejection) {
 	if r.rejections != nil {
 		action := rejectionActionSurfaced
-		if rej.Retried {
+		switch {
+		case rej.Retried && rej.Constrained:
+			action = rejectionActionConstrained
+		case rej.Retried:
 			action = rejectionActionRetried
 		}
 		r.rejections.Add(context.Background(), 1, metric.WithAttributes(
@@ -309,10 +347,13 @@ func (c *Client) SetUnknownNameHook(fn func(UnknownNameRejection)) {
 // it does not know a chopt.DroppableSettings entry the query carries, runs it
 // again without the droppable settings that node cannot know: those first
 // released at or after the rejected one. The droppable settings it does know
-// keep riding. Each further attempt carries strictly fewer droppable
-// settings, so the attempts end once the node accepts what is left, rejects
-// something else, or rejects a setting the attempt no longer carries. Every
-// rejection of an unknown name is reported (rejectionReporter.report). A
+// keep riding. When a constraint of the user's settings profile refuses a
+// droppable setting the query carries, it runs again without that setting
+// alone. Each further attempt carries strictly fewer droppable settings, so
+// the attempts end once the node accepts what is left, rejects something
+// else, or rejects a setting the attempt no longer carries. Every rejection
+// of an unknown name is reported (rejectionReporter.report), and so is every
+// refusal of a droppable setting by a profile's constraint. A
 // rejection of enable_analyzer=0 by a node whose analyzer is mandatory is
 // handed to the hook alone (rejectionReporter.notify): it is not a name the
 // node does not know, so it is neither retried nor counted.
@@ -437,8 +478,48 @@ func analyzerMandatoryRejection(ctx context.Context, err error) (UnknownNameReje
 	return UnknownNameRejection{Kind: u.kind, Name: u.name, NodeVersion: u.nodeVersion, AnalyzerMandatory: true}, true
 }
 
+// constrainedRetryContext classifies a rejection of the setting name by a
+// constraint of the user's settings profile. A droppable setting the query
+// carried at a droppable value returns the same rows without it, so the
+// query is sent again without that setting alone; the profile may allow the
+// others. Any other refused setting is left to the caller untouched: ok is
+// false.
+func (c *Client) constrainedRetryContext(ctx context.Context, name string) (context.Context, UnknownNameRejection, bool) {
+	if _, ok := c.carriedDroppable(ctx, name); !ok {
+		return nil, UnknownNameRejection{}, false
+	}
+	retryCtx := c.retryWithout(ctx, func(d chopt.DroppableSetting) bool { return d.Name == name })
+	return retryCtx, UnknownNameRejection{Kind: unknownNameSetting, Name: name, Retried: true, Constrained: true}, true
+}
+
+// carriedDroppable returns the chopt.DroppableSettings entry called name when
+// ctx's per-query settings carry it at a value it may be dropped at.
+func (c *Client) carriedDroppable(ctx context.Context, name string) (chopt.DroppableSetting, bool) {
+	d, droppable := chopt.LookupDroppableSetting(name)
+	if _, carried := querySettingsFromContext(ctx)[name]; !droppable || !carried || !d.DroppableAt(c.querySettings(ctx)[name]) {
+		return chopt.DroppableSetting{}, false
+	}
+	return d, true
+}
+
+// retryWithout returns ctx without each droppable setting its per-query
+// settings carry at a droppable value that drop selects, its ClickHouse
+// settings re-derived to match.
+func (c *Client) retryWithout(ctx context.Context, drop func(chopt.DroppableSetting) bool) context.Context {
+	sent := c.querySettings(ctx)
+	kept := maps.Clone(querySettingsFromContext(ctx))
+	for _, d := range chopt.DroppableSettings() {
+		if _, carried := kept[d.Name]; carried && d.DroppableAt(sent[d.Name]) && drop(d) {
+			delete(kept, d.Name)
+		}
+	}
+	retryCtx := context.WithValue(ctx, perQuerySettingsKey, kept)
+	return withDriverSettings(retryCtx, c.querySettings(retryCtx))
+}
+
 // droppableRetryContext classifies err. ok is false unless err rejects an
-// unknown setting or function on a statement that is not a capability
+// unknown setting or function, or a profile's constraint refuses a droppable
+// setting (constrainedRetryContext), on a statement that is not a capability
 // canary's. When it does, rej describes the rejection and, if rej.Retried,
 // retryCtx is ctx without the droppable settings the rejecting node cannot
 // know, its ClickHouse settings re-derived to match.
@@ -449,6 +530,9 @@ func analyzerMandatoryRejection(ctx context.Context, err error) (UnknownNameReje
 // either: each one the query carries at a droppable value is dropped. One
 // released earlier may be known to the node and stays.
 func (c *Client) droppableRetryContext(ctx context.Context, err error) (retryCtx context.Context, rej UnknownNameRejection, ok bool) {
+	if name, refused := parseSettingConstraint(translateCHGoErr(err)); refused && !isCapabilityCanary(ctx) {
+		return c.constrainedRetryContext(ctx, name)
+	}
 	u, ok := parseUnknownName(translateCHGoErr(err))
 	if !ok || isCapabilityCanary(ctx) {
 		return nil, UnknownNameRejection{}, false
@@ -457,20 +541,11 @@ func (c *Client) droppableRetryContext(ctx context.Context, err error) (retryCtx
 	if u.kind != unknownNameSetting {
 		return nil, rej, true
 	}
-	rejected, droppable := chopt.LookupDroppableSetting(u.name)
-	perQuery := querySettingsFromContext(ctx)
-	sent := c.querySettings(ctx)
-	if _, carried := perQuery[u.name]; !droppable || !carried || !rejected.DroppableAt(sent[u.name]) {
+	rejected, ok := c.carriedDroppable(ctx, u.name)
+	if !ok {
 		return nil, rej, true
 	}
-	kept := maps.Clone(perQuery)
-	for _, d := range chopt.DroppableSettings() {
-		if _, carried := kept[d.Name]; carried && !d.Since.Less(rejected.Since) && d.DroppableAt(sent[d.Name]) {
-			delete(kept, d.Name)
-		}
-	}
-	retryCtx = context.WithValue(ctx, perQuerySettingsKey, kept)
-	retryCtx = withDriverSettings(retryCtx, c.querySettings(retryCtx))
+	retryCtx = c.retryWithout(ctx, func(d chopt.DroppableSetting) bool { return !d.Since.Less(rejected.Since) })
 	rej.Retried = true
 	return retryCtx, rej, true
 }

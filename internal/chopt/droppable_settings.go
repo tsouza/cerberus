@@ -21,6 +21,7 @@ const (
 	SettingMinTableRowsToUseProjectionIndex        = "min_table_rows_to_use_projection_index"
 	SettingQueryPlanOptimizeLazyMaterialization    = "query_plan_optimize_lazy_materialization"
 	SettingQueryPlanMaxLimitForLazyMaterialization = "query_plan_max_limit_for_lazy_materialization"
+	SettingQueryPlanMergeFilters                   = "query_plan_merge_filters"
 )
 
 // DroppableSetting is a setting a version-gated feature stamps that a query
@@ -35,6 +36,12 @@ const (
 // the feature's MinVersion), so a node rejects the setting only when the
 // fleet holds a node older than the build the set in force was resolved
 // against: a rolling rollback, or an older node joining.
+//
+// A server that knows the setting may still refuse the value sent, by a
+// constraint of the user's settings profile (SETTING_CONSTRAINT_VIOLATION,
+// code 452). A query it refused is sent again without that setting alone, so
+// an entry whose Since is at or below the supported floor still names a
+// setting a node can refuse.
 //
 // A setting that is also a GateSettings entry is droppable only at OnlyAt,
 // the value that merely enables what the feature turns on; at any other value
@@ -69,6 +76,8 @@ var droppableSettings = []DroppableSetting{
 	// A read-order choice, and the LIMIT bound it engages under.
 	{Name: SettingQueryPlanOptimizeLazyMaterialization, Feature: FeatureLazyMaterialization, Since: Version{Major: 25, Minor: 4}},
 	{Name: SettingQueryPlanMaxLimitForLazyMaterialization, Feature: FeatureLazyMaterialization, Since: Version{Major: 25, Minor: 4}},
+	// A plan optimisation: filters merged, so one reaches PREWHERE.
+	{Name: SettingQueryPlanMergeFilters, Feature: FeatureMergePlanFilters, Since: Version{Major: 24, Minor: 7}},
 	// The query condition cache, switched on. Switched off (0) it is the
 	// gate against the cache's wrong-result builds, and stays.
 	{Name: SettingUseQueryConditionCache, Feature: FeatureConditionCache, Since: Version{Major: 25, Minor: 3}, OnlyAt: conditionCacheOn},

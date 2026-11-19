@@ -175,6 +175,7 @@ table.
 | `query_log_union`                   | none       | experimental | no                   | (none)                                               | read query actuals from system.all_query_log (rotated query_log tables and cluster replicas) instead of the local system.query_log (opt-in, probe-gated on the server's create_union_system_log_tables section and SELECT grant, falls back to the local log when blocked)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `move_to_prewhere`                  | none       | stable       | yes (>=24.11, <26.2) | (none)                                               | emit no explicit PREWHERE on a filtered scan and leave the split to the server's optimize_move_to_prewhere (result-equivalent; auto picks it on server >= 24.11 and < 26.2, where the server's split measured lower peak memory)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `canonical_map_type_cast`           | none       | stable       | yes (<25.1)          | (none)                                               | cast the mapSort-ordered series key, and every mapConcat or mapApply result an operator that can spill reads, back to its parsed type so a GROUP BY or sort over it that spills reads its blocks back (result-equivalent; auto picks it on server < 25.1, where those functions return a type the spilled read-back rejects)                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `merge_plan_filters`                | 24.7       | stable       | yes (<24.11)         | (none)                                               | stamp query_plan_merge_filters=1 on a plan with a LogQL per-row stage, so a filter on a value the stage computes reaches the table's PREWHERE (result-equivalent; auto picks it on server >= 24.7 and < 24.11, the releases that have the setting off by default)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 <!-- END GENERATED: chopt-feature-table -->
 
 The hand-authored `effect` column below stays OUTSIDE the generated block: it
@@ -259,6 +260,17 @@ Notes:
   cast is the identity. An explicit list for a server `< 25.1` must include it,
   or a query whose `GROUP BY` over a label set crosses the spill threshold
   fails.
+- **`merge_plan_filters`** stamps `query_plan_merge_filters=1` on a query whose
+  plan carries a LogQL per-row stage, which leaves a filter on a value it
+  computes (an unwrap, a parsed label) in a `SELECT` above the one that reads
+  the table. With the setting the server merges that filter into the ones
+  below it and runs it in the table's `PREWHERE`, so the columns only later
+  stages read (the detected level's severity columns) are read only for the
+  rows it keeps. `auto` picks it on servers `>= 24.7` and `< 24.11`, the
+  releases that ship the setting off; from 24.11 it is the server's default.
+  A settings profile that
+  refuses the setting gets the query sent again without it, which answers the
+  same and reads what it reads without the feature.
 - **`condition_cache`** activates only on server `>= 25.3`, outside the builds
   listed under [Known-defective server builds](#known-defective-server-builds),
   and only on a predicate-stable read path, gated conservatively (it needs the
@@ -1196,6 +1208,7 @@ strategy or a memory bound, never the rows:
 | `query_plan_optimize_lazy_materialization`      | `lazy_materialization`              | `25.4`                      | any value    |
 | `query_plan_max_limit_for_lazy_materialization` | `lazy_materialization`              | `25.4`                      | any value    |
 | `use_query_condition_cache`                     | `condition_cache`                   | `25.3`                      | `1`          |
+| `query_plan_merge_filters`                      | `merge_plan_filters`                | `24.7`                      | any value    |
 
 A node rejecting a droppable setting is older than that setting's first
 release, so the retry drops every droppable setting the query carries whose
@@ -1208,6 +1221,15 @@ threshold or the adaptive-aggregator switch the query can fail with
 `MEMORY_LIMIT_EXCEEDED` where the setting would have spilled or bounded it; it
 never returns different rows. A query the columnar matrix decode retried, and
 then hands to the row path, is sent there with the settings the node took.
+
+A node that knows a droppable setting can still refuse the value sent, through
+a constraint of the user's settings profile: `SETTING_CONSTRAINT_VIOLATION`
+(code 452) with `Setting <name> should not be changed` (a `CONST` or
+`READONLY` constraint) or `Setting <name> shouldn't be less than` / `greater
+than` (a `MIN` or `MAX`). The query is sent again without that setting alone
+and answered with the same rows. The node's build is not at fault, so the
+refusal requests no re-probe; it counts as `constrained`. A profile's refusal of
+any other setting is returned as it is.
 
 Each rejection counts on `cerberus_ch_unknown_name_rejections_total`, a
 rejected retry included

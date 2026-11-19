@@ -2373,6 +2373,20 @@ const (
 	// cast is the identity, so auto picks it only below 25.1
 	// (Feature.AutoRange). Result-equivalent on every server.
 	FeatureCanonicalMapTypeCast = "canonical_map_type_cast"
+
+	// FeatureMergePlanFilters stamps query_plan_merge_filters=1 on a plan
+	// that carries a LogQL per-row stage (chplan.Project.OneScopeRows). That
+	// stage leaves a filter on a value it computes in a SELECT above the
+	// one that reads the table, and the server pushes such a filter down
+	// into the table's PREWHERE only when it may merge it with the filters
+	// below it, so that the table's other columns are read only for the rows
+	// it keeps. ClickHouse 24.7 adds the setting off, and 24.11 turns it on
+	// by default, so auto picks the feature from 24.7 up to 24.11
+	// (Feature.AutoRange), where it brings the server to the plan every
+	// later release runs. Result-equivalent. Raising the supported floor to
+	// 26.3 deletes this feature
+	// (https://github.com/tsouza/cerberus/issues/4451).
+	FeatureMergePlanFilters = "merge_plan_filters"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -3040,6 +3054,17 @@ var registry = []Feature{
 			"(result-equivalent; auto picks it on server " +
 			"< 25.1, where those functions return a type the spilled read-back rejects)",
 	},
+	{
+		ID:          FeatureMergePlanFilters,
+		MinVersion:  Version{Major: 24, Minor: 7},
+		Stability:   Stable,
+		AutoSelect:  true,
+		AutoRange:   VersionRange{Until: Version{Major: 24, Minor: 11}},
+		SettingOnly: true,
+		Doc: "stamp query_plan_merge_filters=1 on a plan with a LogQL per-row stage, so a filter on a value the stage " +
+			"computes reaches the table's PREWHERE (result-equivalent; auto picks it on server >= 24.7 and < 24.11, " +
+			"the releases that have the setting off by default)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -3055,7 +3080,8 @@ var registry = []Feature{
 // lazy_materialization, explain_estimate, cardinality_probe,
 // full_text_index, text_index_line_filter, trace_id_external_table,
 // ts_tag_groups, ts_throw_duplicate_series_if, exp_histogram_two_level,
-// query_log_union, move_to_prewhere, canonical_map_type_cast).
+// query_log_union, move_to_prewhere, canonical_map_type_cast,
+// merge_plan_filters).
 // The copy
 // keeps the canonical entries immutable from the caller's side. Exposed so
 // tests can enumerate the gates and the docs generator can render the
