@@ -180,8 +180,13 @@ func EmitCounted(ctx context.Context, n chplan.Node) (sql string, args []any, ph
 	// Pass 1 renders inline and records which sub-statements render more
 	// than once; only when one does, pass 2 re-renders hoisting each of them
 	// into a single CTE (emit_shared_subplan.go).
+	var mapCastFree map[*chplan.FuncCall]bool
+	if schemaStrategiesFromCtx(ctx).CanonicalMapTypeCast {
+		mapCastFree = mapTypeCastFree(n)
+	}
 	e := newEmitter(ctx)
 	e.rootPlan = n
+	e.mapCastFree = mapCastFree
 	e.shared = newSharedSubplans(nil)
 	if err := e.emitBound(scope, n); err != nil {
 		span.RecordError(err)
@@ -190,6 +195,7 @@ func EmitCounted(ctx context.Context, n chplan.Node) (sql string, args []any, ph
 	if repeated := e.shared.repeated; len(repeated) > 0 {
 		e = newEmitter(ctx)
 		e.rootPlan = n
+		e.mapCastFree = mapCastFree
 		e.shared = newSharedSubplans(repeated)
 		if err := e.emitBound(scope, n); err != nil {
 			span.RecordError(err)
@@ -412,6 +418,12 @@ type emitter struct {
 	// that never carried one) renders for the default schema.
 	strategies SchemaStrategies
 
+	// mapCastFree holds the Map calls of the plan this emission renders
+	// that render without the parsed-Map-type cast under
+	// SchemaStrategies.CanonicalMapTypeCast: their value reaches no
+	// operator that can spill ([mapTypeCastFree]). nil casts every one.
+	mapCastFree map[*chplan.FuncCall]bool
+
 	// cteSeq is a monotonic counter handed out to every emitter that
 	// registers a named CTE, so each one gets a unique name: the
 	// recursive structural-join closure (`_struct_closure_<n>`) and the
@@ -520,6 +532,7 @@ func (e *emitter) sub() *emitter {
 
 		emittedSQLMaxBytes: e.emittedSQLMaxBytes,
 		strategies:         e.strategies,
+		mapCastFree:        e.mapCastFree,
 		cteSeq:             e.cteSeq,
 		shared:             e.shared,
 	}

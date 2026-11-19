@@ -1,6 +1,8 @@
 package chsql
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -197,5 +199,201 @@ func TestExprCanonicalMap_OperandCastOnce(t *testing.T) {
 	inner := "mapConcat(`Attributes`, `Extra`)"
 	if want := "CAST(mapSort(" + inner + "), toTypeName(" + inner + "))"; sql != want {
 		t.Errorf("rendered %q, want %q", sql, want)
+	}
+}
+
+// logShapedPlan builds the plan of a parser-stage log query: a scan, a
+// row layer that defines the labels map L with mapConcat, a Filter on it,
+// the narrow Project the sort reads, ORDER BY … LIMIT, and above the limit
+// a second definition of L and the Attributes output that merges it again.
+// It returns the plan and the three mapConcat calls (below the limit, above
+// it, and the output).
+func logShapedPlan() (chplan.Node, []*chplan.FuncCall) {
+	merge := func(a, b chplan.Expr) *chplan.FuncCall {
+		return &chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{a, b}}
+	}
+	col := func(name string) *chplan.ColumnRef { return &chplan.ColumnRef{Name: name} }
+	below := merge(col("ResourceAttributes"), col("Extracted"))
+	above := merge(col("ResourceAttributes"), col("Extracted"))
+	output := merge(col("_logql_labels_1"), col("Level"))
+	layer := &chplan.Project{
+		Input: &chplan.Scan{Table: "otel_logs"},
+		Projections: []chplan.Projection{
+			{Expr: col("Body")},
+			{Expr: col("ResourceAttributes")},
+			{Expr: col("Extracted")},
+			{Expr: col("Level")},
+			{Expr: col("Timestamp")},
+			{Expr: below, Alias: "_logql_labels_1"},
+		},
+	}
+	filtered := &chplan.Filter{Input: layer, Predicate: &chplan.Binary{
+		Op:    chplan.OpEq,
+		Left:  &chplan.MapAccess{Map: col("_logql_labels_1"), Key: &chplan.LitString{V: "query_type"}},
+		Right: &chplan.LitString{V: "SELECT"},
+	}}
+	narrow := &chplan.Project{Input: filtered, Projections: []chplan.Projection{
+		{Expr: col("Body")},
+		{Expr: col("ResourceAttributes")},
+		{Expr: col("Extracted")},
+		{Expr: col("Level")},
+		{Expr: col("Timestamp")},
+	}}
+	limited := &chplan.Limit{Count: 1000, Input: &chplan.OrderBy{
+		Input: narrow, Keys: []chplan.OrderKey{{Expr: col("Timestamp"), Desc: true}},
+	}}
+	again := &chplan.Project{Input: limited, Projections: []chplan.Projection{
+		{Expr: col("Body")},
+		{Expr: col("Level")},
+		{Expr: col("Timestamp")},
+		{Expr: above, Alias: "_logql_labels_1"},
+	}}
+	top := &chplan.Project{Input: again, Projections: []chplan.Projection{
+		{Expr: col("Body"), Alias: "Line"},
+		{Expr: output, Alias: "Attributes"},
+		{Expr: col("Timestamp"), Alias: "TimeUnix"},
+	}}
+	return top, []*chplan.FuncCall{below, above, output}
+}
+
+// A Map a Filter consumes, or one only Projects and a Limit carry to the
+// result, reaches no operator that spills: the sort reads plain columns.
+func TestMapTypeCastFree_LogQueryMapsAreFree(t *testing.T) {
+	t.Parallel()
+	plan, calls := logShapedPlan()
+	free := mapTypeCastFree(plan)
+	for i, f := range calls {
+		if !free[f] {
+			t.Errorf("mapConcat %d is cast; nothing that spills reads it", i)
+		}
+	}
+}
+
+// A Map an Aggregate reads, or one an OrderBy carries, is owed: its
+// spilled blocks are read back. A node other than a Filter, a Limit or a
+// Project owes every column of its input.
+func TestMapTypeCastFree_SpillingConsumersOweTheMap(t *testing.T) {
+	t.Parallel()
+	attrs := &chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{
+		&chplan.ColumnRef{Name: "Attributes"}, &chplan.ColumnRef{Name: "Extra"},
+	}}
+	unread := &chplan.FuncCall{Fn: chplan.FnMapApply, Args: []chplan.Expr{
+		&chplan.Lambda{Params: []string{"k", "v"}, Body: &chplan.FuncCall{Fn: chplan.FnTuple, Args: []chplan.Expr{
+			&chplan.ColumnRef{Name: "k"}, &chplan.ColumnRef{Name: "v"},
+		}}},
+		&chplan.ColumnRef{Name: "Attributes"},
+	}}
+	merged := &chplan.Project{
+		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+		Projections: []chplan.Projection{
+			{Expr: attrs, Alias: "Attributes"},
+			{Expr: unread, Alias: "Unread"},
+			{Expr: &chplan.ColumnRef{Name: "Value"}},
+		},
+	}
+	grouped := &chplan.Aggregate{
+		Input:          merged,
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+		GroupByAliases: []string{"Attributes"},
+		AggFuncs:       []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "Value"}},
+	}
+	if free := mapTypeCastFree(grouped); free[attrs] || free[unread] {
+		t.Errorf("a column an Aggregate's input carries renders uncast: %v", free)
+	}
+
+	sorted := &chplan.OrderBy{Input: merged, Keys: []chplan.OrderKey{{Expr: &chplan.ColumnRef{Name: "Value"}}}}
+	if free := mapTypeCastFree(sorted); free[attrs] || free[unread] {
+		t.Errorf("a column a sort carries renders uncast: %v", free)
+	}
+}
+
+// One Map call shared by a free projection and a GROUP BY key is cast:
+// a call is free only when every place it renders is.
+func TestMapTypeCastFree_SharedCallFollowsItsOwedUse(t *testing.T) {
+	t.Parallel()
+	shared := &chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{
+		&chplan.ColumnRef{Name: "Attributes"}, &chplan.ColumnRef{Name: "Extra"},
+	}}
+	plan := &chplan.Project{
+		Input: &chplan.Aggregate{
+			Input:          &chplan.Scan{Table: "otel_metrics_gauge"},
+			GroupBy:        []chplan.Expr{shared},
+			GroupByAliases: []string{"Attributes"},
+		},
+		Projections: []chplan.Projection{{Expr: shared, Alias: "Again"}},
+	}
+	if mapTypeCastFree(plan)[shared] {
+		t.Errorf("a mapConcat a GROUP BY key also renders is free")
+	}
+}
+
+// Under the strategy, an emission renders the log query's Map calls bare,
+// and a grouped Map cast.
+func TestEmit_MapTypeCastOnlyWhereItCanSpill(t *testing.T) {
+	t.Parallel()
+	ctx := WithSchemaStrategies(context.Background(), typeCastStrategies)
+	plan, _ := logShapedPlan()
+	sql, _, err := Emit(ctx, plan)
+	if err != nil {
+		t.Fatalf("emit log plan: %v", err)
+	}
+	if strings.Contains(sql, "toTypeName") {
+		t.Errorf("log plan renders a type cast:\n%s", sql)
+	}
+
+	grouped := &chplan.Aggregate{
+		Input: &chplan.Project{
+			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+			Projections: []chplan.Projection{
+				{Expr: &chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: "Attributes"}, &chplan.ColumnRef{Name: "Extra"},
+				}}, Alias: "Attributes"},
+				{Expr: &chplan.ColumnRef{Name: "Value"}},
+			},
+		},
+		GroupBy:        []chplan.Expr{chplan.CanonicalAttributesExpr(&chplan.ColumnRef{Name: "Attributes"})},
+		GroupByAliases: []string{"Attributes"},
+		AggFuncs:       []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "Value"}},
+	}
+	sql, _, err = Emit(ctx, grouped)
+	if err != nil {
+		t.Fatalf("emit grouped plan: %v", err)
+	}
+	for _, want := range []string{
+		"CAST(mapConcat(`Attributes`, `Extra`), toTypeName(mapConcat(`Attributes`, `Extra`)))",
+		"CAST(mapSort(`Attributes`), toTypeName(`Attributes`))",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("grouped plan lacks %s:\n%s", want, sql)
+		}
+	}
+}
+
+// A Project that computes a window function sorts its rows: every Map it
+// carries or partitions by is owed, even when nothing above reads it.
+func TestMapTypeCastFree_WindowProjectOwesItsMaps(t *testing.T) {
+	t.Parallel()
+	attrs := &chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{
+		&chplan.ColumnRef{Name: "Attributes"}, &chplan.ColumnRef{Name: "Extra"},
+	}}
+	below := &chplan.Project{
+		Input:       &chplan.Scan{Table: "otel_metrics_histogram"},
+		Projections: []chplan.Projection{{Expr: attrs, Alias: "Attributes"}, {Expr: &chplan.ColumnRef{Name: "Value"}}},
+	}
+	window := &chplan.Project{Input: below, Projections: []chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: "Value"}},
+		{Expr: &chplan.WindowExpr{Fn: chplan.FnCount, PartitionBy: []chplan.Expr{
+			chplan.CanonicalAttributesExpr(&chplan.ColumnRef{Name: "Attributes"}),
+		}}, Alias: "n"},
+	}}
+	top := &chplan.Project{Input: window, Projections: []chplan.Projection{{Expr: &chplan.ColumnRef{Name: "Value"}}}}
+	free := mapTypeCastFree(top)
+	if free[attrs] {
+		t.Errorf("a Map a window partitions by renders uncast")
+	}
+	for f := range free {
+		if f.Fn == chplan.FnMapSort {
+			t.Errorf("the window's PARTITION BY key renders uncast")
+		}
 	}
 }

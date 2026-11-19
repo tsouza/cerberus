@@ -1190,9 +1190,9 @@ func (b *Builder) exprFunc(f *chplan.FuncCall) error {
 		return b.exprMapContainsKey(f.Args)
 	}
 	if f.Fn == chplan.FnMapSort {
-		return b.exprCanonicalMap(f.Args)
+		return b.exprCanonicalMap(f)
 	}
-	if parsedMapTypeFns[f.Fn] {
+	if parsedMapTypeFns[f.Fn] && !b.mapTypeCastFree(f) {
 		var err error
 		ParsedMapType(func(b *Builder) { err = b.exprFuncCall(f) })(b)
 		if err != nil {
@@ -2631,7 +2631,14 @@ func Cast(f Frag, typ string) Frag {
 // rather than naming the sorted Map with an inline alias.
 func CanonicalMap(m Frag) Frag {
 	return func(b *Builder) {
-		typeCast := b.strategies.CanonicalMapTypeCast
+		canonicalMap(b.strategies.CanonicalMapTypeCast, m)(b)
+	}
+}
+
+// canonicalMap renders [chplan.CanonicalMapFunc] over m, cast back to the
+// type parsed from m's type name when typeCast holds ([CanonicalMap]).
+func canonicalMap(typeCast bool, m Frag) Frag {
+	return func(b *Builder) {
 		if typeCast {
 			b.sb.WriteString("CAST(")
 		}
