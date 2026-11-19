@@ -1,0 +1,11 @@
+{
+  "fixture": "logql/sum_by_detected_level_count_over_time_level_not_regex",
+  "fan_factor": 1,
+  "scan_rows": 7,
+  "peak_intermediate": 7,
+  "has_cross_join": false,
+  "has_array_join": false,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}

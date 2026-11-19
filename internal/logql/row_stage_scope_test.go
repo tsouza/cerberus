@@ -105,6 +105,8 @@ var levelThenLineBehindAWholeMapRead = []string{
 	`sum by (tenant) (count_over_time({job="wide"} | detected_level="error" |= "orders/5" [5m]))`,
 	`sum(bytes_over_time({job="wide"} | detected_level!="info" | tenant!="tenant-7" |= "request" [5m]))`,
 	`absent_over_time({job="wide"} | detected_level="error" | tenant!="tenant-7" |= "orders/5" [5m])`,
+	`sum(rate({job="wide"} | detected_level=~"err.*" | tenant!="tenant-7" |= "orders/5" [5m]))`,
+	`sum(count_over_time({job="wide"} | detected_level!~"info|debug" | tenant!="tenant-7" |= "orders/5" [5m]))`,
 }
 
 // TestRangeAggregationLevelFilterLeadsWhereOrderHolds pins that on servers
@@ -167,18 +169,39 @@ func TestRangeAggregationFilterBetweenLevelAndLineJoinsThemWhereOrderHolds(t *te
 	}
 }
 
-// TestRangeAggregationLevelFilterThatCannotMoveKeepsTheLineAtTheScan pins
-// the other side: a level filter on the normalised level, which stays a
-// SELECT above the scan, leaves the line filter in the scan's predicates in
-// WHERE order too, with the whole-map filter above, as a reordering server
-// reads it. Nothing reads the body for fewer rows by moving the rest.
-func TestRangeAggregationLevelFilterThatCannotMoveKeepsTheLineAtTheScan(t *testing.T) {
+// TestRangeAggregationLevelRegexLeadsWhereOrderHolds pins that a
+// detected_level regex matcher reads the level source, as an equality does,
+// and in WHERE order runs in the SELECT that reads otel_logs ahead of a
+// line filter written after it, even for a pattern whose predicate reads
+// the source past the scope's expansion bound: a server that keeps WHERE
+// order then reads the
+// body only for the rows the level keeps. On a reordering server, which
+// chooses the order itself, it reads the level source too.
+func TestRangeAggregationLevelRegexLeadsWhereOrderHolds(t *testing.T) {
 	t.Parallel()
-	const query = `sum(rate({job="wide"} | detected_level=~"err.*" | tenant!="tenant-7" |= "orders/5" [5m]))`
-	inOrder, _ := rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{PrewhereInWhereOrder: true})
-	reordering, _ := rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{})
-	if inOrder != reordering {
-		t.Errorf("in WHERE order the statement differs from a reordering server's:\n%s\n%s", inOrder, reordering)
+	const level, line = "lower(`_logql_level_source`)", "position(`Body`"
+	for _, query := range []string{
+		`sum(rate({job="wide"} | detected_level=~"err.*" |= "error" [5m]))`,
+		`sum(count_over_time({job="wide"} | detected_level=~"error|fatal" |= "request" [5m]))`,
+		`sum(count_over_time({job="wide"} | detected_level!~"info" |= "request" [5m]))`,
+	} {
+		t.Run(query, func(t *testing.T) {
+			t.Parallel()
+			sql, _ := rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{PrewhereInWhereOrder: true})
+			scope := scopeAround(t, sql, "FROM `otel_logs`")
+			where := scope[strings.Index(scope, "FROM `otel_logs`"):]
+			first, then := strings.Index(where, level), strings.Index(where, line)
+			if first < 0 || then < 0 || first > then {
+				t.Errorf("in WHERE order, the SELECT reading otel_logs does not read %s ahead of %s: %s", level, line, where)
+			}
+			// The filter itself reads the level source, on a reordering
+			// server too: only levelMatchesExpr renders it as a set
+			// membership of its lowercased value.
+			sql, _ = rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{})
+			if !strings.Contains(sql, "has(array(") || !strings.Contains(sql, "), "+level+")") {
+				t.Errorf("the level filter does not read the level source: %s", sql)
+			}
+		})
 	}
 }
 

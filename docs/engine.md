@@ -554,16 +554,17 @@ The emitter is also CH-native rather than ANSI-ish:
   conjuncts keep the pipeline's order; one whose own text reads a key of
   a map column the stage reads as a whole joins the scan's filter even
   behind a moved filter. In a range aggregation, a
-  `detected_level` equality, an OR of them, or an inequality reads the
-  level source rather than the normalised level. A filter conjunct that
+  `detected_level` equality, an OR of them, an inequality, or a regex
+  matcher reads the level source rather than the normalised level. A filter conjunct that
   reads a map column as a whole stays where it is, and nothing that
   reads a key of a map column the stage reads as a whole moves. When
   every server runs a multi-step PREWHERE in `WHERE` order
   (`SchemaStrategies.PrewhereInWhereOrder`), a later conjunct that reads
   no layer and a table column the scan's filter and the first filter
   conjunct reading a layer do not already read lifts that rule for
-  everything up to it, as long as the first conjunct then moves: it
-  runs behind the first conjunct in the scan's scope, a conjunct up to
+  everything up to it, as long as the first conjunct then moves, which it
+  does past the three-times bound when it reads only values in the scope:
+  it runs behind the first conjunct in the scan's scope, a conjunct up to
   it that reads only values already in the scope joins it there past
   the three-times bound, adding no layer, and a conjunct up to it that
   reads no layer joins it there too, whatever map key it reads. The layers above
