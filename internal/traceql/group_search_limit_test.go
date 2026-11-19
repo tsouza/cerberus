@@ -17,10 +17,14 @@ import (
 // spans through a predicate-free TraceLookupFilter, which keeps every span,
 // so the traces are ranked over its plain input (Rank) and only the drain
 // computes the lookups. The drained source's Scan carries every column the
-// aggregate reads, its group key among them.
+// aggregate reads, its group key among them, including the materialized
+// column a key lowered over the open span row reads in its map cell's place.
 func TestGroupSearchGroupsOnlyTheLimitedTraces(t *testing.T) {
 	t.Parallel()
-	s := schema.DefaultOTelTraces()
+	mapOnly := schema.DefaultOTelTraces()
+	materialized := schema.DefaultOTelTraces()
+	materialized.MaterializedSpanAttributeColumns = schema.DefaultMaterializedSpanAttributeColumns()
+	materialized.MaterializedResourceAttributeColumns = schema.DefaultMaterializedResourceAttributeColumns()
 	ctx := WithSearchWindow(WithSearchTraceLimit(context.Background(), 20), winStart, winEnd)
 	window := []int64{winStart.UnixNano(), winEnd.UnixNano()}
 	for _, query := range []string{
@@ -38,68 +42,90 @@ func TestGroupSearchGroupsOnlyTheLimitedTraces(t *testing.T) {
 		`{ } | by(traceDuration)`,
 		`{ } | by(event:name)`,
 		`{ } | by(.foo)`,
+		`{ } | by(span.rpc.method)`,
+		`{ kind = client } | by(span.rpc.method)`,
+		`{ } | coalesce() | by(span.rpc.method)`,
+		`{ } | coalesce() | by(resource.k8s.namespace.name)`,
 	} {
-		t.Run(query, func(t *testing.T) {
-			t.Parallel()
-			agg, ok := lowerWithSchema(t, ctx, query, s).(*chplan.Aggregate)
-			if !ok || !isGroupAggregate(agg, s) {
-				t.Fatalf("plan root is %T, want the by() aggregate", agg)
-			}
-			limited, ok := agg.Input.(*chplan.SearchTraceLimit)
-			if !ok {
-				t.Fatalf("by() aggregate reads %T, want a SearchTraceLimit", agg.Input)
-			}
-			if limited.TraceLimit != 20 {
-				t.Fatalf("SearchTraceLimit.TraceLimit = %d, want 20", limited.TraceLimit)
-			}
-			lookup, annotates := limited.Input.(*chplan.TraceLookupFilter)
-			annotates = annotates && lookup.Predicate == nil
-			if annotates != (limited.Rank != nil) {
-				t.Fatalf("drained source %T (predicate-free lookup: %v), Rank set: %v; want a Rank exactly under a predicate-free lookup",
-					limited.Input, annotates, limited.Rank != nil)
-			}
-			if limited.Rank != nil && !isPlainSearchShape(limited.Rank) {
-				t.Fatalf("Rank is %T, want the lookup's plain-search input", limited.Rank)
-			}
-			var leaves []leafWindow
-			collectLeafWindows(limited.Input, false, s.TimestampColumn, &leaves)
-			if limited.Rank != nil {
-				collectLeafWindows(limited.Rank, false, s.TimestampColumn, &leaves)
-			}
-			rows := 0
-			for i, leaf := range leaves {
-				if leaf.perTrace {
-					continue
-				}
-				rows++
-				if !slices.Equal(leaf.instants, window) {
-					t.Errorf("span-row leaf %d reads %v, want the request window %v", i, leaf.instants, window)
-				}
-			}
-			if rows == 0 {
-				t.Fatal("no span-row leaf under the SearchTraceLimit")
-			}
-			scanColumns := map[string]bool{}
-			chplan.Walk(limited.Input, func(n chplan.Node) bool {
-				if scan, ok := n.(*chplan.Scan); ok {
-					for _, c := range scan.Columns {
-						scanColumns[c] = true
-					}
-					return false
-				}
-				_, lookup := n.(*chplan.TraceLookupFilter)
-				return !lookup || n == limited.Input
+		for name, s := range map[string]schema.Traces{"map-only": mapOnly, "materialized": materialized} {
+			t.Run(name+"/"+query, func(t *testing.T) {
+				t.Parallel()
+				assertGroupSearchLimited(t, ctx, query, s, window)
 			})
-			chplan.InspectNodeExprs(agg, func(e chplan.Expr) {
-				chplan.InspectExpr(e, func(x chplan.Expr) bool {
-					if ref, ok := x.(*chplan.ColumnRef); ok && ref.Qualifier == "" && !isTraceScopedLookupColumn(ref.Name) && !scanColumns[ref.Name] {
-						t.Errorf("the by() aggregate reads %s, which the limited Scan does not carry (%v)", ref.Name, scanColumns)
-					}
-					return true
-				})
-			})
-		})
+		}
 	}
+}
+
+// assertGroupSearchLimited lowers query under s and checks the by()
+// aggregate drains a SearchTraceLimit whose source carries what it reads.
+func assertGroupSearchLimited(t *testing.T, ctx context.Context, query string, s schema.Traces, window []int64) {
+	t.Helper()
+	agg, ok := lowerWithSchema(t, ctx, query, s).(*chplan.Aggregate)
+	if !ok || !isGroupAggregate(agg, s) {
+		t.Fatalf("plan root is %T, want the by() aggregate", agg)
+	}
+	limited, ok := agg.Input.(*chplan.SearchTraceLimit)
+	if !ok {
+		t.Fatalf("by() aggregate reads %T, want a SearchTraceLimit", agg.Input)
+	}
+	if limited.TraceLimit != 20 {
+		t.Fatalf("SearchTraceLimit.TraceLimit = %d, want 20", limited.TraceLimit)
+	}
+	lookup, annotates := limited.Input.(*chplan.TraceLookupFilter)
+	annotates = annotates && lookup.Predicate == nil
+	if annotates != (limited.Rank != nil) {
+		t.Fatalf("drained source %T (predicate-free lookup: %v), Rank set: %v; want a Rank exactly under a predicate-free lookup",
+			limited.Input, annotates, limited.Rank != nil)
+	}
+	if limited.Rank != nil && !isPlainSearchShape(limited.Rank) {
+		t.Fatalf("Rank is %T, want the lookup's plain-search input", limited.Rank)
+	}
+	var leaves []leafWindow
+	collectLeafWindows(limited.Input, false, s.TimestampColumn, &leaves)
+	if limited.Rank != nil {
+		collectLeafWindows(limited.Rank, false, s.TimestampColumn, &leaves)
+	}
+	rows := 0
+	for i, leaf := range leaves {
+		if leaf.perTrace {
+			continue
+		}
+		rows++
+		if !slices.Equal(leaf.instants, window) {
+			t.Errorf("span-row leaf %d reads %v, want the request window %v", i, leaf.instants, window)
+		}
+	}
+	if rows == 0 {
+		t.Fatal("no span-row leaf under the SearchTraceLimit")
+	}
+	scanColumns := map[string]bool{}
+	chplan.Walk(limited.Input, func(n chplan.Node) bool {
+		if scan, ok := n.(*chplan.Scan); ok {
+			for _, c := range scan.Columns {
+				scanColumns[c] = true
+			}
+			return false
+		}
+		_, lookup := n.(*chplan.TraceLookupFilter)
+		return !lookup || n == limited.Input
+	})
+	chplan.InspectNodeExprs(agg, func(e chplan.Expr) {
+		chplan.InspectExpr(e, func(x chplan.Expr) bool {
+			read := ""
+			switch v := x.(type) {
+			case *chplan.ColumnRef:
+				if v.Qualifier == "" && !isTraceScopedLookupColumn(v.Name) {
+					read = v.Name
+				}
+			case *chplan.FieldAccess:
+				read = v.MaterializedColumn
+			}
+			if read != "" && !scanColumns[read] {
+				t.Errorf("the by() aggregate reads %s, which the limited Scan does not carry (%v)", read, scanColumns)
+			}
+			return true
+		})
+	})
 }
 
 // TestGroupSearchLimitLeavesOtherShapesUnbounded pins the shapes the by()

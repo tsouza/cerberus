@@ -451,7 +451,7 @@ func stampEnvelopeAggregateTraceLimit(plan chplan.Node, limit int64, start, end 
 		return plan
 	}
 	agg, ok := plan.(*chplan.Aggregate)
-	if !ok || !(isCoalesceAggregate(agg, s) || isGroupAggregate(agg, s)) || !isPlainSearchShape(agg.Input) {
+	if !ok || (!isCoalesceAggregate(agg, s) && !isGroupAggregate(agg, s)) || !isPlainSearchShape(agg.Input) {
 		return plan
 	}
 	var reads []chplan.Expr
@@ -647,7 +647,9 @@ func boundPlainSearchSource(
 
 // searchTraceLimitInputColumns closes the plain-search Scan over the columns
 // consumed by the search response projection, the trace-ranking drain, and
-// the query predicate. A per-trace lookup column a TraceLookupFilter joins in
+// the query predicate, including the materialized attribute column a
+// FieldAccess lowered over the open span row reads in its map cell's place.
+// A per-trace lookup column a TraceLookupFilter joins in
 // (traceScopedLookups) is not a span column and stays out. SearchTraceLimit is only constructed for the bounded
 // search path, whose caller always applies the canonical sample projection.
 func searchTraceLimitInputColumns(existing []string, reads []chplan.Expr, s schema.Traces) []string {
@@ -669,8 +671,13 @@ func searchTraceLimitInputColumns(existing []string, reads []chplan.Expr, s sche
 	add(s.DurationColumn)
 	for _, e := range reads {
 		chplan.InspectExpr(e, func(expr chplan.Expr) bool {
-			if ref, ok := expr.(*chplan.ColumnRef); ok && !isTraceScopedLookupColumn(ref.Name) {
-				add(ref.Name)
+			switch v := expr.(type) {
+			case *chplan.ColumnRef:
+				if !isTraceScopedLookupColumn(v.Name) {
+					add(v.Name)
+				}
+			case *chplan.FieldAccess:
+				add(v.MaterializedColumn)
 			}
 			return true
 		})
