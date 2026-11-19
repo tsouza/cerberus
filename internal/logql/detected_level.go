@@ -3,6 +3,8 @@ package logql
 import (
 	"slices"
 
+	"github.com/prometheus/prometheus/model/labels"
+
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -444,8 +446,7 @@ func levelEqualsExpr(source chplan.Expr, levels ...string) chplan.Expr {
 	}
 	var cases []chplan.Expr
 	if len(folded) > 0 {
-		lowerSource := &chplan.FuncCall{Fn: chplan.FnLower, Args: []chplan.Expr{source}}
-		cases = append(cases, &chplan.FuncCall{Fn: chplan.FnArrayHas, Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnArray, Args: folded}, lowerSource}})
+		cases = append(cases, lowerIsOneOf(source, folded))
 	}
 	if len(verbatim) > 0 {
 		cases = append(cases, &chplan.FuncCall{Fn: chplan.FnArrayHas, Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnArray, Args: verbatim}, source}})
@@ -457,6 +458,52 @@ func levelEqualsExpr(source chplan.Expr, levels ...string) chplan.Expr {
 		return cases[0]
 	}
 	return &chplan.Binary{Op: chplan.OpOr, Left: cases[0], Right: cases[1]}
+}
+
+// levelMatchesExpr returns a predicate over source, a level source
+// [detectedLevelSourceExpr] resolves, that holds exactly when m — a
+// `detected_level=~` or `detected_level!~` matcher — matches
+// [normaliseLevelExpr] of source. The normalisation yields a canonical
+// level from a source that lowercases to one of its variants, `unknown`
+// from an empty source, and source itself from any other, so the
+// predicate decides the first two at plan time, with m's own matching
+// over each canonical level, and leaves only the third to the regex:
+//
+//	has([variants of each level m matches…, '' when m matches unknown], lower(source))
+//	OR (NOT has([every variant…, ''], lower(source)) AND source =~ m)
+func levelMatchesExpr(source chplan.Expr, m *labels.Matcher) chplan.Expr {
+	matched := []chplan.Expr{}
+	known := []chplan.Expr{&chplan.LitString{V: ""}}
+	if m.Matches(unknownLevel) {
+		matched = append(matched, &chplan.LitString{V: ""})
+	}
+	for _, g := range levelNormalizationGroups {
+		for _, v := range g.variants {
+			known = append(known, &chplan.LitString{V: v})
+			if m.Matches(g.canonical) {
+				matched = append(matched, &chplan.LitString{V: v})
+			}
+		}
+	}
+	op := chplan.OpMatch
+	if m.Type == labels.MatchNotRegexp {
+		op = chplan.OpNotMatch
+	}
+	passedThrough := &chplan.Binary{
+		Op:    chplan.OpAnd,
+		Left:  notExpr(lowerIsOneOf(source, known)),
+		Right: &chplan.Binary{Op: op, Left: source, Right: &chplan.LitString{V: m.Value}},
+	}
+	if len(matched) == 0 {
+		return passedThrough
+	}
+	return &chplan.Binary{Op: chplan.OpOr, Left: lowerIsOneOf(source, matched), Right: passedThrough}
+}
+
+// lowerIsOneOf returns `has([set…], lower(source))`.
+func lowerIsOneOf(source chplan.Expr, set []chplan.Expr) chplan.Expr {
+	lowerSource := &chplan.FuncCall{Fn: chplan.FnLower, Args: []chplan.Expr{source}}
+	return &chplan.FuncCall{Fn: chplan.FnArrayHas, Args: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnArray, Args: set}, lowerSource}}
 }
 
 // withDetectedLevel wraps a labels-map expression so the result carries

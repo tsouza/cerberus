@@ -172,8 +172,9 @@ func TestRangeAggregationFilterBetweenLevelAndLineJoinsThemWhereOrderHolds(t *te
 // TestRangeAggregationLevelRegexLeadsWhereOrderHolds pins that a
 // detected_level regex matcher reads the level source, as an equality does,
 // and in WHERE order runs in the SELECT that reads otel_logs ahead of a
-// line filter written after it, though its regex reads the source past the
-// scope's expansion bound: a server that keeps WHERE order then reads the
+// line filter written after it, even for a pattern whose predicate reads
+// the source past the scope's expansion bound: a server that keeps WHERE
+// order then reads the
 // body only for the rows the level keeps. On a reordering server, which
 // chooses the order itself, it reads the level source too.
 func TestRangeAggregationLevelRegexLeadsWhereOrderHolds(t *testing.T) {
@@ -193,8 +194,11 @@ func TestRangeAggregationLevelRegexLeadsWhereOrderHolds(t *testing.T) {
 			if first < 0 || then < 0 || first > then {
 				t.Errorf("in WHERE order, the SELECT reading otel_logs does not read %s ahead of %s: %s", level, line, where)
 			}
+			// The filter itself reads the level source, on a reordering
+			// server too: only levelMatchesExpr renders it as a set
+			// membership of its lowercased value.
 			sql, _ = rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{})
-			if !strings.Contains(sql, level) {
+			if !strings.Contains(sql, "has(array(") || !strings.Contains(sql, "), "+level+")") {
 				t.Errorf("the level filter does not read the level source: %s", sql)
 			}
 		})

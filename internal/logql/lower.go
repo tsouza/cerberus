@@ -153,8 +153,9 @@ type filterRow struct {
 	level chplan.Expr
 	// levelSource is the stage's level source column, or nil. When set,
 	// a `detected_level` equality or inequality reads it through
-	// [levelEqualsExpr] instead of level, so the filter reads only the
-	// table's columns and can run where the table is read.
+	// [levelEqualsExpr], and a regex matcher through [levelMatchesExpr],
+	// instead of level, so the filter reads only the table's columns and
+	// can run where the table is read.
 	levelSource chplan.Expr
 	rows        *rowLayers
 }
@@ -1983,6 +1984,9 @@ func labelFiltererLower(lf syntax.LabelFilterer, s schema.Logs, labelsExpr chpla
 	case *syntax.StringLabelFilter:
 		if m := v.Matcher; isDetectedLevelLabel(m.Name) && row.levelSource != nil && m.Type == labels.MatchNotEqual {
 			return notExpr(levelEqualsExpr(row.levelSource, m.Value)), nil, nil
+		}
+		if m := v.Matcher; isDetectedLevelLabel(m.Name) && row.levelSource != nil && (m.Type == labels.MatchRegexp || m.Type == labels.MatchNotRegexp) {
+			return levelMatchesExpr(row.levelSource, m), nil, nil
 		}
 		if levels, ok := detectedLevelEqualities(lf); ok && row.levelSource != nil {
 			return levelEqualsExpr(row.levelSource, levels...), nil, nil
