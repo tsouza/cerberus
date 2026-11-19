@@ -76,4 +76,14 @@ type SchemaStrategies struct {
 	// (chsql.SchemaStrategiesCell.SetCanonicalMapTypeCast). The zero value
 	// renders the bare key-ordering call.
 	CanonicalMapTypeCast bool
+
+	// PrewhereInWhereOrder reports that every server the scans run on
+	// evaluates a multi-step PREWHERE in the order of the WHERE conjuncts
+	// rather than reordering them, so the order the plan writes a filter's
+	// conjuncts in decides which rows each column is read for. It is not a
+	// fact of the tables but of the server builds — set for every signal
+	// from the resolved optimizations' chopt.EnabledSet.PrewhereInWhereOrder
+	// (chsql.SchemaStrategiesCell.SetPrewhereInWhereOrder). The zero value
+	// orders no filter for it.
+	PrewhereInWhereOrder bool
 }

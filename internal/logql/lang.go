@@ -121,9 +121,10 @@ func (l *Lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 
 	lowerT := telemetry.ObserveStage(telemetry.StageLower, l.Name())
 	plan, err := LowerAtRangeOpts(ctx, expr, l.Schema, l.Start, l.End, l.Step, LowerOpts{
-		TextIndexLineFilter: l.TextIndexLineFilter,
-		LogLineLimit:        l.LogLineLimit,
-		LogLineBackward:     l.LogLineBackward,
+		TextIndexLineFilter:  l.TextIndexLineFilter,
+		LogLineLimit:         l.LogLineLimit,
+		LogLineBackward:      l.LogLineBackward,
+		PrewhereInWhereOrder: l.Strategies.PrewhereInWhereOrder,
 	})
 	lowerT.Done(ctx)
 	if err != nil {

@@ -205,7 +205,7 @@ func TestRowLayersGatherAtScan(t *testing.T) {
 	rows.filter(eq(pick, "1"))
 	unfiltered := rows.define("_unfiltered", &chplan.FuncCall{Fn: chplan.FnConcat, Args: []chplan.Expr{parsed, source}})
 	rows.filter(eq(wide, "w"))
-	rows.gatherAtScan(nil)
+	rows.gatherAtScan(nil, false)
 
 	consumer := &chplan.Project{
 		Input: rows.node,
@@ -381,7 +381,7 @@ func TestRowLayersGatherAtScanLeavesWhatItMustNotMove(t *testing.T) {
 			scanFilter := &chplan.Filter{Input: &chplan.Scan{Table: "otel_logs"}, Predicate: eq(&chplan.ColumnRef{Name: "Job"}, "api")}
 			rows := newRowLayers(scanFilter)
 			reads := tc.build(rows)
-			rows.gatherAtScan(tc.maps, reads...)
+			rows.gatherAtScan(tc.maps, false, reads...)
 
 			var moved []string
 			var scan *chplan.Filter

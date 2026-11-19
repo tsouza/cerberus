@@ -369,7 +369,8 @@ func reprobeCHOptimizations(
 		}
 
 		// One fleet probe feeds every decision. The condition-cache override,
-		// the shape defects and the analyzer decision follow it on every pass,
+		// the shape defects, the analyzer decision and the PREWHERE order
+		// fact follow it on every pass,
 		// regardless of the resolution: a resolve error, a floor fallback, or
 		// an unchanged set must never leave a known-unsafe build serving from
 		// its cache, nor keep stamping enable_analyzer=0 once a node runs a
@@ -381,19 +382,21 @@ func reprobeCHOptimizations(
 			refreshConditionCacheOverride(logger, consumers.client, fleet, conditionCacheOff)
 		}
 		analyzerMandatory := analyzerMandatoryOnFleet(fleet, inForce.Set.AnalyzerMandatory())
+		inWhereOrder := prewhereInWhereOrderOnFleet(fleet, inForce.Set.PrewhereInWhereOrder())
 		shapeDefects := shapeDefectsOnFleet(fleet, gates)
 		next, ok := resolveCHOptimizationsOnce(logger, cfg, rawQueryWorkload, fleet, &inForce)
 		if !ok {
 			// The resolution failed, so the resolution in force stays,
 			// marked with this pass's fleet: a pass still short of a node,
 			// or resting on a build it did not reach, keeps retrying fast
-			// like one still on the floor. The analyzer and shape-defect
-			// decisions below still follow the fleet.
+			// like one still on the floor. The analyzer, shape-defect and
+			// PREWHERE order decisions below still follow the fleet.
 			next = inForce
 			next.FleetIncomplete = !fleet.Complete
 			next.FleetHeld = fleet.Held
 		}
-		next.Set = next.Set.WithAnalyzerMandatory(analyzerMandatory).WithShapeDefects(shapeDefects)
+		next.Set = next.Set.WithAnalyzerMandatory(analyzerMandatory).WithShapeDefects(shapeDefects).
+			WithPrewhereInWhereOrder(inWhereOrder)
 		prev := live.get()
 		schedule(next)
 		if next.Set.Equal(prev.Set) && next.ResolvedVersion == prev.ResolvedVersion && next.QueryWorkload == prev.QueryWorkload {
@@ -425,6 +428,8 @@ func reprobeCHOptimizations(
 			"previous_analyzer_mandatory", prev.Set.AnalyzerMandatory(),
 			"native_histogram_analyzer_faster", next.Set.NativeHistogramAnalyzerFaster(),
 			"previous_native_histogram_analyzer_faster", prev.Set.NativeHistogramAnalyzerFaster(),
+			"prewhere_in_where_order", next.Set.PrewhereInWhereOrder(),
+			"previous_prewhere_in_where_order", prev.Set.PrewhereInWhereOrder(),
 			"shape_defects", strings.Join(next.Set.ShapeDefectIDs(), ","),
 			"previous_shape_defects", strings.Join(prev.Set.ShapeDefectIDs(), ","),
 		)

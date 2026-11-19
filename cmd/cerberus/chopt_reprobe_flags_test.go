@@ -51,8 +51,9 @@ func TestReprobeCHOptimizations_UnchangedPassRecordsItsFlags(t *testing.T) {
 			defer cancel()
 
 			// The resolution in force is what resolving against tc.inForce
-			// produces, with the analyzer and shape-defect decisions the
-			// pass's fleet implies and the flags of an earlier pass on top.
+			// produces, with the analyzer, shape-defect and PREWHERE order
+			// decisions the pass's fleet implies and the flags of an earlier
+			// pass on top.
 			fleet := chclient.FleetVersions{Versions: []chopt.Version{tc.pass}, Complete: true}
 			inForce, ok := resolveCHOptimizationsOnce(quietLogger(), cfg, "",
 				chclient.FleetVersions{Versions: []chopt.Version{tc.inForce}, Complete: true}, nil)
@@ -60,7 +61,8 @@ func TestReprobeCHOptimizations_UnchangedPassRecordsItsFlags(t *testing.T) {
 				t.Fatalf("premise: resolve against %s failed", tc.inForce)
 			}
 			inForce.Set = inForce.Set.WithAnalyzerMandatory(analyzerMandatoryOnFleet(fleet, false)).
-				WithShapeDefects(shapeDefectsOnFleet(fleet, inForce.Set))
+				WithShapeDefects(shapeDefectsOnFleet(fleet, inForce.Set)).
+				WithPrewhereInWhereOrder(prewhereInWhereOrderOnFleet(fleet, false))
 			tc.flag(&inForce)
 			live := newCHOptLive(inForce)
 

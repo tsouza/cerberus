@@ -110,12 +110,14 @@ type Config struct {
 // Beside the feature ids it carries build facts no selection decides: whether
 // a query may no longer disable the analyzer (AnalyzerMandatory), whether
 // native-histogram plans run faster under the analyzer
-// (NativeHistogramAnalyzerFaster), and which shape defects the build carries
-// (HasShapeDefect).
+// (NativeHistogramAnalyzerFaster), which shape defects the build carries
+// (HasShapeDefect), and whether every server keeps a multi-step PREWHERE in
+// WHERE order (PrewhereInWhereOrder).
 type EnabledSet struct {
 	ids                           map[string]struct{}
 	analyzerMandatory             bool
 	nativeHistogramAnalyzerFaster bool
+	prewhereInWhereOrder          bool
 	shapeDefects                  map[string]struct{}
 }
 
@@ -144,6 +146,23 @@ func (s EnabledSet) AnalyzerMandatory() bool {
 // the zero value is false, so a set that was never resolved keeps the stamp.
 func (s EnabledSet) NativeHistogramAnalyzerFaster() bool {
 	return s.nativeHistogramAnalyzerFaster
+}
+
+// PrewhereInWhereOrder reports whether every server the set was resolved for
+// runs a build on which PrewhereKeepsWhereOrder holds. Resolve leaves it
+// false: one build does not say what every node runs, so the caller that
+// read the whole fleet sets it (WithPrewhereInWhereOrder). The zero value is
+// false, so a set that was never resolved, or resolved against a server
+// whose version is not known, orders no filter for it.
+func (s EnabledSet) PrewhereInWhereOrder() bool {
+	return s.prewhereInWhereOrder
+}
+
+// WithPrewhereInWhereOrder returns s with PrewhereInWhereOrder replaced by
+// inOrder.
+func (s EnabledSet) WithPrewhereInWhereOrder(inOrder bool) EnabledSet {
+	s.prewhereInWhereOrder = inOrder
+	return s
 }
 
 // WithAnalyzerMandatory returns s with AnalyzerMandatory replaced by
@@ -187,14 +206,15 @@ func (s EnabledSet) WithShapeDefects(ids []string) EnabledSet {
 }
 
 // Equal reports whether s and other enable exactly the same feature ids and
-// agree on AnalyzerMandatory, NativeHistogramAnalyzerFaster and the shape
-// defects. A periodic re-resolution
+// agree on AnalyzerMandatory, NativeHistogramAnalyzerFaster,
+// PrewhereInWhereOrder and the shape defects. A periodic re-resolution
 // compares its result against the set already in force and swaps (and logs)
 // only on a genuine transition, so a server whose capabilities have not moved
 // produces no churn and no log noise.
 func (s EnabledSet) Equal(other EnabledSet) bool {
 	return s.analyzerMandatory == other.analyzerMandatory &&
 		s.nativeHistogramAnalyzerFaster == other.nativeHistogramAnalyzerFaster &&
+		s.prewhereInWhereOrder == other.prewhereInWhereOrder &&
 		sameIDs(s.ids, other.ids) && sameIDs(s.shapeDefects, other.shapeDefects)
 }
 

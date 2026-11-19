@@ -1520,6 +1520,10 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// mandatory-analyzer build refuses enable_analyzer=0, so the analyzer
 	// decision reads the whole pass (analyzerMandatoryOnFleet).
 	set = set.WithAnalyzerMandatory(analyzerMandatoryOnFleet(fleet, set.AnalyzerMandatory()))
+	// Ordering a filter for a server that keeps WHERE order holds only when
+	// every node is known to keep it (prewhereInWhereOrderOnFleet); nothing
+	// is in force yet.
+	set = set.WithPrewhereInWhereOrder(prewhereInWhereOrderOnFleet(fleet, false))
 	// Likewise one node on a build carrying a shape defect is enough for the
 	// engine to gate that shape (shapeDefectsOnFleet). Nothing is in force
 	// yet, so a pass that missed a node starts every gate the reached nodes
@@ -1637,6 +1641,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		"query_condition_cache_forced_off", client.QueryConditionCacheDisabled(),
 		"analyzer_mandatory", set.AnalyzerMandatory(),
 		"native_histogram_analyzer_faster", set.NativeHistogramAnalyzerFaster(),
+		"prewhere_in_where_order", set.PrewhereInWhereOrder(),
 		"shape_defects", strings.Join(set.ShapeDefectIDs(), ","),
 	)
 	return chOptResolution{

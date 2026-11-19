@@ -551,13 +551,23 @@ The emitter is also CH-native rather than ANSI-ish:
   three times its text size once every alias read is replaced by its
   expression; a filter conjunct that reads no layer joins the scan's
   filter, or, behind a moved filter, the scope's `WHERE`, so the
-  conjuncts keep the pipeline's order. In a range aggregation, a
+  conjuncts keep the pipeline's order; one whose own text reads a key of
+  a map column the stage reads as a whole joins the scan's filter even
+  behind a moved filter. In a range aggregation, a
   `detected_level` equality, an OR of them, or an inequality reads the
   level source rather than the normalised level. A filter conjunct that
-  reads a map column as a whole
-  stays where it is, and nothing that reads a key of a map column the
-  stage reads as a whole moves. The layers above the moved part render
-  one `SELECT` each. The chain
+  reads a map column as a whole stays where it is, and nothing that
+  reads a key of a map column the stage reads as a whole moves. When
+  every server runs a multi-step PREWHERE in `WHERE` order
+  (`SchemaStrategies.PrewhereInWhereOrder`), a later conjunct that reads
+  no layer and a table column the scan's filter and the first filter
+  conjunct reading a layer do not already read lifts that rule for
+  everything up to it, as long as the first conjunct then moves: it
+  runs behind the first conjunct in the scan's scope, a conjunct up to
+  it that reads only values already in the scope joins it there past
+  the three-times bound, adding no layer, and a conjunct up to it that
+  reads no layer joins it there too, whatever map key it reads. The layers above
+  the moved part render one `SELECT` each. The chain
   stays nested when an alias is defined twice, when an alias is named
   like a table column that the scan's filter or a node at or below the
   alias's own layer reads, or when the chain with every alias read
