@@ -364,3 +364,69 @@ func TestStructuredOuterByKeys_FiltersTopLevelAndDetectedLevel(t *testing.T) {
 		}
 	}
 }
+
+// A pipeline stage's labels map reaches structuredOrStreamLookupOnMap as
+// the column a row layer defines for it. Its keys come from the stream
+// labels and the log payload, so the parsed-or-stream arm reads the key
+// itself: a plain MapAccess, with no chain over the key's dotted or
+// slashed spellings. The structured-metadata arm still resolves those
+// spellings against LogAttributes.
+func TestStructuredOrStreamLookupOnMap_LabelsAliasReadsTheKey(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelLogs()
+	labels := &chplan.ColumnRef{Name: pipelineLabelsAlias(0)}
+
+	got := structuredOrStreamLookupOnMap(s, labels, "query_type")
+	fc, ok := got.(*chplan.FuncCall)
+	if !ok || fc.Fn != chplan.FnIf || len(fc.Args) != 3 {
+		t.Fatalf("want if(mapContains(labels, key), labels[key], <structured>), got %#v", got)
+	}
+	want := &chplan.MapAccess{Map: labels, Key: &chplan.LitString{V: "query_type"}}
+	if !fc.Args[1].Equal(want) {
+		t.Errorf("parsed-or-stream arm is %v, want %v", fc.Args[1], want)
+	}
+	if !fc.Args[2].Equal(attributeLookupColumn(s.AttributesColumn, "query_type")) {
+		t.Errorf("structured arm is %v, want the LogAttributes lookup over every spelling", fc.Args[2])
+	}
+	if !findCoalescingLookup(fc.Args[2], "query.type") {
+		t.Errorf("structured arm %v does not reach LogAttributes['query.type']", fc.Args[2])
+	}
+}
+
+// Without a structured-metadata column the parsed-or-stream lookup is the
+// whole resolution, and over a labels alias it is still the key itself.
+func TestStructuredOrStreamLookupOnMap_LabelsAliasNoStructuredColumn(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelLogs()
+	s.AttributesColumn = ""
+	labels := &chplan.ColumnRef{Name: pipelineLabelsAlias(1)}
+
+	got := structuredOrStreamLookupOnMap(s, labels, "query_type")
+	want := &chplan.MapAccess{Map: labels, Key: &chplan.LitString{V: "query_type"}}
+	if !got.Equal(want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// The schema's ResourceAttributes column keeps the chain over the key's
+// OTel spellings: its keys follow the OTel semantic conventions.
+func TestAttributeLookupColumn_ResourceAttributesKeepsSpellings(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelLogs()
+	got := attributeLookupColumn(s.ResourceAttributesColumn, "query_type")
+	fc, ok := got.(*chplan.FuncCall)
+	if !ok || fc.Fn != chplan.FnIf {
+		t.Fatalf("want the if(mapContains(...)) spelling chain, got %#v", got)
+	}
+	sawDotted := false
+	walkExprTree(got, func(e chplan.Expr) {
+		if ma, ok := e.(*chplan.MapAccess); ok {
+			if k, ok := ma.Key.(*chplan.LitString); ok && k.V == "query.type" {
+				sawDotted = true
+			}
+		}
+	})
+	if !sawDotted {
+		t.Errorf("chain %v does not read the dotted spelling query.type", got)
+	}
+}
