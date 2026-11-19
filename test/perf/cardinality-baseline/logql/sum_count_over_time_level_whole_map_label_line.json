@@ -1,8 +1,8 @@
 {
   "fixture": "logql/sum_count_over_time_level_whole_map_label_line",
   "fan_factor": 1,
-  "scan_rows": 4,
-  "peak_intermediate": 4,
+  "scan_rows": 3,
+  "peak_intermediate": 3,
   "has_cross_join": false,
   "has_array_join": false,
   "has_recursive_cte": false,
