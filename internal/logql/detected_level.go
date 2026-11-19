@@ -714,9 +714,16 @@ const (
 // identity, both arms of the error bypass, one entry per `by (...)`
 // label. Both columns read only raw log columns, so the stage defines
 // them ahead of the pipeline and every stage can read them.
+//
+// Both are defined as values a log query's sort does not carry
+// ([rowLayers.defineWide]): when a filter reads the level, the level is
+// computed again above the limit from the raw columns the sort passes on,
+// for the rows it returns. Carried through the sort, the computed level
+// makes ClickHouse read its map-subcolumn inputs for every row the filters
+// keep rather than for the returned rows alone.
 func defineDetectedLevel(rows *rowLayers, s schema.Logs) (source, level chplan.Expr) {
-	source = rows.define(levelSourceAlias, detectedLevelSourceExpr(s))
-	return source, rows.define(detectedLevelAlias, normaliseLevelExpr(source))
+	source = rows.defineWide(levelSourceAlias, detectedLevelSourceExpr(s))
+	return source, rows.defineWide(detectedLevelAlias, normaliseLevelExpr(source))
 }
 
 // projectedLevelColumn applies the pipeline's `| drop` / `| keep`
