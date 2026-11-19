@@ -320,11 +320,14 @@ type SettingsRules struct {
 	LazyMaterialization bool
 
 	// MergePlanFilters, when true, stamps query_plan_merge_filters=1 on a
-	// plan carrying a LogQL per-row stage (chplan.Project.OneScopeRows),
-	// which leaves a filter on a value it computes above the SELECT that
-	// reads the table. Driven by the merge_plan_filters registry feature,
-	// which auto picks on the releases that have the setting off by
-	// default (chopt.FeatureMergePlanFilters).
+	// plan whose LogQL per-row stage (chplan.Project.OneScopeRows) leaves a
+	// filter on a value it computes above the scan's scope, such as the
+	// unwrap source, above the SELECT that reads the table
+	// (filterReadsAboveRowScope). A filter on a value the scan's scope
+	// computes, and the range window's own time bound, get no stamp. Driven
+	// by the merge_plan_filters registry feature, which auto picks on the
+	// releases that have the setting off by default
+	// (chopt.FeatureMergePlanFilters).
 	MergePlanFilters bool
 
 	// AnalyzerMandatory, when true, withholds the enable_analyzer=0 stamp
@@ -515,7 +518,7 @@ func (r SettingsRules) applyFacts(ctx context.Context, f planShapeFacts) context
 			ctx = chclient.WithQuerySetting(ctx, settingEnableAnalyzer, 1)
 		}
 	}
-	if r.MergePlanFilters && f.oneScopeRows {
+	if r.MergePlanFilters && f.filterAboveRowScope {
 		ctx = chclient.WithQuerySetting(ctx, settingQueryPlanMergeFilters, 1)
 	}
 	if r.QueryWorkload != "" {

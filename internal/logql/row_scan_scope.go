@@ -457,7 +457,7 @@ type scanScope struct {
 
 // readsLayer reports whether e reads an alias the stack defines.
 func (s *scanScope) readsLayer(e chplan.Expr) bool {
-	return readsAlias(e, s.aliases)
+	return chplan.ReadsAnyColumn(e, s.aliases)
 }
 
 // admits reports whether e — a layer's value or a filter conjunct — reads

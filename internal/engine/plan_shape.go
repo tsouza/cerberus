@@ -73,9 +73,10 @@ type planShapeFacts struct {
 	// trace-id column named at inspection time — the other half of
 	// eligibleForTraceIDBitmapFilter.
 	traceIDPredicate bool
-	// oneScopeRows: a Project marked chplan.Project.OneScopeRows, which
-	// reads a LogQL per-row stage in the SELECT over the table.
-	oneScopeRows bool
+	// filterAboveRowScope: a Filter over a Project marked
+	// chplan.Project.OneScopeRows that reads a value computed above the scan's
+	// scope, which filterReadsAboveRowScope says.
+	filterAboveRowScope bool
 	// hasNowExpr: a literal now()/now64() FuncCall anywhere in any Expr tree
 	// (the result-cache rule's second, independent leg).
 	hasNowExpr bool
@@ -209,10 +210,6 @@ func (f *planShapeFacts) recordNode(n chplan.Node, spine bool) {
 		f.hasJoin = true
 	}
 	switch v := n.(type) {
-	case *chplan.Project:
-		if v.OneScopeRows {
-			f.oneScopeRows = true
-		}
 	case *chplan.MetricsCompare:
 		f.hasCompare = true
 	case *chplan.StructuralJoin:
@@ -268,6 +265,9 @@ func (f *planShapeFacts) recordNode(n chplan.Node, spine bool) {
 	case *chplan.Filter:
 		if spine {
 			f.spineHasFilter = true
+		}
+		if filterReadsAboveRowScope(v) {
+			f.filterAboveRowScope = true
 		}
 	}
 }
@@ -409,4 +409,39 @@ func (f planShapeFacts) singleScanTable() (table string, ok bool) {
 		return "", false
 	}
 	return f.spineScanTable, true
+}
+
+// filterReadsAboveRowScope reports whether f is a filter of a LogQL per-row
+// stage on a value the stage computes above the scan's scope: walking f's
+// input through the stage's Filters and Projects down to the Project marked
+// chplan.Project.OneScopeRows, which reads the scan's scope, f reads a value
+// one of those Projects, the marked one included, defines or replaces. A
+// value defined inside the scan's scope, under the marked Project, does not
+// count, and neither does a filter whose input reaches a node other than a
+// Filter or a Project first. A LogQL log query's filters all sit under its
+// marked Project, so none of them counts.
+func filterReadsAboveRowScope(f *chplan.Filter) bool {
+	above := map[string]bool{}
+	for n := f.Input; ; {
+		if filter, ok := n.(*chplan.Filter); ok {
+			n = filter.Input
+			continue
+		}
+		p, ok := n.(*chplan.Project)
+		if !ok {
+			return false
+		}
+		for _, projections := range [][]chplan.Projection{p.Projections, p.Replacements} {
+			for _, projection := range projections {
+				if projection.Alias != "" {
+					above[projection.Alias] = true
+				}
+			}
+		}
+		if p.OneScopeRows {
+			break
+		}
+		n = p.Input
+	}
+	return chplan.ReadsAnyColumn(f.Predicate, above)
 }

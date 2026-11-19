@@ -343,7 +343,7 @@ func (r *rowLayers) values(maps []string) layerValues {
 
 // reads reports whether expr reads a layer's value.
 func (v layerValues) reads(expr chplan.Expr) bool {
-	return readsAlias(expr, v.defs)
+	return chplan.ReadsAnyColumn(expr, v.defs)
 }
 
 // tableRead is one read of a table column: the whole column, or the value
@@ -401,20 +401,6 @@ func (v layerValues) addTableReads(set tableReads, expr chplan.Expr) {
 			}
 		}
 	}
-}
-
-// readsAlias reports whether e reads a column named by a key of aliases.
-func readsAlias[V any](e chplan.Expr, aliases map[string]V) bool {
-	found := false
-	chplan.InspectExpr(e, func(sub chplan.Expr) bool {
-		if ref, ok := sub.(*chplan.ColumnRef); ok {
-			if _, alias := aliases[ref.Name]; alias {
-				found = true
-			}
-		}
-		return !found
-	})
-	return found
 }
 
 // conjuncts splits pred into the operands of its top-level ANDs, in order.
