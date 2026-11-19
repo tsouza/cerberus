@@ -60,3 +60,24 @@ func TestSetServerStrategies_CanonicalMapTypeCastFollowsTheResolvedSet(t *testin
 		}
 	}
 }
+
+// TestSetServerStrategies_PrewhereInWhereOrderFollowsTheSet pins that every
+// head orders its filters for a server that keeps WHERE order exactly when
+// the set says every server does, and that Resolve alone never says so.
+func TestSetServerStrategies_PrewhereInWhereOrderFollowsTheSet(t *testing.T) {
+	set, _, err := chopt.Resolve(chopt.Config{Optimizations: "auto"}, chopt.Version{Major: 24, Minor: 8})
+	if err != nil {
+		t.Fatalf("chopt.Resolve: %v", err)
+	}
+	for _, want := range []bool{false, true} {
+		if want {
+			set = set.WithPrewhereInWhereOrder(true)
+		}
+		cell := chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{})
+		choptwire.SetServerStrategies(cell, set)
+		got := cell.Load()
+		if got.Metrics.PrewhereInWhereOrder != want || got.Logs.PrewhereInWhereOrder != want || got.Traces.PrewhereInWhereOrder != want {
+			t.Errorf("set PrewhereInWhereOrder=%v: loaded strategies %+v; want it on every signal", set.PrewhereInWhereOrder(), got)
+		}
+	}
+}

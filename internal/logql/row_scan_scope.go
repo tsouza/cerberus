@@ -17,7 +17,16 @@ import (
 // times the size of its text. The parser and label-filter scopes of the
 // shapes the stage lowers to expand to 1.8–2.9 times their text; the
 // unwrap conversion chain above them expands past 3.4, and moved into the
-// scan's scope it adds seconds of analysis on ClickHouse 24.8.
+// scan's scope it adds seconds of analysis on ClickHouse 24.8. The one
+// exception is a conjunct that reads only values already in the scope,
+// behind the first conjunct of an ordered prefix ([scanGather.first]). It
+// adds no layer, only its own reads of the scope's aliases. Left above the
+// scan, it leaves the scan reading more of the table than pipeline order
+// needs — 120,838 bytes more on 24.8 for a `| json | status >= 400` filter
+// between a level filter and a line filter — while the scope it joins
+// analyses and runs in 2.6 s, against 19.3 s for the same stack inlined
+// into the scan's WHERE. The emitted-SQL byte bound still applies to the
+// whole scope, past which the chain renders nested.
 const maxScanScopeExpansion = 3
 
 // gatherAtScan moves into the stream scan's own scope the part of a range
@@ -34,7 +43,8 @@ const maxScanScopeExpansion = 3
 //   - a filter conjunct that reads no layer is folded into the stream
 //     scan's own filter when no conjunct moved ahead of it, or when its
 //     own text reads a key of a map column that some expression of the
-//     stage, or of consumer, reads as a whole in its own text; behind a
+//     stage, or of consumer, reads as a whole in its own text, unless it
+//     follows the moved first conjunct of an ordered prefix; behind a
 //     moved conjunct otherwise, it joins the moved filter;
 //   - a layer whose value reads only the table's columns and the values
 //     already moved, and a filter conjunct that reads only those values,
@@ -44,6 +54,12 @@ const maxScanScopeExpansion = 3
 //     map column as a whole, and a value or a conjunct that reads a layer
 //     does not move when its own text reads a key of a map column the
 //     stage reads as a whole;
+//   - with inWhereOrder, which reports that the servers run a multi-step
+//     PREWHERE in the order of the WHERE conjuncts, the rule above is lifted
+//     up to the filter [orderedScanPrefix] finds, when that keeps the first
+//     filter it names in the scan's scope, and a filter conjunct after that
+//     first one and up to that filter joins it whatever the scope's
+//     expansion, as long as it reads only values in the scope;
 //   - a moved layer that reads another value goes back to its place
 //     unless a moved filter reads it.
 //
@@ -59,14 +75,16 @@ const maxScanScopeExpansion = 3
 // whole map in the scan's scope reads it ahead of the rows it filters.
 //
 // The conjuncts in the scan's scope keep the order the stage gives them,
-// which is the pipeline's: ClickHouse runs a multi-step PREWHERE in the
-// order of the WHERE conjuncts, and the order the query was written in
-// is the one a reader of it can tune.
+// which is the pipeline's: a server that keeps WHERE order
+// (chopt.PrewhereKeepsWhereOrder) runs a multi-step PREWHERE in that
+// order, and the order the query was written in is the one a reader of it
+// can tune. A server that reorders the conditions chooses their order
+// itself.
 //
 // Moving a value below the layers it does not read changes nothing it
 // computes: every layer is a pure per-row value, and an AND of predicates
 // over the same row keeps the same rows wherever each of them runs.
-func (r *rowLayers) gatherAtScan(maps []string, consumer ...chplan.Expr) {
+func (r *rowLayers) gatherAtScan(maps []string, inWhereOrder bool, consumer ...chplan.Expr) {
 	var items []chplan.Node
 	base := r.node
 	for r.stackNode(base) {
@@ -75,12 +93,28 @@ func (r *rowLayers) gatherAtScan(maps []string, consumer ...chplan.Expr) {
 	}
 	slices.Reverse(items)
 
+	reads := stageMapReads(maps, consumer, items)
+	g := r.gather(base, items, reads, -1, nil)
+	if inWhereOrder {
+		if through, first := orderedScanPrefix(base, items, r.values(maps), reads); first != nil {
+			if ordered := r.gather(base, items, reads, through, first); slices.Contains(ordered.filtered, first) {
+				g = ordered
+			}
+		}
+	}
+	r.node = rebuildAtScan(g.base, g.layers, g.filtered, g.above, &r.atScan)
+}
+
+// gather walks items, the stack over base, and returns what it moves into
+// the scan's scope, folds into the scan's filter and leaves above, with
+// keyedThrough and first as [scanGather]'s.
+func (r *rowLayers) gather(base chplan.Node, items []chplan.Node, reads stageMaps, keyedThrough int, first chplan.Expr) scanGather {
 	aliases := map[string]bool{}
 	for _, layer := range r.layers {
 		aliases[layer.Projections[0].Alias] = true
 	}
 	scope := scanScope{aliases: aliases, defs: map[string]chplan.Expr{}, expanded: map[string]int{}}
-	g := scanGather{reads: stageMapReads(maps, consumer, items), base: base}
+	g := scanGather{reads: reads, base: base, keyedThrough: keyedThrough, first: first}
 	for i, item := range items {
 		switch n := item.(type) {
 		case *chplan.Project:
@@ -90,7 +124,7 @@ func (r *rowLayers) gatherAtScan(maps []string, consumer ...chplan.Expr) {
 		}
 	}
 	g.demote(&scope)
-	r.node = rebuildAtScan(g.base, g.layers, g.filtered, g.above, &r.atScan)
+	return g
 }
 
 // scanGather is the state of one [rowLayers.gatherAtScan] walk: what it
@@ -99,6 +133,15 @@ func (r *rowLayers) gatherAtScan(maps []string, consumer ...chplan.Expr) {
 // is passed.
 type scanGather struct {
 	reads stageMaps
+	// keyedThrough is the place in the stack up to which a value or a
+	// conjunct may move although it reads a map column the stage reads as
+	// a whole, by key or whole ([orderedScanPrefix]); -1 when none may.
+	keyedThrough int
+	// first is the conjunct [orderedScanPrefix] names first. Once it has
+	// moved, a conjunct up to keyedThrough that reads only values in the
+	// scope joins it there whatever the scope's expansion, so the scan
+	// reads the stage up to the line filter in pipeline order.
+	first chplan.Expr
 	// base is the stream scan with the conjuncts folded into its filter.
 	base chplan.Node
 	// layers are the moved layers, bottom first, and layerAt each one's
@@ -117,16 +160,22 @@ type scanRest struct {
 	conjuncts []chplan.Expr
 }
 
-// movable reports whether e may join scope.
-func (g *scanGather) movable(scope *scanScope, e chplan.Expr) bool {
-	return !g.reads.readsWholeKey(e) && scope.admits(e)
+// joinsFirst reports whether a conjunct at place i in the stack follows
+// first, moved, up to keyedThrough.
+func (g *scanGather) joinsFirst(i int) bool {
+	return i <= g.keyedThrough && g.first != nil && slices.Contains(g.filtered, g.first)
+}
+
+// movable reports whether e, at place i in the stack, may join scope.
+func (g *scanGather) movable(scope *scanScope, i int, e chplan.Expr) bool {
+	return (i <= g.keyedThrough || !g.reads.readsWholeKey(e)) && scope.admits(e)
 }
 
 // takeLayer moves the layer n, at place i, into the scope or leaves it
 // above.
 func (g *scanGather) takeLayer(scope *scanScope, i int, n *chplan.Project) {
 	value := n.Projections[0]
-	if !g.movable(scope, value.Expr) {
+	if !g.movable(scope, i, value.Expr) {
 		g.above = append(g.above, scanRest{at: i, layer: n})
 		return
 	}
@@ -142,15 +191,18 @@ func (g *scanGather) takeFilter(scope *scanScope, i int, n *chplan.Filter) {
 	var kept []chplan.Expr
 	for _, conjunct := range conjuncts(n.Predicate) {
 		switch {
-		case g.reads.readsWhole(conjunct):
+		case g.reads.readsWhole(conjunct) && i > g.keyedThrough:
 			kept = append(kept, conjunct)
-		case !scope.readsLayer(conjunct) && (len(g.filtered) == 0 || g.reads.readsWholeKey(conjunct)):
+		case !scope.readsLayer(conjunct) && (len(g.filtered) == 0 || g.reads.readsWholeKey(conjunct) && !g.joinsFirst(i)):
 			g.base = andFilter(g.base, conjunct)
 		case !scope.readsLayer(conjunct):
 			// Behind a moved filter it joins the moved ones in order; it
 			// reads no value, so it adds nothing to expand.
 			g.filtered = append(g.filtered, conjunct)
-		case g.movable(scope, conjunct):
+		case g.joinsFirst(i) && scope.readsOnlyScope(conjunct):
+			scope.add(conjunct)
+			g.filtered = append(g.filtered, conjunct)
+		case g.movable(scope, i, conjunct):
 			scope.add(conjunct)
 			g.filtered = append(g.filtered, conjunct)
 		default:
@@ -160,6 +212,52 @@ func (g *scanGather) takeFilter(scope *scanScope, i int, n *chplan.Filter) {
 	if len(kept) > 0 {
 		g.above = append(g.above, scanRest{at: i, conjuncts: kept})
 	}
+}
+
+// orderedScanPrefix finds, in items, the first filter conjunct that reads
+// a layer and no map column as a whole, when a conjunct the pipeline runs
+// after it reads no layer, no map column as a whole, and a table column that
+// base's filter, the conjuncts ahead of the first one and the first one
+// through the layers it reads do not already read. It returns the place of
+// the filter holding that later conjunct and the first one, or a nil
+// conjunct when there is none.
+//
+// On a server that runs a multi-step PREWHERE in the order of the WHERE
+// conjuncts, ClickHouse reads each column at the first step that needs it,
+// for the rows the steps ahead of it keep. Folded ahead of the first one,
+// the later conjunct reads its column for the rows the first one drops;
+// left above the scan, that column is read for every row the scan passes
+// up. Up to the later conjunct, values and conjuncts then move into the
+// scan's scope even when they read a map column the stage reads as a whole,
+// so the stage reads as one scope in pipeline order there, as long as the
+// first one moves.
+func orderedScanPrefix(base chplan.Node, items []chplan.Node, values layerValues, reads stageMaps) (int, chplan.Expr) {
+	early := tableReads{}
+	if f, ok := base.(*chplan.Filter); ok {
+		values.addTableReads(early, f.Predicate)
+	}
+	var first chplan.Expr
+	for i, item := range items {
+		f, ok := item.(*chplan.Filter)
+		if !ok {
+			continue
+		}
+		for _, conjunct := range conjuncts(f.Predicate) {
+			switch {
+			case reads.readsWhole(conjunct):
+			case values.reads(conjunct):
+				if first == nil {
+					values.addTableReads(early, conjunct)
+					first = conjunct
+				}
+			case first == nil:
+				values.addTableReads(early, conjunct)
+			case !early.covers(values.tableReads(conjunct)):
+				return i, first
+			}
+		}
+	}
+	return -1, nil
 }
 
 // demote sends back to its place a moved layer that reads another value
@@ -304,6 +402,11 @@ func (s *scanScope) readsLayer(e chplan.Expr) bool {
 // no alias outside the scope and keeps the scope within
 // [maxScanScopeExpansion] once added.
 func (s *scanScope) admits(e chplan.Expr) bool {
+	return s.readsOnlyScope(e) && s.expandedTotal+s.expandedSize(e) <= maxScanScopeExpansion*(s.text+exprSize(e))
+}
+
+// readsOnlyScope reports whether e reads no alias outside the scope.
+func (s *scanScope) readsOnlyScope(e chplan.Expr) bool {
 	outside := false
 	chplan.InspectExpr(e, func(sub chplan.Expr) bool {
 		if ref, ok := sub.(*chplan.ColumnRef); ok && s.aliases[ref.Name] {
@@ -313,7 +416,7 @@ func (s *scanScope) admits(e chplan.Expr) bool {
 		}
 		return !outside
 	})
-	return !outside && s.expandedTotal+s.expandedSize(e) <= maxScanScopeExpansion*(s.text+exprSize(e))
+	return !outside
 }
 
 // add counts e into the scope's sizes.
