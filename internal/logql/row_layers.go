@@ -91,10 +91,12 @@ func (r *rowLayers) define(alias string, expr chplan.Expr) chplan.Expr {
 	return &chplan.ColumnRef{Name: alias}
 }
 
-// defineWide is [rowLayers.define] for a value too wide to carry through
-// a log query's sort, such as a parser stage's labels map: when a filter
-// reads it, [rowLayers.hoist] defines it once more above the limit rather
-// than passing it through the ORDER BY.
+// defineWide is [rowLayers.define] for a value a log query's sort does
+// not carry: one too wide to, such as a parser stage's labels map, or one
+// whose table inputs ClickHouse reads for every row the sort sees when the
+// sort carries it, such as the detected level ([defineDetectedLevel]).
+// When a filter reads it, [rowLayers.hoist] defines it once more above the
+// limit rather than passing it through the ORDER BY.
 func (r *rowLayers) defineWide(alias string, expr chplan.Expr) chplan.Expr {
 	n := len(r.layers)
 	ref := r.define(alias, expr)

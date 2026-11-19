@@ -63,6 +63,49 @@ func TestLogQueryDefinesEachLabelsMapTwiceAtMost(t *testing.T) {
 	}
 }
 
+// TestLogQueryComputesTheDetectedLevelAboveTheLimit pins where a log query
+// computes the detected level. When a filter reads the level, it is
+// computed below the ORDER BY … LIMIT for the filter and again above it for
+// the returned rows; the sort carries the raw columns the level reads, never
+// the level. Carried through the sort, the level made ClickHouse read its
+// map-subcolumn inputs for every row the filter keeps. When no filter reads
+// it, it is computed above the limit alone.
+func TestLogQueryComputesTheDetectedLevelAboveTheLimit(t *testing.T) {
+	t.Parallel()
+	const cascade = "multiIf((`SeverityText` != ?), `SeverityText`"
+	for _, tc := range []struct {
+		query string
+		want  int
+	}{
+		{`{service_name="api"} | detected_level="fatal"`, 2},
+		{`{service_name="api"} | detected_level=~"error|fatal" |= "timeout"`, 2},
+		{`{service_name="api"} |= "timeout"`, 1},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			t.Parallel()
+			sql := logQuerySQL(t, tc.query)
+			if got := strings.Count(sql, cascade); got != tc.want {
+				t.Errorf("the detected_level source cascade appears %d times, want %d", got, tc.want)
+			}
+			carried := sortedSelectList(t, sql)
+			if strings.Contains(carried, "_logql_") {
+				t.Errorf("the sort carries %q, want no computed value", carried)
+			}
+			if tc.want == 1 {
+				return
+			}
+			if !regexp.MustCompile("^`[A-Za-z]+`(, `[A-Za-z]+`)*$").MatchString(carried) {
+				t.Errorf("the sort carries %q, want table columns only", carried)
+			}
+			for _, column := range []string{"`SeverityNumber`", "`SeverityText`"} {
+				if !strings.Contains(carried, column) {
+					t.Errorf("the sort carries %q, want %s among them for the level above the limit", carried, column)
+				}
+			}
+		})
+	}
+}
+
 // sortedSelectList returns the select list of the subquery the statement's
 // ORDER BY sorts: the parenthesised SELECT that ends right before it.
 func sortedSelectList(t *testing.T, sql string) string {
