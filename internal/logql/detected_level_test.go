@@ -1,9 +1,12 @@
 package logql
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/prometheus/prometheus/model/labels"
 
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 
@@ -1183,8 +1186,8 @@ func TestDetectedLevelSource_NoAttributesColumnCollapses(t *testing.T) {
 	}
 }
 
-// evalLevelPredicate evaluates an expression levelEqualsExpr or
-// normaliseLevelExpr builds, with the ColumnRef src bound to source, the
+// evalLevelPredicate evaluates an expression levelEqualsExpr,
+// levelMatchesExpr or normaliseLevelExpr builds, with the ColumnRef src bound to source, the
 // way ClickHouse evaluates it.
 func evalLevelPredicate(t *testing.T, e chplan.Expr, source string) any {
 	t.Helper()
@@ -1202,6 +1205,13 @@ func evalLevelPredicate(t *testing.T, e chplan.Expr, source string) any {
 			return l == r
 		case chplan.OpOr:
 			return l.(bool) || r.(bool)
+		case chplan.OpAnd:
+			return l.(bool) && r.(bool)
+		case chplan.OpMatch, chplan.OpNotMatch:
+			// match() over the anchored pattern, as the emitter renders it;
+			// `.` matches a newline there, as in the Prometheus matcher.
+			re := regexp.MustCompile("^(?s:" + r.(string) + ")$")
+			return re.MatchString(l.(string)) == (v.Op == chplan.OpMatch)
 		}
 	case *chplan.FuncCall:
 		switch v.Fn {
@@ -1221,6 +1231,8 @@ func evalLevelPredicate(t *testing.T, e chplan.Expr, source string) any {
 				out[i] = evalLevelPredicate(t, a, source).(string)
 			}
 			return out
+		case chplan.FnNot:
+			return !evalLevelPredicate(t, v.Args[0], source).(bool)
 		case chplan.FnArrayHas:
 			return slices.Contains(evalLevelPredicate(t, v.Args[0], source).([]string), evalLevelPredicate(t, v.Args[1], source).(string))
 		}
@@ -1254,6 +1266,43 @@ func TestLevelEqualsExprMatchesTheNormalisation(t *testing.T) {
 				want := slices.Contains(levels, level)
 				if got := evalLevelPredicate(t, predicate, source).(bool); got != want {
 					t.Errorf("levels %q, source %q: predicate = %v, normalisation %q is one of them = %v", levels, source, got, level, want)
+				}
+			}
+		}
+	}
+}
+
+// TestLevelMatchesExprMatchesTheNormalisation pins that the predicate
+// levelMatchesExpr builds over a level source holds exactly when the
+// matcher matches the normalisation normaliseLevelExpr renders from that
+// source: across every variant spelling in several cases, a source that
+// differs from a variant only by case, the empty source and `unknown`,
+// values the normalisation passes through, and regexes that match a level
+// whole, part of a variant only, a passed-through value only, or nothing,
+// each as =~ and as !~.
+func TestLevelMatchesExprMatchesTheNormalisation(t *testing.T) {
+	t.Parallel()
+	values := []string{"", "unknown", "Unknown", "UNKNOWN", "custom", "Custom", "notice", "errant", "Errant", "ERR", "Err", "Warning", "İNFO", "CRİTİCAL", "err\nor", "error\n"}
+	for _, g := range levelNormalizationGroups {
+		for _, v := range g.variants {
+			values = append(values, v, strings.ToUpper(v), strings.ToUpper(v[:1])+v[1:])
+		}
+	}
+	patterns := []string{
+		"err.*", "error|fatal", "err", "error", "ERROR", "(?i)error", "unknown", "", ".*", ".+",
+		"warn.*", "warning", "inf", "c.*", "Custom", "custom|info", "err.+", "(?i)err.*", "notice|unknown",
+	}
+	src := &chplan.ColumnRef{Name: "src"}
+	normalised := normaliseLevelExpr(src)
+	for _, pattern := range patterns {
+		for _, mt := range []labels.MatchType{labels.MatchRegexp, labels.MatchNotRegexp} {
+			m := labels.MustNewMatcher(mt, detectedLevelLabel, pattern)
+			predicate := levelMatchesExpr(src, m)
+			for _, source := range values {
+				level := evalLevelPredicate(t, normalised, source).(string)
+				want := m.Matches(level)
+				if got := evalLevelPredicate(t, predicate, source).(bool); got != want {
+					t.Errorf("%s, source %q: predicate = %v; the matcher on normalisation %q = %v", m, source, got, level, want)
 				}
 			}
 		}

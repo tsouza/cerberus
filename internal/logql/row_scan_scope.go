@@ -17,10 +17,17 @@ import (
 // times the size of its text. The parser and label-filter scopes of the
 // shapes the stage lowers to expand to 1.8–2.9 times their text; the
 // unwrap conversion chain above them expands past 3.4, and moved into the
-// scan's scope it adds seconds of analysis on ClickHouse 24.8. The one
-// exception is a conjunct that reads only values already in the scope,
-// behind the first conjunct of an ordered prefix ([scanGather.first]). It
-// adds no layer, only its own reads of the scope's aliases. Left above the
+// scan's scope it adds seconds of analysis on ClickHouse 24.8. The
+// exceptions are the first conjunct of an ordered prefix
+// ([scanGather.first]) and a conjunct behind it, each when it reads only
+// values already in the scope. Either adds no layer, only its own reads of
+// the scope's aliases. A detected_level regex matcher as the first one
+// reads the level source three times, through two lower()s and its regex,
+// which puts some patterns past the bound; left above, the scan reads the body for
+// every row the level drops — 27,874,186 bytes more on 24.8 for
+// `| detected_level=~"err.*" |= "error"` — while in the scope the query
+// runs in 0.9 s against 6.0 s for the same stack inlined into the scan's
+// WHERE. For a conjunct behind the first one, left above the
 // scan, it leaves the scan reading more of the table than pipeline order
 // needs — 120,838 bytes more on 24.8 for a `| json | status >= 400` filter
 // between a level filter and a line filter — while the scope it joins
@@ -57,9 +64,9 @@ const maxScanScopeExpansion = 3
 //   - with inWhereOrder, which reports that the servers run a multi-step
 //     PREWHERE in the order of the WHERE conjuncts, the rule above is lifted
 //     up to the filter [orderedScanPrefix] finds, when that keeps the first
-//     filter it names in the scan's scope, and a filter conjunct after that
-//     first one and up to that filter joins it whatever the scope's
-//     expansion, as long as it reads only values in the scope;
+//     filter it names in the scan's scope, and that first one, and a filter
+//     conjunct after it and up to that filter, joins the scope whatever the
+//     scope's expansion, as long as it reads only values in the scope;
 //   - a moved layer that reads another value goes back to its place
 //     unless a moved filter reads it.
 //
@@ -137,10 +144,11 @@ type scanGather struct {
 	// conjunct may move although it reads a map column the stage reads as
 	// a whole, by key or whole ([orderedScanPrefix]); -1 when none may.
 	keyedThrough int
-	// first is the conjunct [orderedScanPrefix] names first. Once it has
-	// moved, a conjunct up to keyedThrough that reads only values in the
-	// scope joins it there whatever the scope's expansion, so the scan
-	// reads the stage up to the line filter in pipeline order.
+	// first is the conjunct [orderedScanPrefix] names first. It joins the
+	// scope whatever the scope's expansion when it reads only values in
+	// the scope, and once it has moved, so does a conjunct up to
+	// keyedThrough that does, so the scan reads the stage up to the line
+	// filter in pipeline order.
 	first chplan.Expr
 	// base is the stream scan with the conjuncts folded into its filter.
 	base chplan.Node
@@ -199,7 +207,7 @@ func (g *scanGather) takeFilter(scope *scanScope, i int, n *chplan.Filter) {
 			// Behind a moved filter it joins the moved ones in order; it
 			// reads no value, so it adds nothing to expand.
 			g.filtered = append(g.filtered, conjunct)
-		case g.joinsFirst(i) && scope.readsOnlyScope(conjunct):
+		case (g.joinsFirst(i) || conjunct == g.first) && scope.readsOnlyScope(conjunct):
 			scope.add(conjunct)
 			g.filtered = append(g.filtered, conjunct)
 		case g.movable(scope, i, conjunct):
