@@ -90,11 +90,15 @@ func TestLogQueryLevelFilterSparesTheBody(t *testing.T) {
 // do not overlap, so the counts add up to the matching lines.
 const logFilterOrderStep = time.Hour
 
-// logFilterOrderRangeQueries filter on the detected level, then on a label
-// that reads LogAttributes whole, then on the line.
+// logFilterOrderRangeQueries filter on the detected level, by equality or
+// by regex, then, in some, on a label that reads LogAttributes whole, then
+// on the line.
 var logFilterOrderRangeQueries = []string{
 	`sum(count_over_time({service_name="tempo", pod="pod-8"} | detected_level="error" | tenant!="tenant-7" |~ "(?i)failed" [1h]))`,
 	`sum(count_over_time({service_name="tempo", pod="pod-8"} | detected_level="error" | json | status >= 400 |~ "(?i)failed" [1h]))`,
+	`sum(count_over_time({service_name="tempo", pod="pod-8"} | detected_level=~"err.*" |~ "(?i)failed" [1h]))`,
+	`sum(count_over_time({service_name="tempo", pod="pod-8"} | detected_level=~"error|fatal" |~ "(?i)failed" [1h]))`,
+	`sum(count_over_time({service_name="tempo", pod="pod-8"} | detected_level!~"info|debug" | tenant!="tenant-7" |~ "(?i)failed" [1h]))`,
 }
 
 // TestRangeAggregationLevelFilterSparesTheBody runs logFilterOrderRangeQueries
