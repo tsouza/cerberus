@@ -133,7 +133,7 @@ func (r *rowLayers) gatherAtScan(maps []string, inWhereOrder bool, consumer ...c
 	reads := stageMapReads(maps, consumer, items)
 	values := r.values(maps)
 	if !inWhereOrder {
-		r.node = r.rebuild(r.gather(base, items, reads, -1, nil, wholeMapFiltersAhead(items, values, reads), nil, true))
+		r.node = r.rebuild(r.gather(base, items, reads, -1, nil, wholeMapFiltersAhead(items, values, reads), nil, filtersLevelSource(items)))
 		return
 	}
 	g := r.gather(base, items, reads, -1, nil, nil, nil, false)
@@ -561,6 +561,17 @@ func (r *rowLayers) markAtScan(consumer *chplan.Project) {
 // levelSourceAliases names the detected_level source, for
 // [scanGather.levelBesideSource].
 var levelSourceAliases = map[string]bool{levelSourceAlias: true}
+
+// filtersLevelSource reports whether a filter conjunct of items reads the
+// detected_level source.
+func filtersLevelSource(items []chplan.Node) bool {
+	for _, item := range items {
+		if f, ok := item.(*chplan.Filter); ok && chplan.ReadsAnyColumn(f.Predicate, levelSourceAliases) {
+			return true
+		}
+	}
+	return false
+}
 
 // keeps reports whether the moved layer value stays in the scope, given
 // needed, the columns the moved filters and the layers kept above it

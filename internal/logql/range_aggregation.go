@@ -439,7 +439,7 @@ func lineFilterFollowsLevelFilter(pipeline *syntax.PipelineExpr) bool {
 func filtersDetectedLevel(lf syntax.LabelFilterer) bool {
 	switch v := lf.(type) {
 	case *syntax.StringLabelFilter:
-		return isDetectedLevelLabel(v.Matcher.Name)
+		return isDetectedLevelLabel(v.Name)
 	case *syntax.BinaryLabelFilter:
 		return filtersDetectedLevel(v.Left) || filtersDetectedLevel(v.Right)
 	}

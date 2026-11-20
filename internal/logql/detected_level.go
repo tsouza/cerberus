@@ -203,7 +203,9 @@ func detectedLevelSourceExpr(s schema.Logs) chplan.Expr {
 	// The keys are Loki/OTLP-convention structured-metadata names stored
 	// verbatim — NOT OTel dotted resource attributes — so a plain
 	// MapAccess (no dotted-form fallback) is the correct, lean lookup.
-	keys := append([]string{detectedLevelLabel}, allowedLevelFields...)
+	keys := make([]string, 0, len(allowedLevelFields)+1)
+	keys = append(keys, detectedLevelLabel)
+	keys = append(keys, allowedLevelFields...)
 
 	attrCol := &chplan.ColumnRef{Name: s.AttributesColumn}
 	args := make([]chplan.Expr, 0, len(keys)*2+1)
