@@ -60,8 +60,10 @@ import (
 // matching spans over Input's wider window.
 //
 // When the input is a Filter directly above a Scan whose rendering carries a
-// PREWHERE, the drain is that Filter(Scan) statement itself, with the
-// membership test appended to its PREWHERE (prewhereDrain):
+// PREWHERE, and the strategies do not ask for the outer filter
+// (SchemaStrategies.SearchDrainOuterFilter, chopt's
+// search_drain_outer_filter), the drain is that Filter(Scan) statement
+// itself, with the membership test appended to its PREWHERE (prewhereDrain):
 //
 //	SELECT <columns> FROM <table>
 //	PREWHERE <input PREWHERE> AND `<trace-id role>` GLOBAL IN (<top-N>)
@@ -137,10 +139,14 @@ func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
 // membership, appended to its PREWHERE after the input's own PREWHERE
 // conjuncts. ClickHouse then reads the trace-id column only for the rows
 // those conjuncts keep, and the rest of the row only for the chosen traces'
-// rows. ok is false for any other input, and for a Filter(Scan) rendered
-// without a PREWHERE (the server places it, or no conjunct qualifies): the
-// drain then filters the input's rows from outside.
+// rows. ok is false under SearchDrainOuterFilter, for any other input, and
+// for a Filter(Scan) rendered without a PREWHERE (the server places it, or
+// no conjunct qualifies): the drain then filters the input's rows from
+// outside.
 func prewhereDrain(input chplan.Node, chosen Frag, strategies SchemaStrategies) (sb *QueryBuilder, ok bool, err error) {
+	if strategies.SearchDrainOuterFilter {
+		return nil, false, nil
+	}
 	f, isFilter := input.(*chplan.Filter)
 	if !isFilter {
 		return nil, false, nil
