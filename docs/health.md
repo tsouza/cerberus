@@ -142,6 +142,8 @@ Content-Type: application/json
     "database": "otel",
     "serverVersion": "26.6",
     "serverVersionSource": "probe",
+    "minimumSupportedVersion": "26.3",
+    "unsupportedNodes": 0,
     "reachable": true,
     "breaker": "closed",
     "schemaReady": true
@@ -228,10 +230,19 @@ Live fields, re-read on every request:
   `<major>.<minor>.<patch>.<build>` the server reports (`26.3.17.56`) — the
   lowest across every node the version probe reaches
   ([Runtime version probe](clickhouse-optimizations.md#runtime-version-probe))
-  — or `<major>.<minor>` for the `fallback` floor (`24.8`).
+  — or `<major>.<minor>` for the `fallback` version (`24.8`).
 - `clickhouse.serverVersionSource` — `"probe"` when read live from the
-  server, or `"fallback"` when the probe failed and the supported floor
-  (`24.8`) was assumed.
+  server, or `"fallback"` when the probe failed and the probe fallback
+  version (`24.8`) was assumed.
+- `clickhouse.minimumSupportedVersion` — the minimum supported ClickHouse
+  version, `<major>.<minor>` (`26.3`).
+- `clickhouse.unsupportedNodes` — how many ClickHouse nodes the latest
+  version probe that reached any node found below
+  `minimumSupportedVersion`. Non-zero means cerberus is running against an
+  unsupported server: it still serves queries, logs a WARN per unsupported
+  build, and counts the nodes on `cerberus_clickhouse_unsupported_nodes`
+  ([Observability](observability.md#self-metrics)). cerberus v1.26.0 refuses
+  to start against such a server.
 - `optimizations.resolvedAgainstVersion` — the version the auto-picker
   resolved the selection against (equals `serverVersion`).
 - `optimizations.enabled` — **the headline field**: the effectively enabled

@@ -24,14 +24,15 @@ import (
 
 // semanticBuilds are the builds the semantic corpus runs against: one
 // release of each line whose server compiles regular expressions to native
-// code, and the supported floor, which has no compiler and pins that the
-// emitted patterns answer as the reference engines do there too. Held equal
-// to the Justfile's CH_REGEX_JIT_IMAGES and CH_TEST_IMAGE_PRIOR by
+// code, and a build of the minimum supported line, which has no compiler and
+// pins that the emitted patterns answer as the reference engines do there
+// too. Held equal to the Justfile's CH_REGEX_JIT_IMAGES and
+// CH_MIN_SUPPORTED_IMAGE by
 // test/regression's TestIntegrationImagePinsMatchTheJustfile.
 var semanticBuilds = []string{
 	"clickhouse/clickhouse-server:26.7.13.12-alpine",
 	"clickhouse/clickhouse-server:26.8.10.6-alpine",
-	"clickhouse/clickhouse-server:24.8-alpine",
+	"clickhouse/clickhouse-server:26.3.17.56-alpine",
 }
 
 // Seed identity. Every probe row sits inside one five-minute window ending

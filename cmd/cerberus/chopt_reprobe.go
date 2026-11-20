@@ -72,10 +72,12 @@ func (l *chOptLive) infoState() info.OptState {
 		source = info.ServerVersionSourceFallback
 	}
 	return info.OptState{
-		ServerVersion:       res.ResolvedVersion.String(),
-		ServerVersionSource: source,
-		Enabled:             res.Set.IDs(),
-		QueryWorkload:       res.QueryWorkload,
+		ServerVersion:           res.ResolvedVersion.String(),
+		ServerVersionSource:     source,
+		Enabled:                 res.Set.IDs(),
+		QueryWorkload:           res.QueryWorkload,
+		MinimumSupportedVersion: chopt.MinSupportedVersion().String(),
+		UnsupportedNodes:        res.UnsupportedNodes,
 	}
 }
 
@@ -172,7 +174,7 @@ const chOptReprobeInterval = 5 * time.Minute
 // The steady-state interval above is priced against a server whose answer
 // "almost never changes", which is true of a healthy deployment and false of a
 // pod that lost the startup race with its own ClickHouse: that pod is pinned to
-// the supported floor, every native path is silently unavailable, and the
+// the probe fallback floor, every native path is silently unavailable, and the
 // answer is expected to change the moment the server finishes coming up. Five
 // minutes of that is not a blind window on an upgrade, it is five minutes of
 // emitting the slow shape for no reason — long enough that a deployment can
@@ -284,7 +286,7 @@ func (t reprobeTrigger) request(rej chclient.UnknownNameRejection) {
 // running process, so a resolve error here is evidence of something transient
 // and is logged and retried rather than taken as grounds to kill a serving pod.
 //
-// A probe that reaches no node resolves against the supported floor, exactly
+// A probe that reaches no node resolves against probeFallbackVersion, exactly
 // as boot does. That is what makes the loop symmetric: a pod that booted while
 // ClickHouse was down pinned itself to the floor, and this is the path that
 // lifts it off the floor once the server answers, with no restart. A probe
@@ -377,6 +379,7 @@ func reprobeCHOptimizations(
 		// build that refuses it.
 		fleet := probeFleet(ctx)
 		inForce := live.get()
+		unsupportedNodes, unsupportedRead := reportUnsupportedFleet(ctx, logger, fleet)
 		gates, conditionCacheOff := gatesInForce(fleet, &inForce, consumers.client != nil && consumers.client.QueryConditionCacheDisabled())
 		if consumers.client != nil {
 			refreshConditionCacheOverride(logger, consumers.client, fleet, conditionCacheOff)
@@ -397,6 +400,10 @@ func reprobeCHOptimizations(
 		}
 		next.Set = next.Set.WithAnalyzerMandatory(analyzerMandatory).WithShapeDefects(shapeDefects).
 			WithPrewhereInWhereOrder(inWhereOrder)
+		next.UnsupportedNodes = inForce.UnsupportedNodes
+		if unsupportedRead {
+			next.UnsupportedNodes = unsupportedNodes
+		}
 		prev := live.get()
 		schedule(next)
 		if next.Set.Equal(prev.Set) && next.ResolvedVersion == prev.ResolvedVersion && next.QueryWorkload == prev.QueryWorkload {
@@ -462,7 +469,7 @@ func resolveCHOptimizationsOnce(
 	resolvedVersion, err := fleetResolutionVersion(fleet, inForce)
 	versionFallback := err != nil
 	if err != nil {
-		resolvedVersion = supportedFloorVersion
+		resolvedVersion = probeFallbackVersion
 	}
 
 	set, _, err := chopt.Resolve(fleetResolveConfig(cfg, fleet), resolvedVersion)
@@ -516,6 +523,6 @@ func capabilitiesResolved(live *chOptLive) health.CapabilitiesResolvedFunc {
 			return true, ""
 		}
 		return false, "clickhouse version probe has not succeeded; " +
-			"optimizations resolved against the supported floor"
+			"optimizations resolved against the probe fallback floor"
 	}
 }

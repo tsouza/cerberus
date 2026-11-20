@@ -35,7 +35,7 @@ func TestReprobeCHOptimizations_UnchangedPassRecordsItsFlags(t *testing.T) {
 		inForce, pass chopt.Version
 		flag          func(*chOptResolution)
 	}{
-		{"floor fallback answered on the floor build", auto, supportedFloorVersion, supportedFloorVersion, func(r *chOptResolution) { r.VersionFallback = true }},
+		{"floor fallback answered on the floor build", auto, probeFallbackVersion, probeFallbackVersion, func(r *chOptResolution) { r.VersionFallback = true }},
 		{"incomplete pass followed by a complete one", auto, rollbackFromBuild, rollbackFromBuild, func(r *chOptResolution) { r.FleetIncomplete = true }},
 		{"held pass followed by one that reached every build", auto, rollbackFromBuild, rollbackFromBuild, func(r *chOptResolution) { r.FleetHeld = true }},
 		{"incomplete pass followed by a complete one whose resolve fails", explicit, argAndMaxFloorBuild, balancedOldBuild, func(r *chOptResolution) { r.FleetIncomplete = true }},

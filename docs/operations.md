@@ -408,7 +408,7 @@ gate — so any server on 26.6+ runs the structural-join arm across cores with n
 config change. cerberus's per-query memory bound on this path (the top-N
 `BoundedTraceScope` leaf gate that caps how many traces feed the recursion)
 holds on every floor; 26.6 only makes the bounded recursion *faster*. There is
-no correctness floor here (the SQL is 24.8-safe), so it stays a **recommendation,
+no correctness floor here (the SQL runs on every server cerberus starts against), so it stays a **recommendation,
 not a requirement**: trace-heavy deployments leaning on the structure tab should
 prefer 26.6+, everyone else is unaffected.
 
@@ -458,8 +458,8 @@ parses a String to a float (a LogQL numeric or bytes label filter, a TraceQL
 numeric attribute comparison), and every other query keeps the cache
 ([Shape-scoped defects](clickhouse-optimizations.md#shape-scoped-defects)).
 
-**Upgrade a fleet still on 24.8 past 25.6 before any node enters these
-ranges.** The settings cerberus sends against these defects do not exist on
+**Upgrade a fleet still on an unsupported server older than 25.6 past 25.6
+before any node enters these ranges.** The settings cerberus sends against these defects do not exist on
 older servers, which reject the whole query (`UNKNOWN_SETTING`):
 `use_query_condition_cache` below 25.3 and `optimize_use_projection_filtering`
 below 25.6. While the fleet mixes an affected build with one too old for the
@@ -1527,7 +1527,7 @@ pushdown completely differently and does not have this issue."*
 
 **Why this is still a genuine, concrete risk for cerberus, not a closed
 non-issue.** `enable_analyzer` defaults to `1` (the new analyzer) on every
-ClickHouse version cerberus supports (>= 24.8, well past the 24.3+ fix), so
+ClickHouse version cerberus supports (>= 26.3, well past the 24.3+ fix), so
 ordinary cerberus queries are not exposed. But
 `internal/engine/query_settings_rules.go`'s `applyNativeHistogramAnalyzerFix`
 **forces `enable_analyzer=0` unless every reachable node is known to run 26.8
@@ -2409,7 +2409,7 @@ unchanged one. Re-running the identical statement is still safe to do on
 every boot: ClickHouse compares the declared codec against the column's
 current one and only schedules work when they actually differ, so applying
 this repeatedly never re-triggers a conversion once the codec has converged
-— verified directly against a live server (both a 24.8 floor container and
+— verified directly against a live server (both a 24.8 container and
 the auto-create integration test's 25.9 container): re-issuing the same
 `MODIFY COLUMN ... CODEC(...)` statement twice in a row produces no error
 and no additional mutation.
@@ -2420,8 +2420,8 @@ measured worse and is not adopted, so those columns keep their upstream codecs
 unchanged. See [`operations.background.md`](operations.background.md) for the
 full benchmark record.
 
-All codecs used above are supported at ClickHouse >= 22.9, well under this
-repo's 24.8 version floor (`docs/toolchain.md`), so — like `ADD PROJECTION`
+All codecs used above are supported at ClickHouse >= 22.9, well under the
+minimum supported ClickHouse version ([Supported ClickHouse versions](#supported-clickhouse-versions)), so — like `ADD PROJECTION`
 / `ADD INDEX` above, and unlike `ADD STATISTICS`'s chopt-gated
 `column_statistics` feature — this registry renders **unconditionally**: no
 config flag, no chopt feature gate.
@@ -3148,6 +3148,27 @@ them: for rebuild, the MV `DROP`s and `CREATE`s in the order above and the
 source. A dry run connects to nothing, so it renders the `Flags` filter as
 for metric tables that carry the column.
 
+### Supported ClickHouse versions
+
+The minimum supported ClickHouse version is **26.3**. The rule: the minimum is
+the oldest LTS line upstream ClickHouse still supports, and moves with it.
+
+A server older than 26.3 is unsupported. cerberus v1.25.0 still starts against
+one and serves queries exactly as before, emitting the SQL that server's
+version resolves to, and reports it:
+
+- a WARN at boot, and on every version re-probe that finds such a node, per
+  unsupported build: `clickhouse server is below the minimum supported
+  version; …`, with `server_version`, `minimum_supported_version` and
+  `nodes`;
+- the gauge `cerberus_clickhouse_unsupported_nodes`, the number of nodes the
+  latest probe found below 26.3 ([Observability](observability.md#self-metrics));
+- `/info` `clickhouse.unsupportedNodes` and
+  `clickhouse.minimumSupportedVersion` ([Health](health.md#info--metadata-fingerprint)).
+
+cerberus v1.26.0 refuses to start against a server older than 26.3. Upgrade
+every node to 26.3 or newer before moving to v1.26.0.
+
 ### Startup requirements preflight
 
 `CERBERUS_REQUIREMENTS_CHECK` (**on by default**) runs a boot-time
@@ -3157,7 +3178,9 @@ opaque query-time errors — or, for storage layout, as no error at all — into
 precise boot-time finding:
 
 - **ClickHouse too old.** The connected server's `version()` is compared
-  against `max(base, applicable-feature-floors)` — base **24.8**, raised to
+  against `max(base, applicable-feature-floors)` — base **24.8** (below the
+  [minimum supported version](#supported-clickhouse-versions), which only
+  warns), raised to
   **25.9** by the native-rate floor when `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` is
   on. A version below the floor (or an unparseable one) **fails startup
   fast** — a too-old server is a hard incompatibility that never self-heals.

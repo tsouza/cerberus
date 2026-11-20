@@ -8,12 +8,19 @@
 # retryable: testcontainers reuses an image already in the daemon.
 #
 # CH_TEST_IMAGE_PRIOR is the older server the replicated-DDL test pins to prove
-# the DDL still applies on the previous supported line, so only that lane needs
-# it. TestIntegrationImagePinsMatchTheJustfile holds both against the literals in
+# the DDL still applies on the oldest line the boot check starts against
+# (versions.yaml boot_floor_clickhouse), below the minimum supported version. TestIntegrationImagePinsMatchTheJustfile holds both against the literals in
 # the test sources.
 CH_TEST_IMAGE := "clickhouse/clickhouse-server:25.9-alpine"
 CH_SCHEMA_TEXT_INDEX_IMAGE := "clickhouse/clickhouse-server:26.8-alpine"
 CH_TEST_IMAGE_PRIOR := "clickhouse/clickhouse-server:24.8-alpine"
+
+# CH_MIN_SUPPORTED_IMAGE is the build of the minimum supported ClickHouse line
+# (versions.yaml min_clickhouse) the real-server suites run as their oldest
+# supported server: test/regexjit's compiler-less build and test/querylog's
+# build without system.all_query_log. It is one of CH_SERVER_SAFETY_IMAGES and
+# CH_QUERY_LOG_IMAGES below.
+CH_MIN_SUPPORTED_IMAGE := "clickhouse/clickhouse-server:26.3.17.56-alpine"
 
 # The ClickHouse upgrade-compatibility tests (`clickhouse-upgrade-test`) roll the
 # previously bundled server line (CH_UPGRADE_FLOOR_IMAGE) forward to the
@@ -21,7 +28,7 @@ CH_TEST_IMAGE_PRIOR := "clickhouse/clickhouse-server:24.8-alpine"
 # and back, and prove the one rollback the text-index
 # format contract refuses on CH_TEXT_INDEX_V0_READER_IMAGE, the newest line
 # that reads only v0_initial text indexes. CH_PRE_KEYED_IMAGES are the older
-# lines (24.8, the supported floor, and 25.3 LTS) the collector's
+# lines (24.8, the boot floor, and 25.3 LTS) the collector's
 # asynchronous-metrics queries also run on, and 25.3 is the older line the
 # chart's format pin is proved to stop. Exact builds, because each stands for
 # a measured fact about that build rather than a floating minor line.
@@ -85,17 +92,17 @@ CH_QUANTILE_PROM_HISTOGRAM_IMAGE := "clickhouse/clickhouse-server:25.10-alpine"
 CH_TAG_GROUPS_IMAGE := "clickhouse/clickhouse-server:26.2-alpine"
 
 # CH_REGEX_JIT_IMAGES are the builds test/regexjit boots beyond
-# CH_TEST_IMAGE_PRIOR (the supported floor, which it also runs): one release
+# CH_MIN_SUPPORTED_IMAGE (the minimum supported line, which it also runs): one release
 # of each of the 26.7 and 26.8 lines, whose servers compile regular
 # expressions to native code (compile_regular_expressions). Exact tags,
 # because the tests record which emitted shapes that specific build compiles.
 CH_REGEX_JIT_IMAGES := "clickhouse/clickhouse-server:26.7.13.12-alpine clickhouse/clickhouse-server:26.8.10.6-alpine"
 
 # CH_QUERY_LOG_IMAGES are the exact builds test/querylog's real-server
-# evidence pins: the supported floor (versions.yaml min_clickhouse), and the
+# evidence pins: the minimum supported line (versions.yaml min_clickhouse), and the
 # first line whose server maintains system.all_query_log. Exact tags, because
 # each case asserts what that specific build does.
-CH_QUERY_LOG_IMAGES := "clickhouse/clickhouse-server:24.8.14.39-alpine clickhouse/clickhouse-server:26.8.10.6-alpine"
+CH_QUERY_LOG_IMAGES := "clickhouse/clickhouse-server:26.3.17.56-alpine clickhouse/clickhouse-server:26.8.10.6-alpine"
 
 # The native timeSeries*ToGrid aggregate-state format boundary
 # (internal/chsql's TestTSGridStateFormatBoundary_Distributed_RealCH and the
@@ -127,8 +134,8 @@ CH_PERF_SMOKE_MERGE_FILTERS_IMAGE := "clickhouse/clickhouse-server:24.8.14.39-al
 
 # CH_SERVER_SAFETY_IMAGES are the exact builds test/chserver's real-server
 # probes pin, beyond CH_HISTOGRAM_REPORT_IMAGE (26.6.1.1193, which they share):
-# the supported floor, whose spilled GROUP BY over the canonical series key
-# the spill probe runs; the condition cache's supported floor and the
+# 24.8, the boot floor, whose spilled GROUP BY over the canonical series key
+# the spill probe runs; the condition cache's floor (25.3) and the
 # last-affected / first-fixed releases of every backported line; the
 # projection-filtering boundaries (the 25.11 projection-index read's first
 # release and the first whose plain lookup is whole) and an affected release

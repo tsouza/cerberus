@@ -213,6 +213,22 @@ tags, so a tag name here always names the LATEST fix landed, not a snapshot froz
 Unlike the module forks, this one sits outside the Dependabot watch flow: it is a build-time tool
 rather than a Go module dependency.
 
+## ClickHouse
+
+The minimum supported ClickHouse version is **26.3**: the oldest LTS line
+upstream ClickHouse still supports. When upstream ends support for that line,
+the minimum moves to the next oldest supported LTS line. `versions.yaml`
+`min_clickhouse` holds it, mirrored by `chopt.MinSupportedMajor` /
+`chopt.MinSupportedMinor`, and the `compatibility/prometheus-floor` lane runs
+the Prometheus differential corpus on that line.
+`.github/scripts/clickhouse-version-sync.mjs` holds the three equal.
+
+A server below the minimum is unsupported. cerberus v1.25.0 starts against it
+with a warning ([Supported ClickHouse versions](operations.md#supported-clickhouse-versions));
+the boot requirements check refuses only servers below
+`boot_floor_clickhouse` (24.8, `internal/preflight` `minCHBase`). cerberus
+v1.26.0 refuses every server below the minimum.
+
 ## chDB
 
 The chdb-tagged lanes — the `-- expected_rows --` roundtrip cells in `test/spec/`, the property

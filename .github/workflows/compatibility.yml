@@ -526,20 +526,20 @@ jobs:
           exit 1
 
   prometheus-floor:
-    # Floor-pinned proof job for #1500: internal/preflight/preflight.go's
-    # minCHBase declares ClickHouse 24.8 as cerberus's supported floor, but
-    # every other lane (this workflow's three heads, chDB) runs 26.5+ — so
-    # every version-gated fallback branch (internal/chopt's registry: the
-    # ts_grid_range/resample/changes/resets/deriv/predict_linear family,
-    # each auto-selected only >= 25.9; condition_cache >= 25.3) was PICKED
-    # BY DEFAULT on every substrate that ever ran, and the 24.8-safe
-    # fallback SQL those branches exist to protect was never executed
-    # against a real 24.8 server. This job runs the SAME prometheus
+    # Floor-pinned proof job for #1500: versions.yaml min_clickhouse
+    # (internal/chopt MinSupportedMajor.MinSupportedMinor) declares
+    # ClickHouse 26.3 as cerberus's minimum supported version, but every
+    # other lane (this workflow's three heads, chDB) runs 26.5+ — so every
+    # version-gated branch above 26.3 (internal/chopt's registry: join_spill
+    # >= 26.4, histogram_adaptive_aggregator_off >= 26.8, the native-histogram
+    # analyzer stamp that stops at 26.8) is PICKED BY DEFAULT on every other
+    # substrate, and the SQL 26.3 resolves to would otherwise never execute
+    # against a real 26.3 server. This job runs the SAME prometheus
     # differential harness + corpus as compatibility/prometheus, but with
-    # CH_IMAGE=clickhouse/clickhouse-server:24.8 (docker-compose.yml
-    # interpolates it), so the auto-picker probes a genuine 24.8 server,
-    # resolves every >24.8 feature to OFF, and the fallback branches are
-    # the ones that execute end to end against reference Prometheus.
+    # CH_IMAGE=clickhouse/clickhouse-server:26.3 (docker-compose.yml
+    # interpolates it), so the auto-picker probes a genuine 26.3 server,
+    # resolves every >26.3 feature to OFF, and the SQL it emits there is the
+    # SQL that executes end to end against reference Prometheus.
     #
     # It reuses compat-ratchet.mjs against the SAME
     # compatibility/parity-baseline/ prometheus roster as the standard
@@ -639,7 +639,7 @@ jobs:
         env:
           TESTER_END_TIME: "2026-05-11T01:00:00Z"
           TESTER_RANGE: "3600"
-          CH_IMAGE: "clickhouse/clickhouse-server:24.8"
+          CH_IMAGE: "clickhouse/clickhouse-server:26.3"
         run: node .github/scripts/run-prometheus-compatibility.mjs
 
       - name: Summarise report and append score to step summary
@@ -649,7 +649,7 @@ jobs:
           HEAD: prometheus
           SCORE: compatibility/prometheus/compat-score.json
           REPORT: compatibility/prometheus/report.json
-          TITLE: compatibility/prometheus-floor (ClickHouse 24.8)
+          TITLE: compatibility/prometheus-floor (ClickHouse 26.3)
           LABEL: prometheus (floor)
 
       - name: Parity-regression ratchet (vs the same quickstart-lane baseline)
@@ -689,7 +689,7 @@ jobs:
         # ::error annotation from compat-ratchet.mjs.
         if: always() && steps.compat.outcome == 'failure'
         run: |
-          echo "::error title=compatibility/prometheus-floor failed::floor harness (ClickHouse 24.8) exited non-zero — an infra failure or a hard SQL rejection against the floor server. See the harness log + the uploaded compatibility-prometheus-floor-report artifact"
+          echo "::error title=compatibility/prometheus-floor failed::floor harness (ClickHouse 26.3) exited non-zero — an infra failure or a hard SQL rejection against the floor server. See the harness log + the uploaded compatibility-prometheus-floor-report artifact"
           exit 1
 
   promql-surface:

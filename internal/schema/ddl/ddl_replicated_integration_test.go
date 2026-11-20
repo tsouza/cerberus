@@ -94,8 +94,9 @@ func startClickHouseReplicated(t *testing.T) driver.Conn {
 		t.Fatalf("write replicated config: %v", err)
 	}
 
-	// 24.8 is cerberus's minimum supported server and the version where a
-	// Replicated database rejects explicit ReplicatedMergeTree args (code 36) —
+	// 24.8 is the oldest server cerberus starts against (versions.yaml
+	// boot_floor_clickhouse) and a version where a Replicated database
+	// rejects explicit ReplicatedMergeTree args (code 36) —
 	// the regression this test exists to catch. See replicatedServerConfig.
 	container, err := tcclickhouse.Run(
 		ctx,

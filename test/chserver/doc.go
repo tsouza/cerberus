@@ -6,14 +6,16 @@
 // query-analyzer posture native-histogram queries run under on each release
 // line, the first release accepting each defect gate's setting, the first
 // release knowing each droppable setting, the settings of the engine's
-// floor-known stamp class on every supported release, and the client's
+// floor-known stamp class on every release cerberus starts against, and the client's
 // answer to a node too old for a setting or function it sends, the external
 // DISTINCT a structural TraceQL query spills through once the distinct_spill
 // threshold is stamped, and the classic-histogram quantile's answers and
 // refusals against the 1 GiB query memory cap: its per-series window ceiling
 // and the cap's own refusal of a window stage or bucket merge too large for
 // it. Every test boots pinned clickhouse/clickhouse-server builds — the
-// supported floor, builds a known upstream defect affects, and builds
+// boot floor (24.8, below the minimum supported version, which cerberus
+// still starts against), the minimum supported line, builds a known upstream
+// defect affects, and builds
 // carrying its fix — under container CPU and memory limits, drives
 // cerberus-emitted shapes through the production handlers and client, and
 // checks the observed server behaviour against the version policy
