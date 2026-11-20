@@ -2,10 +2,12 @@ package grpc_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -56,6 +58,15 @@ type stubCursorQuerier struct {
 	// client cancel propagated through SearchResult -> QueryPlan -> Query.
 	block    bool
 	released atomic.Bool
+	// entered, when non-nil, is closed the first time a blocking Query
+	// starts waiting on its ctx, so a cancellation test cancels only once
+	// the query it means to cancel is in flight.
+	entered   chan struct{}
+	enterOnce sync.Once
+	// stop, when non-nil, unblocks a blocking Query without marking it
+	// released, so a test whose cancellation never arrives fails at its own
+	// bound instead of hanging the server's GracefulStop in cleanup.
+	stop chan struct{}
 	// sawByteBudget records whether the ctx passed to Query carried the
 	// wide-projection drain byte budget — lets the gRPC no-bypass ratchet
 	// test (TestSearch_AttachesByteBudget_NoBypass) assert the streaming
@@ -68,9 +79,16 @@ func (s *stubCursorQuerier) Query(ctx context.Context, sql string, args ...any) 
 		s.sawByteBudget = true
 	}
 	if s.block {
-		<-ctx.Done()
-		s.released.Store(true)
-		return nil, ctx.Err()
+		if s.entered != nil {
+			s.enterOnce.Do(func() { close(s.entered) })
+		}
+		select {
+		case <-ctx.Done():
+			s.released.Store(true)
+			return nil, ctx.Err()
+		case <-s.stop:
+			return nil, errStubStopped
+		}
 	}
 	// The eager search routes here (the streaming QueryCursor path is gone). The
 	// follow-up root lookup (resolveTraceRoots) emits argMinIf(...); serve
@@ -368,6 +386,14 @@ func TestSearch_TraceMetadataPivot(t *testing.T) {
 	}
 }
 
+// errStubStopped is what a blocking stub Query returns when the test stops
+// it rather than the client cancelling it.
+var errStubStopped = errors.New("stub query stopped by the test")
+
+// queryEnteredWait bounds how long TestSearch_CancellationReachesQuery waits
+// for the server to reach its blocking Query before cancelling.
+const queryEnteredWait = 5 * time.Second
+
 // TestSearch_CancellationReachesQuery proves a client cancellation propagates
 // through the eager SearchResult -> Engine.QueryPlan -> Query drain (the
 // coverage the removed gRPC-owned cursor used to give). The stub Query BLOCKS
@@ -376,9 +402,12 @@ func TestSearch_TraceMetadataPivot(t *testing.T) {
 // (released): a broken cancellation path would hang and leave released false.
 func TestSearch_CancellationReachesQuery(t *testing.T) {
 	t.Parallel()
-	q := &stubCursorQuerier{block: true}
+	q := &stubCursorQuerier{block: true, entered: make(chan struct{}), stop: make(chan struct{})}
 	client, cleanup := dialServer(t, q)
 	t.Cleanup(cleanup)
+	// Registered after the server's cleanup, so it runs first: a Query the
+	// cancel never reached returns before GracefulStop waits on it.
+	t.Cleanup(func() { close(q.stop) })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	stream, err := client.Search(ctx, &tempopb.SearchRequest{Query: "{}"})
@@ -395,7 +424,14 @@ func TestSearch_CancellationReachesQuery(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	// Cancel only once the server's Query is blocked on its ctx. A cancel
+	// that reaches the server before the handler calls Query ends the RPC
+	// earlier, so Query would never run and released would stay false.
+	select {
+	case <-q.entered:
+	case <-time.After(queryEnteredWait):
+		t.Fatalf("the server never reached Query within %s", queryEnteredWait)
+	}
 	cancel()
 
 	select {
