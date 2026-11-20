@@ -856,7 +856,10 @@ logs) holds when a probe reached every node and every build is below
 `24.10`, which runs a multi-step PREWHERE in the order of the `WHERE`
 conjuncts rather than reordering them. While it holds, a LogQL range
 aggregation puts a `detected_level` filter ahead of a line filter written
-after it in the `SELECT` that reads the logs table. A probe that reads a
+after it in the `SELECT` that reads the logs table, and a filter the
+expansion bound leaves above the scan, such as a `detected_level` regex
+matcher, ahead of a later filter that moves there and reads a column
+nothing ahead of it reads, such as a parsed label's filter. A probe that reads a
 build from `24.10` on clears it; a probe that misses a node and reads no
 such build leaves it as it was, which at boot is cleared. The fact
 concerns the conditions the server moves to PREWHERE itself: an explicit
