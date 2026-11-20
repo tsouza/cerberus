@@ -24,11 +24,12 @@ import (
 	"github.com/tsouza/cerberus/internal/solver"
 )
 
-// The pinned builds: the supported floor (versions.yaml min_clickhouse) and
-// the first line whose server maintains system.all_query_log. Exact tags,
+// The pinned builds: a build of the minimum supported line (versions.yaml
+// min_clickhouse) and the first line whose server maintains
+// system.all_query_log. Exact tags,
 // because each test asserts what that specific build does.
 const (
-	floorImage = "clickhouse/clickhouse-server:24.8.14.39-alpine"
+	floorImage = "clickhouse/clickhouse-server:26.3.17.56-alpine"
 	unionImage = "clickhouse/clickhouse-server:26.8.10.6-alpine"
 )
 

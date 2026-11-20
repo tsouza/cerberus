@@ -20,7 +20,7 @@ import (
 //
 // ClickHouse builds RE2 for match, extract and extractAll with `.` matching
 // a newline (RE2's DOT_NL option). replaceRegexpOne and replaceRegexpAll
-// do the same on 26.7 and 26.8 but not on 24.8, the supported floor. A
+// do the same on 26.7 and 26.8 but not on 24.8, the boot floor. A
 // pattern whose meaning depends on whether `.` matches `\n` therefore
 // carries that choice in its own flags rather than relying on the
 // function's defaults.

@@ -777,7 +777,7 @@ ever asks ClickHouse what its own index analysis already knows about the
 window before routing decides anything. That gap is closed with one
 more input, strictly advisory: `EXPLAIN ESTIMATE`, ClickHouse's no-execution
 scan estimator (parts / rows / marks after index analysis, available since
-21.9 — well below cerberus's own 24.8 floor).
+21.9 — well below the minimum supported ClickHouse version).
 
 **Granule-resolution upper bound, not selectivity.** `EXPLAIN ESTIMATE`
 reports how many marks the index analysis could not prune, times the table's

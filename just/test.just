@@ -460,7 +460,7 @@ chclient-integration:
 
 # Check emitted regex shapes against Go regexp with ClickHouse's regex compiler on and off. Needs Docker.
 regex-jit-integration:
-    @just _pull-retry {{CH_REGEX_JIT_IMAGES}} {{CH_TEST_IMAGE_PRIOR}}
+    @just _pull-retry {{CH_REGEX_JIT_IMAGES}} {{CH_MIN_SUPPORTED_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run '^TestRegexJIT_' ./test/regexjit/...
 
 # Benchmark the same shapes over an hour of seeded metrics and logs: cold,

@@ -44,7 +44,8 @@ const (
 	// system.asynchronous_metrics carries the key_values column;
 	// TestImagesTrackQuickstartPins keeps the two on the same build.
 	keyedServerImage = textIndexUpgradeTargetImage
-	// oldestReceiverImage is cerberus's minimum supported server; with
+	// oldestReceiverImage is the oldest server cerberus starts against
+	// (versions.yaml boot_floor_clickhouse); with
 	// preFormatSettingsLTSImage it proves the collector's queries run on
 	// server lines long before the key_values column.
 	oldestReceiverImage = "clickhouse/clickhouse-server:24.8.14.39-alpine"

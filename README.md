@@ -227,24 +227,29 @@ Two things decide whether a deployment is compatible: the **ClickHouse
 server version** cerberus queries, and the **schema shape** your telemetry
 was written in.
 
-| Component            | Minimum                        | Notes                                                               |
-| -------------------- | ------------------------------ | ------------------------------------------------------------------- |
-| ClickHouse           | **24.8**                       | The supported floor — the SQL cerberus emits is correct down to it. |
-| OTel exporter schema | **clickhouseexporter 0.152.0** | A table layout, not a binary version — any matching writer works.   |
+| Component            | Minimum                        | Notes                                                              |
+| -------------------- | ------------------------------ | ------------------------------------------------------------------ |
+| ClickHouse           | **26.3**                       | The oldest LTS line upstream ClickHouse still supports.            |
+| OTel exporter schema | **clickhouseexporter 0.152.0** | A table layout, not a binary version — any matching writer works.  |
 
-**ClickHouse 24.8+.** A query that runs on 24.8 runs on every newer server
-too, and the differential harnesses execute on ClickHouse 26.8, so the
-validated SQL is exercised well forward of the floor.
+**ClickHouse 26.3+.** The minimum supported ClickHouse version is the oldest
+LTS line upstream ClickHouse still supports, and moves with it. Servers older
+than 26.3 are unsupported. cerberus v1.25.0 still starts against one, logs a
+WARN naming the server's version and the minimum, and counts such nodes on
+`cerberus_clickhouse_unsupported_nodes` and in `/info`
+(`clickhouse.unsupportedNodes`); cerberus v1.26.0 refuses to start against
+them. The differential harnesses execute on ClickHouse 26.8, and the floor
+lane runs the Prometheus corpus on 26.3.
 
 You do not have to tune for your server version. The optimization
 auto-picker (`CERBERUS_CH_OPTIMIZATIONS=auto`, the default) probes it once
 at startup and turns on the result-equivalent optimizations it finds:
 
-- `aggregation_in_order` — 24.8+
+- `aggregation_in_order` — every supported server
 - `condition_cache` — 25.3+
 - the native `timeSeries*ToGrid` aggregates — 25.9+, so an eligible
   `rate(<counter>[range])` range query lowers to the compiled
-  `timeSeriesRateToGrid` aggregate there and emits the 24.8-safe SQL
+  `timeSeriesRateToGrid` aggregate there and emits the portable SQL
   unchanged below it. Validated result-correct at flat memory; the
   aggregates sit behind ClickHouse's
   `allow_experimental_time_series_aggregate_functions` setting, which

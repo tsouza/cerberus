@@ -97,6 +97,8 @@ func TestResolveLogSampleShapeRejectsMalformedSchemas(t *testing.T) {
 		"missing":   {Columns: valid[:3]},
 		"duplicate": {Columns: append(append([]chplan.Column{}, valid...), chplan.Column{Name: "v2", Role: chplan.RoleValue})},
 		"unnamed":   {Columns: append(append([]chplan.Column{}, valid[:3]...), chplan.Column{Role: chplan.RoleValue})},
+		// Two roles published by one output column.
+		"shared": {Columns: append(append([]chplan.Column{}, valid[:3]...), chplan.Column{Name: "t", Role: chplan.RoleValue})},
 	}
 	for name, row := range tests {
 		t.Run(name, func(t *testing.T) {

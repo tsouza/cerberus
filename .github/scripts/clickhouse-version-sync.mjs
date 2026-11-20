@@ -5,6 +5,7 @@
 //   - docker-compose.yml                  the quickstart `clickhouse` image tag
 //   - compatibility/*/docker-compose.yml  the per-head differential-harness image tag
 //   - internal/preflight/preflight.go     the boot-time min-version floor
+//   - internal/chopt/floor.go             the minimum supported version
 //   - test/e2e/migration/tiers/tier1-dual/docker-compose.dual.yml
 //                                         the migration lane's deployment-surface tag
 //   - deploy/helm/cerberus/values.yaml    the bundled-ClickHouse chart image
@@ -21,8 +22,10 @@
 //
 //   (a) the root docker-compose quickstart `clickhouse` image tag
 //       == quickstart_clickhouse.
-//   (b) preflight minCHBase == min_clickhouse, and minCHNativeRate
+//   (b) preflight minCHBase == boot_floor_clickhouse, and minCHNativeRate
 //       == min_native_rate (the two preflight floors are the SoT mirror).
+//   (i) chopt MinSupportedMajor.MinSupportedMinor == min_clickhouse, the
+//       minimum supported version cerberus warns below.
 //   (c) the compatibility prometheus/loki/tempo image tags
 //       == quickstart_clickhouse. The differential harnesses are the source
 //       of truth for all three heads, so they run on the server operators
@@ -52,17 +55,17 @@
 //       so the shipped default was exercised nowhere.
 //   (f) compatibility.yml's `prometheus-floor` job's CH_IMAGE == min_clickhouse.
 //       That job (see #1500) exists specifically to run the prometheus
-//       differential corpus against cerberus's declared floor instead of
-//       quickstart_clickhouse, forcing internal/chopt's auto-picker to resolve every
-//       above-floor feature OFF. If minCHBase moves without moving this job's
-//       CH_IMAGE (or vice versa), the floor lane silently stops testing the
-//       floor it claims to — (f) is what makes check (c)'s DELIBERATE
+//       differential corpus against cerberus's minimum supported version
+//       instead of quickstart_clickhouse, forcing internal/chopt's auto-picker
+//       to resolve every above-floor feature OFF. If min_clickhouse moves
+//       without moving this job's CH_IMAGE (or vice versa), the floor lane
+//       silently stops testing the floor it claims to — (f) is what makes check (c)'s DELIBERATE
 //       exception (this one lane, and only this lane, runs below
 //       quickstart_clickhouse) a tracked invariant instead of an unenforced
 //       escape hatch from (c).
 //   (h) perf-nightly's sentinel matrix measures both of move_to_prewhere's
 //       PREWHERE paths on the servers that matter: it contains
-//       min_clickhouse (the supported floor) and quickstart_clickhouse (the
+//       boot_floor_clickhouse (the boot check's floor) and quickstart_clickhouse (the
 //       deployment pin), at least one server inside move_to_prewhere's
 //       AutoRange (read from the registry, where ClickHouse places PREWHERE)
 //       and one outside it (where the emitter does), and one at or past
@@ -224,6 +227,15 @@ function readPreflightFloor(text, name) {
   return m ? { major: Number(m[1]), minor: Number(m[2]) } : null;
 }
 
+// readMinSupported reads chopt's minimum supported version from the
+// MinSupportedMajor / MinSupportedMinor constants in internal/chopt/floor.go.
+function readMinSupported(text) {
+  const major = text.match(/MinSupportedMajor\s*=\s*(\d+)/);
+  const minor = text.match(/MinSupportedMinor\s*=\s*(\d+)/);
+  if (!major || !minor) return null;
+  return { major: Number(major[1]), minor: Number(minor[1]) };
+}
+
 // The per-feature registry from internal/chopt/registry.go. Returns a map of
 // feature id -> { floor, autoSelect } where floor is { major, minor } or null
 // (AlwaysAvailable / no floor). The id-constant -> string mapping is read from
@@ -285,6 +297,7 @@ export function runChecks(sources) {
 
   const quickstart = want('quickstart_clickhouse');
   const minCH = want('min_clickhouse');
+  const bootFloor = want('boot_floor_clickhouse');
   const minNative = want('min_native_rate');
 
   // (a) docker-compose quickstart image tag == quickstart_clickhouse.
@@ -299,15 +312,25 @@ export function runChecks(sources) {
     notes.push(`(a) quickstart image == ${vstr(quickstart)}`);
   }
 
-  // (b) preflight minCHBase == min_clickhouse; minCHNativeRate == min_native_rate.
+  // (b) preflight minCHBase == boot_floor_clickhouse; minCHNativeRate == min_native_rate.
   const base = readPreflightFloor(sources.preflight, 'minCHBase');
   const native = readPreflightFloor(sources.preflight, 'minCHNativeRate');
   if (!base) {
     failures.push('internal/preflight: could not read minCHBase');
-  } else if (minCH && !sameMM(base, minCH)) {
-    failures.push(`(b) preflight minCHBase ${vstr(base)} != versions.yaml min_clickhouse ${vstr(minCH)}`);
+  } else if (bootFloor && !sameMM(base, bootFloor)) {
+    failures.push(`(b) preflight minCHBase ${vstr(base)} != versions.yaml boot_floor_clickhouse ${vstr(bootFloor)}`);
+  } else if (bootFloor) {
+    notes.push(`(b) boot_floor_clickhouse == ${vstr(bootFloor)}`);
+  }
+
+  // (i) chopt's minimum supported version == min_clickhouse.
+  const minSupported = readMinSupported(sources.minSupported);
+  if (!minSupported) {
+    failures.push('internal/chopt/floor.go: could not read MinSupportedMajor / MinSupportedMinor');
+  } else if (minCH && !sameMM(minSupported, minCH)) {
+    failures.push(`(i) chopt minimum supported version ${vstr(minSupported)} != versions.yaml min_clickhouse ${vstr(minCH)}`);
   } else if (minCH) {
-    notes.push(`(b) min_clickhouse == ${vstr(minCH)}`);
+    notes.push(`(i) chopt minimum supported version == min_clickhouse ${vstr(minCH)}`);
   }
   if (!native) {
     failures.push('internal/preflight: could not read minCHNativeRate');
@@ -429,7 +452,7 @@ export function runChecks(sources) {
     notes.push(`(f) prometheus-floor CH_IMAGE == min_clickhouse ${vstr(minCH)}`);
   }
 
-  checkPerfNightlyMatrix(sources, { minCH, quickstart, registry }, failures, notes);
+  checkPerfNightlyMatrix(sources, { bootFloor, quickstart, registry }, failures, notes);
 
   return { failures, notes };
 }
@@ -461,7 +484,7 @@ function readAnalyzerMandatorySince(text) {
 }
 
 // (h) — see the header.
-function checkPerfNightlyMatrix(sources, { minCH, quickstart, registry }, failures, notes) {
+function checkPerfNightlyMatrix(sources, { bootFloor, quickstart, registry }, failures, notes) {
   const failuresBefore = failures.length;
   const matrix = readClickHouseMatrix(sources.perfNightlyWorkflow, PERF_NIGHTLY_JOB);
   if (!matrix || matrix.length === 0) {
@@ -478,7 +501,7 @@ function checkPerfNightlyMatrix(sources, { minCH, quickstart, registry }, failur
   }
   const has = (want) => servers.some((v) => sameMM(v, want));
   for (const [key, want] of [
-    ['min_clickhouse', minCH],
+    ['boot_floor_clickhouse', bootFloor],
     ['quickstart_clickhouse', quickstart],
   ]) {
     if (want && !has(want)) {
@@ -566,6 +589,7 @@ function loadSources() {
     versionsYaml: readFile('versions.yaml'),
     compose: readFile('docker-compose.yml'),
     preflight: readFile('internal/preflight/preflight.go'),
+    minSupported: readFile('internal/chopt/floor.go'),
     registry: readFile('internal/chopt/registry.go'),
     compatibility: {
       'compatibility/prometheus/docker-compose.yml': readFile('compatibility/prometheus/docker-compose.yml'),
@@ -712,11 +736,12 @@ var AnalyzerMandatorySince = Version{Major: 26, Minor: 9}`;
   // --- integration: a consistent fixture set passes with zero failures ---
   const goodSources = {
     versionsYaml:
-      'min_clickhouse: "24.8"\nmin_native_rate: "25.6"\nquickstart_clickhouse: "26.5"\nchdb_substrate: "25.8"\n',
+      'min_clickhouse: "26.3"\nboot_floor_clickhouse: "24.8"\nmin_native_rate: "25.6"\nquickstart_clickhouse: "26.5"\nchdb_substrate: "25.8"\n',
     compose:
       'services:\n  clickhouse:\n    image: clickhouse/clickhouse-server:26.5\n  cerberus:\n    environment:\n      CERBERUS_CH_OPTIMIZATIONS: "aggregation_in_order,condition_cache,ts_grid_range"\n',
     preflight:
       'var minCHBase = chopt.Version{Major: 24, Minor: 8}\nvar minCHNativeRate = chopt.Version{Major: 25, Minor: 6}\n',
+    minSupported: 'const (\n\tMinSupportedMajor = 26\n\tMinSupportedMinor = 3\n)\n',
     registry: fakeRegistry,
     compatibility: {
       // Prometheus uses the real parametrised-default form (the floor lane
@@ -733,8 +758,8 @@ var AnalyzerMandatorySince = Version{Major: 26, Minor: 9}`;
     // deployment-surface reason.
     chartValues: '  bundled:\n    image: clickhouse/clickhouse-server:26.5\n',
     compatibilityWorkflow:
-      'jobs:\n  prometheus-floor:\n    steps:\n      - run: echo seed\n        env:\n          CH_IMAGE: "clickhouse/clickhouse-server:24.8"\n',
-    // perf-nightly runs the floor, one server inside move_to_prewhere's auto
+      'jobs:\n  prometheus-floor:\n    steps:\n      - run: echo seed\n        env:\n          CH_IMAGE: "clickhouse/clickhouse-server:26.3"\n',
+    // perf-nightly runs the boot floor, one server inside move_to_prewhere's auto
     // range, the quickstart and the first analyzer-mandatory line, each pinned
     // in just/common.just and each with a bound set.
     perfNightlyWorkflow:
@@ -769,6 +794,22 @@ var AnalyzerMandatorySince = Version{Major: 26, Minor: 9}`;
     '(b) preflight minCHBase drift is caught',
     drift((s) => (s.preflight = s.preflight.replace('Major: 24, Minor: 8', 'Major: 23, Minor: 8'))).some((f) =>
       f.startsWith('(b)'),
+    ),
+  );
+  ok(
+    '(i) chopt minimum supported version drift is caught',
+    drift((s) => (s.minSupported = s.minSupported.replace('MinSupportedMinor = 3', 'MinSupportedMinor = 4'))).some((f) =>
+      f.startsWith('(i)'),
+    ),
+  );
+  ok(
+    '(i) an unreadable chopt minimum supported version is caught',
+    drift((s) => (s.minSupported = 'package chopt\n')).some((f) => f.includes('MinSupportedMajor')),
+  );
+  ok(
+    '(b) preflight minCHBase is held to boot_floor_clickhouse, not min_clickhouse',
+    drift((s) => (s.versionsYaml = s.versionsYaml.replace('boot_floor_clickhouse: "24.8"', 'boot_floor_clickhouse: "25.3"'))).some(
+      (f) => f.startsWith('(b)'),
     ),
   );
   ok(
@@ -843,8 +884,8 @@ var AnalyzerMandatorySince = Version{Major: 26, Minor: 9}`;
   );
   ok(
     '(f) prometheus-floor CH_IMAGE drifting from min_clickhouse is caught',
-    // The floor lane's CH_IMAGE moved to 24.12 but min_clickhouse stayed 24.8.
-    drift((s) => (s.compatibilityWorkflow = s.compatibilityWorkflow.replace('24.8', '24.12'))).some((f) =>
+    // The floor lane's CH_IMAGE moved to 26.4 but min_clickhouse stayed 26.3.
+    drift((s) => (s.compatibilityWorkflow = s.compatibilityWorkflow.replace('26.3', '26.4'))).some((f) =>
       f.startsWith('(f)'),
     ),
   );
@@ -871,9 +912,9 @@ var AnalyzerMandatorySince = Version{Major: 26, Minor: 9}`;
     }).some((f) => f.includes('quickstart_clickhouse')),
   );
   ok(
-    '(h) a matrix without the supported floor is caught',
+    '(h) a matrix without the boot floor is caught',
     hFails((s) => (s.perfNightlyWorkflow = s.perfNightlyWorkflow.replace("'24.8', ", ''))).some((f) =>
-      f.includes('min_clickhouse'),
+      f.includes('boot_floor_clickhouse'),
     ),
   );
   ok(

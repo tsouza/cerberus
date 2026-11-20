@@ -1380,7 +1380,7 @@ func buildRevision() string {
 // consumers that need more than the EnabledSet: the engine/handler wiring reads
 // Set, while the /info fingerprint also reports the version the auto-picker
 // resolved against and whether that version was probed live or assumed from the
-// supported floor (VersionFallback) after a failed probe.
+// probe fallback floor (VersionFallback) after a failed probe.
 type chOptResolution struct {
 	Set             chopt.EnabledSet
 	ResolvedVersion chopt.Version
@@ -1403,6 +1403,10 @@ type chOptResolution struct {
 	// reprobeCHOptimizations can swap it live alongside Set on a capability
 	// change, exactly like every other field here.
 	QueryWorkload string
+	// UnsupportedNodes is how many nodes the latest fleet probe pass that
+	// read any node holds below chopt.MinSupportedVersion
+	// (reportUnsupportedFleet). /info reports it.
+	UnsupportedNodes int
 	// RawQueryWorkload is the ORIGINAL, un-resolved CERBERUS_CH_QUERY_
 	// WORKLOAD (config.Config.CHQueryWorkload, read BEFORE
 	// resolveCHOptimizations mutates its own *config.Config copy's field
@@ -1414,11 +1418,12 @@ type chOptResolution struct {
 	RawQueryWorkload string
 }
 
-// supportedFloorVersion is the oldest ClickHouse cerberus supports, and the
-// version an unreachable server is assumed to be running: resolving against it
-// keeps every floor-safe optimization on while holding back anything newer, so
-// a failed probe degrades the feature set rather than the process.
-var supportedFloorVersion = chopt.Version{Major: 24, Minor: 8}
+// probeFallbackVersion is the version an unreachable server is assumed to be
+// running: the oldest build the boot requirements check starts against, below
+// chopt.MinSupportedVersion. Resolving against it keeps every optimization that
+// build runs on while holding back anything newer, so a failed probe degrades
+// the feature set rather than the process.
+var probeFallbackVersion = chopt.Version{Major: 24, Minor: 8}
 
 // startCHOptimizations wraps resolveCHOptimizations's boot call for run():
 // it runs the ONE-TIME resolution and derives the two forms every later
@@ -1473,7 +1478,7 @@ func startCHOptReprobe(ctx context.Context, logger *slog.Logger, cfg config.Conf
 // designed to boot even when ClickHouse is briefly unreachable (the
 // cerberus + collector startup race, where the background re-probe flips
 // /readyz once the schema lands). A probe that fails to reach the server is
-// therefore NOT fatal here; it falls back to the documented supported floor
+// therefore NOT fatal here; it falls back to probeFallbackVersion
 // (24.8) so the stable 24.8-safe optimizations still resolve under `auto`,
 // while any newer feature (condition_cache, ts_grid_range) stays off until
 // reprobeCHOptimizations reaches a server that answers. A genuine CONFIG fault
@@ -1486,16 +1491,17 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// analyzer decision and the condition-cache override below read the same
 	// pass.
 	fleet := probeFleet(ctx)
+	unsupportedNodes, _ := reportUnsupportedFleet(ctx, logger, fleet)
 	resolvedVersion, err := fleetResolutionVersion(fleet, nil)
 	versionFallback := err != nil
 	if err != nil {
-		// Connectivity fallback: assume the supported floor so 24.8-safe
+		// Connectivity fallback: assume probeFallbackVersion so 24.8-safe
 		// stable features still resolve under auto; newer features stay off
 		// until the periodic re-probe reaches a server that answers. Never
 		// fatal on a probe read error.
-		resolvedVersion = supportedFloorVersion
+		resolvedVersion = probeFallbackVersion
 		logger.Warn(
-			"clickhouse version probe failed; resolving optimizations against the supported floor until the next re-probe",
+			"clickhouse version probe failed; resolving optimizations against the probe fallback floor until the next re-probe",
 			"err", err,
 			"assumed_version", resolvedVersion.String(),
 		)
@@ -1651,6 +1657,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		FleetIncomplete:  !fleet.Complete,
 		FleetHeld:        fleet.Held,
 		QueryWorkload:    resolvedQueryWorkload,
+		UnsupportedNodes: unsupportedNodes,
 		RawQueryWorkload: rawQueryWorkload,
 	}, nil
 }
