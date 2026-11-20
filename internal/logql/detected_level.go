@@ -743,8 +743,8 @@ func detectedLevelIdentityExpr(expr syntax.Expr, level chplan.Expr) chplan.Expr 
 // the normalised value, and the normalised value with the pipeline's
 // `| drop` / `| keep` projection applied.
 const (
-	levelSourceAlias    = "_logql_level_source"
-	detectedLevelAlias  = "_logql_detected_level"
+	levelSourceAlias    = chplan.LogLevelSourceAlias
+	detectedLevelAlias  = chplan.DetectedLevelAlias
 	projectedLevelAlias = "_logql_projected_level"
 )
 

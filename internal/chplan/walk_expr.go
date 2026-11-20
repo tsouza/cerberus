@@ -28,6 +28,21 @@ func InspectExprNodes(e Expr, visit func(Expr) bool, nodeVisit func(Node)) {
 	inspectExpr(e, visit, nodeVisit)
 }
 
+// ReadsAnyColumn reports whether e reads a column named by a key of names,
+// looking through every sub-expression [InspectExpr] reaches.
+func ReadsAnyColumn[V any](e Expr, names map[string]V) bool {
+	found := false
+	InspectExpr(e, func(sub Expr) bool {
+		if ref, ok := sub.(*ColumnRef); ok {
+			if _, named := names[ref.Name]; named {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
+}
+
 func inspectExpr(e Expr, visit func(Expr) bool, nodeVisit func(Node)) {
 	if e == nil || !visit(e) {
 		return

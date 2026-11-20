@@ -272,7 +272,7 @@ func (c rowChain) nestedOverScan() (chplan.Node, bool) {
 	kept := make([][]chplan.Expr, len(c.filters))
 	for i, f := range c.filters {
 		for _, conjunct := range flattenAnd(f.predicate) {
-			if readsAnyColumn(conjunct, defined) {
+			if chplan.ReadsAnyColumn(conjunct, defined) {
 				kept[i] = append(kept[i], conjunct)
 				continue
 			}
@@ -297,18 +297,6 @@ func (c rowChain) nestedOverScan() (chplan.Node, bool) {
 		}
 	}
 	return node, true
-}
-
-// readsAnyColumn reports whether expr reads a column named in names.
-func readsAnyColumn(expr chplan.Expr, names map[string]bool) bool {
-	found := false
-	chplan.InspectExpr(expr, func(e chplan.Expr) bool {
-		if ref, ok := e.(*chplan.ColumnRef); ok && names[ref.Name] {
-			found = true
-		}
-		return !found
-	})
-	return found
 }
 
 // fusionExpandsPastBound reports whether c, rendered as one SELECT, would

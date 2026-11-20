@@ -118,6 +118,13 @@ CH_TS_STATE_V4_IMAGE := "clickhouse/clickhouse-server:26.8.1.2041-alpine"
 # image. It is one of CH_SERVER_SAFETY_IMAGES below.
 CH_DISTINCT_SPILL_IMAGE := "clickhouse/clickhouse-server:26.9.25.15-alpine"
 
+# CH_PERF_SMOKE_MERGE_FILTERS_IMAGE is the 24.8 build the perf-smoke corpus's
+# merge_plan_filters tier boots (test/perf/smoke's
+# perfSmokeMergePlanFiltersCHImage): chopt.FeatureMergePlanFilters resolves
+# only from 24.7 up to 24.11, below every other perf-smoke image. It is one
+# of CH_SERVER_SAFETY_IMAGES below.
+CH_PERF_SMOKE_MERGE_FILTERS_IMAGE := "clickhouse/clickhouse-server:24.8.14.39-alpine"
+
 # CH_SERVER_SAFETY_IMAGES are the exact builds test/chserver's real-server
 # probes pin, beyond CH_HISTOGRAM_REPORT_IMAGE (26.6.1.1193, which they share):
 # the supported floor, whose spilled GROUP BY over the canonical series key

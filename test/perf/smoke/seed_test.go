@@ -119,3 +119,21 @@ func TestSeedWideAttributeTraces_RejectsNonPositiveSpan(t *testing.T) {
 		t.Fatal("expected an error for a non-positive span")
 	}
 }
+
+func TestSeedDetectedLevelLogs_RejectsNonPositiveLineCount(t *testing.T) {
+	start := time.Unix(0, 0)
+	end := start.Add(time.Hour)
+	if _, err := SeedDetectedLevelLogs(context.Background(), nil, 0, start, end); err == nil {
+		t.Fatal("expected an error for a non-positive line count")
+	}
+}
+
+func TestSeedDetectedLevelLogs_RejectsAnEndNotAfterStart(t *testing.T) {
+	start := time.Unix(0, 3600)
+	// An end inside the lookback before start still leaves the seeded span
+	// positive; the guard must read the query window.
+	end := start.Add(-detectedLevelLogsLookback / 2)
+	if _, err := SeedDetectedLevelLogs(context.Background(), nil, 1, start, end); err == nil {
+		t.Fatal("expected an error for an end before start")
+	}
+}

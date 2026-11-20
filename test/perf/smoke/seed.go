@@ -381,6 +381,90 @@ ARRAY JOIN [0, 1] AS sp`,
 	return int64(traceCount) * 2, nil
 }
 
+// --- merge_plan_filters seed: detected_level logs ------------------------
+
+// DetectedLevelLogsService is the service the detected_level log seed lays
+// its stream under, and the stream selector the merge_plan_filters sentinels
+// read.
+const DetectedLevelLogsService = "cerberus-smoke"
+
+// detectedLevelLogsLookback is how far before the query window the seed
+// starts, the merge_plan_filters sentinels' range selector
+// (mergePlanFiltersRangeSelector), so the first anchor's window sees as many
+// lines as the last one's.
+const detectedLevelLogsLookback = 5 * time.Minute
+
+// detectedLevelLogsSeverities are the SeverityText values the seed cycles
+// through: canonical names in several spellings, an alias the detected level
+// normalises (Err, Warning), and the empty and unknown ones the level falls
+// back from, so every branch of the detected_level normalisation reads rows.
+var detectedLevelLogsSeverities = []string{"", "ERROR", "Info", "warn", "FATAL", "Err", "notice", "TRACE", "debug", "critical", "unknown", "Warning"}
+
+// detectedLevelLogsAttributeLevelEvery is the period of the lines whose
+// LogAttributes carry a level key, which the detected level reads ahead of
+// the severity columns.
+const detectedLevelLogsAttributeLevelEvery = 3
+
+// detectedLevelLogsFailedEvery is the period of the lines logged with
+// status=500, the rest carrying status=200.
+const detectedLevelLogsFailedEvery = 7
+
+// detectedLevelLogsSpanModulus bounds the spans value each line's logfmt body
+// carries, which the unwrap sentinel sums.
+const detectedLevelLogsSpanModulus = 11
+
+// SeedDetectedLevelLogs seeds the merge_plan_filters sentinels' fixture into
+// otel_logs (created by ddl.Apply against ddl.Logs): lines log lines of the
+// DetectedLevelLogsService stream spread evenly over
+// [start - detectedLevelLogsLookback, end), each with a logfmt body carrying
+// status and spans, a SeverityText from detectedLevelLogsSeverities, and on
+// one line in detectedLevelLogsAttributeLevelEvery a level LogAttribute.
+// The body carries no per-line value, so the labels logfmt extracts from it
+// name a handful of series.
+//
+// Returns the row count seeded.
+func SeedDetectedLevelLogs(ctx context.Context, conn driver.Conn, lines int, start, end time.Time) (rows int64, err error) {
+	if lines <= 0 {
+		return 0, fmt.Errorf("seed detected_level logs: lines must be positive, got %d", lines)
+	}
+	if !end.After(start) {
+		return 0, fmt.Errorf("seed detected_level logs: end must be after start (start=%v end=%v)", start, end)
+	}
+	from := start.Add(-detectedLevelLogsLookback)
+	span := end.Sub(from)
+	stepNanos := max(int64(span)/int64(lines), 1)
+	severities := make([]string, len(detectedLevelLogsSeverities))
+	for i, severity := range detectedLevelLogsSeverities {
+		severities[i] = "'" + severity + "'"
+	}
+
+	insert := fmt.Sprintf(
+		`
+INSERT INTO otel_logs
+    (Timestamp, SeverityText, ServiceName, Body, ResourceAttributes, LogAttributes)
+SELECT
+    toDateTime64(%d, 9) + toIntervalNanosecond(number * %d) AS Timestamp,
+    [%s][1 + number %% %d] AS SeverityText,
+    '%s' AS ServiceName,
+    concat(if(number %% %d = 0, 'status=500 msg=failed', 'status=200 msg=ok'),
+        ' spans=', toString(number %% %d)) AS Body,
+    map('service.name', '%s', 'service_name', '%s') AS ResourceAttributes,
+    if(number %% %d = 0, map('level', [%s][1 + intDiv(number, %d) %% %d]), map()) AS LogAttributes
+FROM numbers(%d)`,
+		from.Unix(), stepNanos,
+		strings.Join(severities, ", "), len(severities),
+		DetectedLevelLogsService,
+		detectedLevelLogsFailedEvery, detectedLevelLogsSpanModulus,
+		DetectedLevelLogsService, DetectedLevelLogsService,
+		detectedLevelLogsAttributeLevelEvery, strings.Join(severities, ", "), detectedLevelLogsAttributeLevelEvery, len(severities),
+		lines,
+	)
+	if err := conn.Exec(ctx, insert); err != nil {
+		return 0, fmt.Errorf("seed detected_level logs: %w\n%s", err, insert)
+	}
+	return int64(lines), nil
+}
+
 // --- small local helpers (kept out of internal/chsql: these build
 //     test-fixture SQL, never production plan SQL — see the "bare SQL is
 //     acceptable here" convention scale_wall_pin_chdb_test.go's yardstickSQL

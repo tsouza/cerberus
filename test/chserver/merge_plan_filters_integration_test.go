@@ -126,6 +126,72 @@ func TestRangeAggregationFilterAboveTheScanSparesTheSeverity(t *testing.T) {
 	}
 }
 
+// mergePlanFiltersScopeQueries are range aggregations whose per-row stage
+// leaves above the scan's scope only filters on values the scope computes,
+// such as a parsed label's filter on the parser's labels, or a filter on the
+// detected level in a stage that computes nothing else — a matcher the
+// scope answers while the WHERE-order fact is set, and that a SELECT over
+// the scope answers while it is unset — or no filter at all. On 24.8 the setting spares them
+// about a thousandth of their bytes at most, and can triple their peak
+// memory. The test pins that they carry no setting: the same statement with
+// and without it differs only in where the server runs the filters, so the
+// setting alone is what raised their memory.
+var mergePlanFiltersScopeQueries = []string{
+	`sum by (detected_level) (count_over_time({service_name="tempo"} | detected_level=~"warn|error" [5m]))`,
+	`sum by (detected_level) (count_over_time({service_name="tempo"} | detected_level!~"info" [5m]))`,
+	`sum(count_over_time({service_name="tempo"} | detected_level=~"error|fatal" |= "status=500" [5m]))`,
+	`sum(count_over_time({service_name="tempo"} | detected_level="error" |= "status=500" [5m]))`,
+	`sum(count_over_time({service_name="tempo"} | detected_level=~"error|fatal" | service_name!="loki" |= "status=500" [5m]))`,
+	`sum(rate({service_name="tempo"} | detected_level=~"error|fatal" |= "status=500" [1m]))`,
+	`sum by (detected_level) (count_over_time({service_name="tempo"}[5m]))`,
+	`sum(count_over_time({service_name="tempo"} | drop detected_level="info" [5m]))`,
+	`sum(count_over_time({service_name="tempo"} | logfmt | spans >= 3 [5m]))`,
+}
+
+// TestRangeAggregationScopeFiltersRunWithoutMergeFilters pins which plans the
+// floor server gets query_plan_merge_filters on: mergePlanFiltersQuery,
+// whose status filter reads the labels its unwrap computes above the scan's
+// scope, carries it, and each of mergePlanFiltersScopeQueries carries none
+// and answers with samples from the seeded stream. Both hold with the
+// WHERE-order fact set, as it is once a fleet pass has read every node of a
+// build that keeps WHERE order, and with it unset, as it is before.
+func TestRangeAggregationScopeFiltersRunWithoutMergeFilters(t *testing.T) {
+	ctx := context.Background()
+	s := startServer(ctx, t, mergePlanFiltersImage)
+	if err := ddl.Apply(ctx, s.admin.Conn(), []ddl.Signal{ddl.Logs}); err != nil {
+		t.Fatalf("apply the logs schema: %v", err)
+	}
+	seedMergePlanFilters(ctx, t, s)
+	set, _, err := chopt.Resolve(chopt.Config{Optimizations: chopt.SelectionAuto, Mode: chopt.Permissive}, s.version)
+	if err != nil {
+		t.Fatalf("resolve the optimizations of %s: %v", s.version, err)
+	}
+	rules := choptwire.SettingsRules(set, schema.DefaultOTelMetrics(), schema.DefaultOTelTraces(), schema.DefaultOTelLogs())
+	if !rules.MergePlanFilters {
+		t.Fatalf("auto on %s leaves out %s; the test needs a build it resolves on", s.version, chopt.FeatureMergePlanFilters)
+	}
+	admin := s.client(t, adminUser, adminPassword, chclient.Config{})
+	for _, whereOrder := range []bool{true, false} {
+		t.Run("where order "+strconv.FormatBool(whereOrder), func(t *testing.T) {
+			mux := mergePlanFiltersMuxOrdered(t, s, admin, rules, whereOrder)
+			if run := queryMergePlanFilters(ctx, t, s, mux); run.mergeFilters != "1" {
+				t.Errorf("%s carries %s=%q; want 1:\n%s", mergePlanFiltersQuery, chopt.SettingQueryPlanMergeFilters, run.mergeFilters, run.statement)
+			}
+			for _, query := range mergePlanFiltersScopeQueries {
+				t.Run(query, func(t *testing.T) {
+					run := queryMergePlanFiltersShape(ctx, t, s, mux, query)
+					if run.mergeFilters != "" {
+						t.Errorf("the statement carries %s=%q; want none:\n%s", chopt.SettingQueryPlanMergeFilters, run.mergeFilters, run.statement)
+					}
+					if run.samples == 0 {
+						t.Errorf("the query answers %s; want samples from the seeded stream", run.answer)
+					}
+				})
+			}
+		})
+	}
+}
+
 // codeSettingConstraintViolation is ClickHouse's SETTING_CONSTRAINT_VIOLATION
 // error code.
 const codeSettingConstraintViolation = 452
@@ -134,8 +200,15 @@ const codeSettingConstraintViolation = 452
 // s's build resolves to and rules.
 func mergePlanFiltersMux(t *testing.T, s *server, client *chclient.Client, rules engine.SettingsRules) *http.ServeMux {
 	t.Helper()
+	return mergePlanFiltersMuxOrdered(t, s, client, rules, chopt.PrewhereKeepsWhereOrder(s.version))
+}
+
+// mergePlanFiltersMuxOrdered is mergePlanFiltersMux with the WHERE-order fact
+// set to whereOrder.
+func mergePlanFiltersMuxOrdered(t *testing.T, s *server, client *chclient.Client, rules engine.SettingsRules, whereOrder bool) *http.ServeMux {
+	t.Helper()
 	cell := chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{})
-	cell.SetPrewhereInWhereOrder(chopt.PrewhereKeepsWhereOrder(s.version))
+	cell.SetPrewhereInWhereOrder(whereOrder)
 	h := loki.New(client, schema.DefaultOTelLogs(), nil)
 	h.Strategies = cell
 	h.Engine.SetSettings(rules)
@@ -144,21 +217,31 @@ func mergePlanFiltersMux(t *testing.T, s *server, client *chclient.Client, rules
 	return mux
 }
 
-// mergePlanFiltersRun is one run of mergePlanFiltersQuery: its answer, the
-// samples in it, and the statement the server finished with what it read.
+// mergePlanFiltersRun is one run of a query over the seeded stream: its
+// answer, the samples in it, and the statement the server finished with what
+// it read and the value of query_plan_merge_filters it carried ("" when it
+// carried none).
 type mergePlanFiltersRun struct {
-	answer    string
-	samples   int
-	statement string
-	readBytes uint64
+	answer       string
+	samples      int
+	statement    string
+	readBytes    uint64
+	mergeFilters string
 }
 
 // queryMergePlanFilters sends mergePlanFiltersQuery as a query_range over the
 // seeded window through mux.
 func queryMergePlanFilters(ctx context.Context, t *testing.T, s *server, mux *http.ServeMux) mergePlanFiltersRun {
 	t.Helper()
+	return queryMergePlanFiltersShape(ctx, t, s, mux, mergePlanFiltersQuery)
+}
+
+// queryMergePlanFiltersShape sends query as a query_range over the seeded
+// window through mux.
+func queryMergePlanFiltersShape(ctx context.Context, t *testing.T, s *server, mux *http.ServeMux, query string) mergePlanFiltersRun {
+	t.Helper()
 	params := url.Values{
-		"query": {mergePlanFiltersQuery},
+		"query": {query},
 		"start": {strconv.FormatInt(mergePlanFiltersStart.UnixNano(), 10)},
 		"end":   {strconv.FormatInt(mergePlanFiltersEnd.UnixNano(), 10)},
 		"step":  {strconv.FormatFloat(mergePlanFiltersStep.Seconds(), 'f', -1, 64)},
@@ -192,8 +275,9 @@ func queryMergePlanFilters(ctx context.Context, t *testing.T, s *server, mux *ht
 	}
 	s.flushLogs(ctx, t)
 	if err := s.admin.Conn().QueryRow(ctx,
-		"SELECT read_bytes, query FROM system.query_log WHERE type = 'QueryFinish' AND query_id = ?", qid).
-		Scan(&run.readBytes, &run.statement); err != nil {
+		"SELECT read_bytes, query, Settings[?] FROM system.query_log WHERE type = 'QueryFinish' AND query_id = ?",
+		chopt.SettingQueryPlanMergeFilters, qid).
+		Scan(&run.readBytes, &run.statement, &run.mergeFilters); err != nil {
 		t.Fatalf("read query_log for %s: %v", qid, err)
 	}
 	return run

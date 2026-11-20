@@ -2375,17 +2375,22 @@ const (
 	FeatureCanonicalMapTypeCast = "canonical_map_type_cast"
 
 	// FeatureMergePlanFilters stamps query_plan_merge_filters=1 on a plan
-	// that carries a LogQL per-row stage (chplan.Project.OneScopeRows). That
-	// stage leaves a filter on a value it computes in a SELECT above the
-	// one that reads the table, and the server pushes such a filter down
-	// into the table's PREWHERE only when it may merge it with the filters
-	// below it, so that the table's other columns are read only for the rows
-	// it keeps. ClickHouse 24.7 adds the setting off, and 24.11 turns it on
-	// by default, so auto picks the feature from 24.7 up to 24.11
-	// (Feature.AutoRange), where it brings the server to the plan every
-	// later release runs. Result-equivalent. Raising the supported floor to
-	// 26.3 deletes this feature
-	// (https://github.com/tsouza/cerberus/issues/4451).
+	// whose LogQL per-row stage (chplan.Project.OneScopeRows) leaves a filter
+	// on a value it computes above the scan's scope, such as the unwrap
+	// source, in a SELECT above the one that reads the table. The server
+	// pushes such a filter down into the table's PREWHERE only when it may
+	// merge it with the filters below it, so that the table's other columns
+	// are read only for the rows it keeps. A plan whose filters read only
+	// values the scan's scope computes, or the level in a stage that
+	// computes nothing else, or that has no filter above the scan's scope,
+	// gets no stamp: on 24.8 the setting spares such a plan about a thousandth of its
+	// bytes at most and can triple its peak memory
+	// (https://github.com/tsouza/cerberus/issues/4469). ClickHouse 24.7 adds
+	// the setting off, and 24.11 turns it on by default, so auto picks the
+	// feature from 24.7 up to 24.11 (Feature.AutoRange), where it brings the
+	// server to the plan every later release runs for the plans it stamps.
+	// Result-equivalent. Raising the supported floor to 26.3 deletes this
+	// feature (https://github.com/tsouza/cerberus/issues/4451).
 	FeatureMergePlanFilters = "merge_plan_filters"
 )
 
@@ -3061,9 +3066,9 @@ var registry = []Feature{
 		AutoSelect:  true,
 		AutoRange:   VersionRange{Until: Version{Major: 24, Minor: 11}},
 		SettingOnly: true,
-		Doc: "stamp query_plan_merge_filters=1 on a plan with a LogQL per-row stage, so a filter on a value the stage " +
-			"computes reaches the table's PREWHERE (result-equivalent; auto picks it on server >= 24.7 and < 24.11, " +
-			"the releases that have the setting off by default)",
+		Doc: "stamp query_plan_merge_filters=1 on a plan whose LogQL per-row stage leaves a filter on a value it " +
+			"computes above the scan's scope, such as an unwrap's, so that filter reaches the table's PREWHERE " +
+			"(result-equivalent; auto picks it on server >= 24.7 and < 24.11, the releases that have the setting off by default)",
 	},
 }
 

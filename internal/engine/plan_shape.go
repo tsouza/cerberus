@@ -73,9 +73,10 @@ type planShapeFacts struct {
 	// trace-id column named at inspection time — the other half of
 	// eligibleForTraceIDBitmapFilter.
 	traceIDPredicate bool
-	// oneScopeRows: a Project marked chplan.Project.OneScopeRows, which
-	// reads a LogQL per-row stage in the SELECT over the table.
-	oneScopeRows bool
+	// filterAboveRowScope: a Filter over a Project marked
+	// chplan.Project.OneScopeRows that reads a value computed above the scan's
+	// scope, which filterReadsAboveRowScope says.
+	filterAboveRowScope bool
 	// hasNowExpr: a literal now()/now64() FuncCall anywhere in any Expr tree
 	// (the result-cache rule's second, independent leg).
 	hasNowExpr bool
@@ -209,10 +210,6 @@ func (f *planShapeFacts) recordNode(n chplan.Node, spine bool) {
 		f.hasJoin = true
 	}
 	switch v := n.(type) {
-	case *chplan.Project:
-		if v.OneScopeRows {
-			f.oneScopeRows = true
-		}
 	case *chplan.MetricsCompare:
 		f.hasCompare = true
 	case *chplan.StructuralJoin:
@@ -268,6 +265,9 @@ func (f *planShapeFacts) recordNode(n chplan.Node, spine bool) {
 	case *chplan.Filter:
 		if spine {
 			f.spineHasFilter = true
+		}
+		if filterReadsAboveRowScope(v) {
+			f.filterAboveRowScope = true
 		}
 	}
 }
@@ -409,4 +409,66 @@ func (f planShapeFacts) singleScanTable() (table string, ok bool) {
 		return "", false
 	}
 	return f.spineScanTable, true
+}
+
+// filterReadsAboveRowScope reports whether f is a filter of a LogQL per-row
+// stage on a value the stage computes above the scan's scope: walking f's
+// input through the stage's Filters and Projects down to the Project marked
+// chplan.Project.OneScopeRows, which reads the scan's scope, f reads a value
+// one of those Projects, the marked one included, defines or replaces. A
+// value defined inside the scan's scope, under the marked Project, does not
+// count, and neither does a filter whose input reaches a node other than a
+// Filter or a Project first. A LogQL log query's filters all sit under its
+// marked Project, so none of them counts.
+//
+// A filter whose only such value is a level value, chplan.LogLevelSourceAlias
+// or chplan.DetectedLevelAlias, counts only when the stage under it defines
+// a value besides the level values, such as a parser's labels: merged into
+// the table's PREWHERE, the level filter then runs before the stage reads
+// the line for that value. A stage that computes nothing but the level, a
+// detected_level matcher with or without a line filter, has no such read to
+// spare: on 24.8 the setting spares it about a thousandth of its bytes at
+// most while it can triple its peak memory
+// (https://github.com/tsouza/cerberus/issues/4469). The lowering leaves such
+// a matcher over the scope, on the normalised level, while the WHERE-order
+// fact (chplan.SchemaStrategies.PrewhereInWhereOrder) is unset, which it is
+// until a fleet pass has read every node, and in the scope once it is set,
+// so neither arrangement gets the stamp.
+func filterReadsAboveRowScope(f *chplan.Filter) bool {
+	above, defined := map[string]bool{}, map[string]bool{}
+	marked := false
+	for n := f.Input; ; {
+		if filter, ok := n.(*chplan.Filter); ok {
+			n = filter.Input
+			continue
+		}
+		p, ok := n.(*chplan.Project)
+		if !ok {
+			if !marked {
+				return false
+			}
+			break
+		}
+		for _, projections := range [][]chplan.Projection{p.Projections, p.Replacements} {
+			for _, projection := range projections {
+				if projection.Alias == "" {
+					continue
+				}
+				defined[projection.Alias] = true
+				if !marked {
+					above[projection.Alias] = true
+				}
+			}
+		}
+		marked = marked || p.OneScopeRows
+		n = p.Input
+	}
+	if !chplan.ReadsAnyColumn(f.Predicate, above) {
+		return false
+	}
+	for _, level := range []string{chplan.LogLevelSourceAlias, chplan.DetectedLevelAlias} {
+		delete(above, level)
+		delete(defined, level)
+	}
+	return chplan.ReadsAnyColumn(f.Predicate, above) || len(defined) > 0
 }

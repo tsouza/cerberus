@@ -279,9 +279,10 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// nor the plan. FeatureCanonicalMapTypeCast likewise decides only
 			// how the emitter renders the canonical series key
 			// (SchemaStrategies.CanonicalMapTypeCast). FeatureMergePlanFilters
-			// stamps query_plan_merge_filters=1 on a plan carrying a LogQL
-			// per-row stage, a plan-shape fact of a plan already built; PromQL
-			// never builds one.
+			// stamps query_plan_merge_filters=1 on a plan whose LogQL per-row
+			// stage leaves a filter on a value computed above the scan's scope,
+			// a plan-shape fact of a plan already built; PromQL never builds
+			// one.
 		default:
 			t.Fatalf("chopt feature %q is AutoSelect but nativeLowerers does not know whether it is a "+
 				"RangeLowerers strategy or an emit-time setting — update this helper and, if it is a "+

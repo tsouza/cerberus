@@ -34,6 +34,16 @@
       "name": "sorted_slab_over_time_memory_bound",
       "max_of_n_bytes": 89771133,
       "ceiling_bytes": 134656699
+    },
+    {
+      "name": "merge_plan_filters_withheld_level_filter",
+      "max_of_n_bytes": 47662838,
+      "ceiling_bytes": 71494257
+    },
+    {
+      "name": "merge_plan_filters_stamped_unwrap_filter",
+      "max_of_n_bytes": 184706449,
+      "ceiling_bytes": 277059673
     }
   ]
 }
