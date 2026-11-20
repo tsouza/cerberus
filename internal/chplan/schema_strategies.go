@@ -86,4 +86,15 @@ type SchemaStrategies struct {
 	// (chsql.SchemaStrategiesCell.SetPrewhereInWhereOrder). The zero value
 	// orders no filter for it.
 	PrewhereInWhereOrder bool
+
+	// SearchDrainOuterFilter renders a bounded search's drain
+	// (chplan.SearchTraceLimit) as a filter over the input statement's rows,
+	// even where the emitter could test the chosen traces in the input
+	// scan's own PREWHERE (internal/chsql's search_trace_limit.go). It is
+	// not a fact of the tables but of the server builds — set for every
+	// signal when the resolved optimizations include
+	// chopt.FeatureSearchDrainOuterFilter
+	// (chsql.SchemaStrategiesCell.SetSearchDrainOuterFilter). The zero value
+	// tests the chosen traces in the PREWHERE.
+	SearchDrainOuterFilter bool
 }

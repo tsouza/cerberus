@@ -2375,6 +2375,21 @@ const (
 	// (Feature.AutoRange). Result-equivalent on every server.
 	FeatureCanonicalMapTypeCast = "canonical_map_type_cast"
 
+	// FeatureSearchDrainOuterFilter drains a bounded search's chosen traces
+	// (chplan.SearchTraceLimit) with a filter over the input statement's
+	// rows, SELECT s.* FROM (<input>) AS s WHERE TraceId GLOBAL IN (<top-N>),
+	// instead of the input's own Filter(Scan) statement with that membership
+	// appended to its PREWHERE (chsql.SchemaStrategies.SearchDrainOuterFilter).
+	// Outside 26.2 and 26.3 the PREWHERE placement reads the rest of a row
+	// only for the chosen traces' rows and reads fewer bytes. On 26.2 and 26.3
+	// the server does not skip granules by a PREWHERE set, so that placement
+	// reads every granule the span filter keeps and more bytes than the outer
+	// filter, whose set does skip them; auto picks the feature on those two
+	// lines (searchDrainOuterFilterAutoRange, Feature.AutoRange). Every
+	// server runs both statements, so an explicit listing enables it
+	// anywhere. Result-equivalent.
+	FeatureSearchDrainOuterFilter = "search_drain_outer_filter"
+
 	// FeatureMergePlanFilters stamps query_plan_merge_filters=1 on a plan
 	// whose LogQL per-row stage (chplan.Project.OneScopeRows) leaves a filter
 	// on a value it computes above the scan's scope, such as the unwrap
@@ -2394,6 +2409,12 @@ const (
 	// version (26.3) deletes this feature (https://github.com/tsouza/cerberus/issues/4451).
 	FeatureMergePlanFilters = "merge_plan_filters"
 )
+
+// searchDrainOuterFilterAutoRange is the release lines on which a bounded
+// search's drain reads fewer bytes as a filter over its scan statement than
+// with the chosen traces tested in that statement's PREWHERE
+// (FeatureSearchDrainOuterFilter).
+var searchDrainOuterFilterAutoRange = VersionRange{From: Version{Major: 26, Minor: 2}, Until: Version{Major: 26, Minor: 4}}
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
 // server-version gate at all (a purely client-side optimization such as
@@ -3059,6 +3080,16 @@ var registry = []Feature{
 			"reads, back to its parsed type so a GROUP BY or sort over it that spills reads its blocks back " +
 			"(result-equivalent; auto picks it on server " +
 			"< 25.1, where those functions return a type the spilled read-back rejects)",
+	},
+	{
+		ID:         FeatureSearchDrainOuterFilter,
+		MinVersion: AlwaysAvailable,
+		Stability:  Stable,
+		AutoSelect: true,
+		AutoRange:  searchDrainOuterFilterAutoRange,
+		Doc: "drain a bounded search's chosen traces with a filter over the scan statement instead of in its PREWHERE " +
+			"(result-equivalent; auto picks it on server " + searchDrainOuterFilterAutoRange.String() +
+			", where the PREWHERE placement reads more bytes)",
 	},
 	{
 		ID:          FeatureMergePlanFilters,

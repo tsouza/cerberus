@@ -81,3 +81,33 @@ func TestSetServerStrategies_PrewhereInWhereOrderFollowsTheSet(t *testing.T) {
 		}
 	}
 }
+
+// TestSetServerStrategies_SearchDrainOuterFilterFollowsTheResolvedSet pins
+// that a bounded search drains its chosen traces with a filter over its scan
+// statement exactly when the resolved optimizations include
+// search_drain_outer_filter: auto on 26.2 and 26.3, where testing them in
+// the scan's PREWHERE reads more bytes, and not below 26.2 or from 26.4.
+func TestSetServerStrategies_SearchDrainOuterFilterFollowsTheResolvedSet(t *testing.T) {
+	for _, tc := range []struct {
+		server chopt.Version
+		want   bool
+	}{
+		{chopt.Version{Major: 24, Minor: 8}, false},
+		{chopt.Version{Major: 26, Minor: 1}, false},
+		{chopt.Version{Major: 26, Minor: 2}, true},
+		{chopt.Version{Major: 26, Minor: 3}, true},
+		{chopt.Version{Major: 26, Minor: 4}, false},
+		{chopt.Version{Major: 26, Minor: 8}, false},
+	} {
+		set, _, err := chopt.Resolve(chopt.Config{Optimizations: "auto"}, tc.server)
+		if err != nil {
+			t.Fatalf("chopt.Resolve on %v: %v", tc.server, err)
+		}
+		cell := chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{})
+		choptwire.SetServerStrategies(cell, set)
+		got := cell.Load()
+		if got.Metrics.SearchDrainOuterFilter != tc.want || got.Logs.SearchDrainOuterFilter != tc.want || got.Traces.SearchDrainOuterFilter != tc.want {
+			t.Errorf("server %v: loaded strategies %+v; want SearchDrainOuterFilter=%v on every signal", tc.server, got, tc.want)
+		}
+	}
+}

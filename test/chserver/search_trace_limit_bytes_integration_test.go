@@ -48,7 +48,8 @@ var (
 )
 
 // TestSearchTraceLimitReadsNoMoreThanTheUnboundedSearch runs span-filtered
-// searches on the boot-floor server with the search trace limit and without it.
+// searches on the boot-floor server with the search trace limit and without it,
+// under the strategies auto resolves for that server.
 // The unlimited search reads every matching span once. The limited one reads
 // the matching spans' trace id and timestamp to rank the traces, then the
 // rest of the row only for the chosen traces' spans, so over spans whose
@@ -69,6 +70,7 @@ func TestSearchTraceLimitReadsNoMoreThanTheUnboundedSearch(t *testing.T) {
 	}
 	h := tempo.New(s.client(t, adminUser, adminPassword, chclient.Config{}), schema.DefaultOTelTraces(), "", nil)
 	h.Strategies = chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{})
+	choptwire.SetServerStrategies(h.Strategies, set)
 	h.Engine.SetSettings(choptwire.SettingsRules(set, schema.DefaultOTelMetrics(), schema.DefaultOTelTraces(), schema.DefaultOTelLogs()))
 
 	for _, query := range []string{
@@ -91,6 +93,82 @@ func TestSearchTraceLimitReadsNoMoreThanTheUnboundedSearch(t *testing.T) {
 				if got, want := limited.traces[id], unlimited.traces[id]; !slices.Equal(got.rows, want.rows) {
 					t.Errorf("trace %s: the limited search answers %v; the unlimited one %v", id, got.rows, want.rows)
 				}
+			}
+		})
+	}
+}
+
+// searchTraceLimitDrainImages straddle the release lines on which auto
+// drains a bounded search's chosen traces with a filter over the scan
+// statement (chopt.FeatureSearchDrainOuterFilter): 26.3 inside them, and
+// 24.8 and 26.4 on either side, where auto tests the chosen traces in the
+// scan's PREWHERE.
+var searchTraceLimitDrainImages = []string{
+	"clickhouse/clickhouse-server:24.8.14.39-alpine",
+	"clickhouse/clickhouse-server:26.3.17.56-alpine",
+	"clickhouse/clickhouse-server:26.4.5.143-alpine",
+}
+
+// TestSearchTraceLimitDrainPlacementAutoReadsNoMore runs the probe's limited
+// searches on each of searchTraceLimitDrainImages under the drain placement
+// auto resolves for that server and under the other one, and pins that the
+// resolved placement reads no more bytes than the other and answers the same
+// rows. Each search runs twice and the second run's bytes count, so both
+// placements read with the same warm caches; the two placements must run
+// different statements, or the comparison would hold for any placement.
+func TestSearchTraceLimitDrainPlacementAutoReadsNoMore(t *testing.T) {
+	for _, image := range searchTraceLimitDrainImages {
+		t.Run(image, func(t *testing.T) {
+			ctx := context.Background()
+			s := startServer(ctx, t, image)
+			if err := ddl.Apply(ctx, s.admin.Conn(), []ddl.Signal{ddl.Traces}); err != nil {
+				t.Fatalf("apply the traces schema: %v", err)
+			}
+			seedSearchTraceLimit(ctx, t, s)
+
+			set, _, err := chopt.Resolve(chopt.Config{Optimizations: chopt.SelectionAuto, Mode: chopt.Permissive}, s.version)
+			if err != nil {
+				t.Fatalf("resolve the optimizations of %s: %v", s.version, err)
+			}
+			outerFilter := set.Has(chopt.FeatureSearchDrainOuterFilter)
+			handler := func(outerFilter bool) *tempo.Handler {
+				h := tempo.New(s.client(t, adminUser, adminPassword, chclient.Config{}), schema.DefaultOTelTraces(), "", nil)
+				h.Strategies = chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{})
+				choptwire.SetServerStrategies(h.Strategies, set)
+				h.Strategies.SetSearchDrainOuterFilter(outerFilter)
+				h.Engine.SetSettings(choptwire.SettingsRules(set, schema.DefaultOTelMetrics(), schema.DefaultOTelTraces(), schema.DefaultOTelLogs()))
+				return h
+			}
+			resolved, other := handler(outerFilter), handler(!outerFilter)
+
+			for _, query := range []string{
+				`{ kind = server } | by(name)`,
+				`{ kind = server } | by(kind) | coalesce()`,
+				`{ kind = server }`,
+			} {
+				t.Run(query, func(t *testing.T) {
+					run := func(h *tempo.Handler) searchTraceLimitResult {
+						searchTraceLimitRun(ctx, t, s, h, query, true)
+						return searchTraceLimitRun(ctx, t, s, h, query, true)
+					}
+					got, alt := run(resolved), run(other)
+					t.Logf("%s (outer filter %v): resolved placement %d bytes, the other %d", s.version, outerFilter, got.readBytes, alt.readBytes)
+					if got.statement == alt.statement {
+						t.Fatalf("both drain placements ran the same statement:\n%s", got.statement)
+					}
+					if got.readBytes > alt.readBytes {
+						t.Errorf("the resolved drain placement (outer filter %v) read %d bytes, %d more than the other one\nresolved: %s\nother:    %s",
+							outerFilter, got.readBytes, got.readBytes-alt.readBytes, got.statement, alt.statement)
+					}
+					if len(got.traces) != len(alt.traces) {
+						t.Fatalf("the resolved placement answers %d traces, the other %d", len(got.traces), len(alt.traces))
+					}
+					for id, trace := range alt.traces {
+						if !slices.Equal(got.traces[id].rows, trace.rows) {
+							t.Errorf("trace %s: the resolved placement answers %v; the other %v", id, got.traces[id].rows, trace.rows)
+						}
+					}
+				})
 			}
 		})
 	}
