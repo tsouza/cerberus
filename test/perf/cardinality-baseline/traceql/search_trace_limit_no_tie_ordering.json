@@ -1,8 +1,8 @@
 {
   "fixture": "traceql/search_trace_limit_no_tie_ordering",
   "fan_factor": 1,
-  "scan_rows": 3,
-  "peak_intermediate": 3,
+  "scan_rows": 2,
+  "peak_intermediate": 2,
   "has_cross_join": false,
   "has_array_join": false,
   "has_recursive_cte": false,
