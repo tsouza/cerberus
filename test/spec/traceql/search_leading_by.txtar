@@ -24,9 +24,9 @@ INSERT INTO otel_traces VALUES
     ('a0000000000000000000000000000003', '0000000000000006', '', 'POST /c', toDateTime64('2026-01-01 00:00:05', 9), map('service.name', 'orders'), 10000000);
 -- expected_rows --
 [
-  ["GET /a", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "2030000000", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "frontend"}, "2026-01-01T00:00:00Z", 3],
-  ["GET /b", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "1020000000", "__cerberus_traceID": "a0000000000000000000000000000002", "service.name": "checkout"}, "2026-01-01T00:00:03Z", 2],
-  ["POST /c", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "10000000", "__cerberus_traceID": "a0000000000000000000000000000003", "service.name": "orders"}, "2026-01-01T00:00:05Z", 1]
+  ["GET /a", {"__cerberus_rootMatched": "1", "__cerberus_traceDurationNs": "2030000000", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "frontend"}, "2026-01-01T00:00:00Z", 3],
+  ["GET /b", {"__cerberus_rootMatched": "1", "__cerberus_traceDurationNs": "1020000000", "__cerberus_traceID": "a0000000000000000000000000000002", "service.name": "checkout"}, "2026-01-01T00:00:03Z", 2],
+  ["POST /c", {"__cerberus_rootMatched": "1", "__cerberus_traceDurationNs": "10000000", "__cerberus_traceID": "a0000000000000000000000000000003", "service.name": "orders"}, "2026-01-01T00:00:05Z", 1]
 ]
 -- parity_exempt --
 reason: no-comparable-oracle
@@ -37,11 +37,21 @@ detail: `by(resource.service.name)` groups the spanset: its rows carry __cerberu
 [2] bool = true
 -- args_optimized --
 [0] string = "__cerberus_traceID"
-[1] string = "__cerberus_parentSpanID"
+[1] string = "__cerberus_rootMatched"
 [2] string = "__cerberus_traceDurationNs"
 [3] string = "service.name"
 [4] int64 = 1
-[5] bool = true
+[5] string = ""
+[6] string = "0"
+[7] string = "0000000000000000"
+[8] string = ""
+[9] string = "0"
+[10] string = "0000000000000000"
+[11] string = "service.name"
+[12] string = ""
+[13] string = "0"
+[14] string = "0000000000000000"
+[15] bool = true
 -- chplan --
 Aggregate groupBy=[TraceId AS TraceId, ResourceAttributes["service.name"] AS GroupKey] funcs=[FnAny(SpanId) AS SpanId, FnCount(1) AS Value, FnAny(SpanName) AS MetricName, FnAny(ResourceAttributes) AS ResourceAttrs, FnAny(ParentSpanId) AS ParentSpanId, FnMin(Timestamp) AS TimeUnix, FnMin(FnToUnixNanos(Timestamp)) AS TraceStartNs, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS TraceEndNs]
   Filter predicate=true
@@ -56,4 +66,4 @@ use_query_condition_cache=1
 -- sql --
 SELECT `TraceId` AS `TraceId`, `ResourceAttributes`[?] AS `GroupKey`, any(`SpanId`) AS `SpanId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `TraceId`, `GroupKey`
 -- sql_optimized --
-SELECT `MetricName` AS `MetricName`, mapConcat(`ResourceAttrs`, map(?, `TraceId`, ?, `ParentSpanId`, ?, toString((`TraceEndNs` - `TraceStartNs`)))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Value`) AS `Value` FROM (SELECT `TraceId` AS `TraceId`, any(`SpanId`) AS `SpanId`, sum(`Value`) AS `Value`, any(`MetricName`) AS `MetricName`, any(`ResourceAttrs`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`TimeUnix`) AS `TimeUnix`, min(`TraceStartNs`) AS `TraceStartNs`, max(`TraceEndNs`) AS `TraceEndNs` FROM (SELECT `TraceId` AS `TraceId`, `ResourceAttributes`[?] AS `GroupKey`, any(`SpanId`) AS `SpanId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE ?) GROUP BY `TraceId`, `GroupKey`) GROUP BY `TraceId`)
+SELECT `RootName` AS `MetricName`, map(?, `TraceId`, ?, toString(`RootMatched`), ?, toString((`TraceEndNs` - `TraceStartNs`)), ?, toString(`RootService`)) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Value`) AS `Value` FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs`, max((`ParentSpanId` IN (?, ?, ?))) AS `RootMatched`, argMax(`SpanName`, (`ParentSpanId` IN (?, ?, ?))) AS `RootName`, argMax(`ResourceAttributes`[?], (`ParentSpanId` IN (?, ?, ?))) AS `RootService` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE ?) GROUP BY `TraceId`)

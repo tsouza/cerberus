@@ -240,7 +240,7 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
 			},
 		},
-		Alias: "TraceStartNs",
+		Alias: traceStartNsCol,
 	}
 	// max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) AS TraceEndNs —
 	// the latest span-end across the trace. Coercing Duration to Int64
@@ -261,7 +261,7 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 				},
 			},
 		},
-		Alias: "TraceEndNs",
+		Alias: traceEndNsCol,
 	}
 	agg := &chplan.Aggregate{
 		Input:          &chplan.Filter{Input: &chplan.Scan{Table: s.SpansTable}, Predicate: traceMatch},
@@ -285,8 +285,8 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 	}}
 	traceDurationNs := &chplan.Binary{
 		Op:    chplan.OpSub,
-		Left:  &chplan.ColumnRef{Name: "TraceEndNs"},
-		Right: &chplan.ColumnRef{Name: "TraceStartNs"},
+		Left:  &chplan.ColumnRef{Name: traceEndNsCol},
+		Right: &chplan.ColumnRef{Name: traceStartNsCol},
 	}
 	return &chplan.Project{
 		Input: agg,
@@ -365,7 +365,9 @@ func padTraceIDs(ids []string) []string {
 // follow-up CH query computes (max(Timestamp + Duration) -
 // min(Timestamp)) across every span of each affected trace and
 // surfaces the result via rootMetadata.TraceDurationNs; we patch it
-// in here when positive so summary.DurationMs matches Tempo.
+// in here when positive so summary.DurationMs matches Tempo. A summary
+// whose matched spans include the root (keepMatchedExtent) keeps its
+// matched extent, as one built from a matched root row does.
 //
 // Modifies the summaries slice in place; the slice header itself
 // (length, capacity, ordering) is unchanged.
@@ -384,7 +386,7 @@ func applyRootMetadata(summaries []TraceSummary, roots map[string]rootMetadata) 
 		// trace-wide span (negative would indicate a corrupt fixture;
 		// zero means a single-instant trace and is indistinguishable
 		// from "no duration computed" so the per-row fallback stays).
-		if root.TraceDurationNs > 0 {
+		if root.TraceDurationNs > 0 && !summaries[i].keepMatchedExtent {
 			summaries[i].DurationMs = int(root.TraceDurationNs / 1_000_000)
 		}
 	}
