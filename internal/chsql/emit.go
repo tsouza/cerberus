@@ -180,7 +180,7 @@ func EmitCounted(ctx context.Context, n chplan.Node) (sql string, args []any, ph
 	// Pass 1 renders inline and records which sub-statements render more
 	// than once; only when one does, pass 2 re-renders hoisting each of them
 	// into a single CTE (emit_shared_subplan.go).
-	var mapCastFree map[chplan.Expr]bool
+	var mapCastFree map[*chplan.FuncCall]bool
 	if schemaStrategiesFromCtx(ctx).CanonicalMapTypeCast {
 		mapCastFree = mapTypeCastFree(n)
 	}
@@ -418,11 +418,11 @@ type emitter struct {
 	// that never carried one) renders for the default schema.
 	strategies SchemaStrategies
 
-	// mapCastFree holds the Map expressions of the plan this emission
-	// renders that render without the parsed-Map-type cast under
+	// mapCastFree holds the Map calls of the plan this emission renders
+	// that render without the parsed-Map-type cast under
 	// SchemaStrategies.CanonicalMapTypeCast: their value reaches no
 	// operator that can spill ([mapTypeCastFree]). nil casts every one.
-	mapCastFree map[chplan.Expr]bool
+	mapCastFree map[*chplan.FuncCall]bool
 
 	// cteSeq is a monotonic counter handed out to every emitter that
 	// registers a named CTE, so each one gets a unique name: the

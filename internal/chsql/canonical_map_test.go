@@ -166,15 +166,6 @@ func TestExprParsedMapType_FollowsStrategies(t *testing.T) {
 		{"mapConcat", &chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{attrs, le}}, "mapConcat(`Attributes`, map(?, `le`))", true},
 		{"mapApply", &chplan.FuncCall{Fn: chplan.FnMapApply, Args: []chplan.Expr{identity, attrs}}, "mapApply((k, v) -> tuple(`k`, `v`), `Attributes`)", true},
 		{"mapUpdate", &chplan.FuncCall{Fn: chplan.FnMapUpdate, Args: []chplan.Expr{attrs, le}}, "mapUpdate(`Attributes`, map(?, `le`))", false},
-		{"mapFilter", &chplan.FuncCall{Fn: chplan.FnMapFilter, Args: []chplan.Expr{identity, attrs}}, "mapFilter((k, v) -> tuple(`k`, `v`), `Attributes`)", true},
-		// The plan-IR label-set rewrites render a mapFilter as their
-		// outermost call; their bare spelling is pinned by their own tests,
-		// so these rows pin only that the cast wraps it.
-		{"MapWithoutKeys", &chplan.MapWithoutKeys{Map: attrs, Keys: []string{"le"}}, "", true},
-		{"MapWithoutKeys without keys", &chplan.MapWithoutKeys{Map: attrs}, "", false},
-		{"MapWithoutEmptyValues", &chplan.MapWithoutEmptyValues{Map: attrs}, "", true},
-		{"LabelReplace", &chplan.LabelReplace{Map: attrs, Dst: "dst", Replacement: "$1", Src: "src", Regex: "(.*)"}, "", true},
-		{"LabelJoin", &chplan.LabelJoin{Map: attrs, Dst: "dst", Separator: ",", Srcs: []string{"a", "b"}}, "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -183,16 +174,12 @@ func TestExprParsedMapType_FollowsStrategies(t *testing.T) {
 				sql, _ := Render(UnderSchemaStrategies(s, func(b *Builder) { _ = b.Expr(tc.expr) }))
 				return sql
 			}
-			bare := render(SchemaStrategies{})
-			if tc.bare != "" && bare != tc.bare {
-				t.Errorf("zero strategies: rendered %q, want %q", bare, tc.bare)
+			if got := render(SchemaStrategies{}); got != tc.bare {
+				t.Errorf("zero strategies: rendered %q, want %q", got, tc.bare)
 			}
-			if strings.HasPrefix(bare, "CAST(") || bare == "" {
-				t.Fatalf("zero strategies: rendered %q, want the bare Map call", bare)
-			}
-			want := bare
+			want := tc.bare
 			if tc.cast {
-				want = "CAST(" + bare + ", toTypeName(" + bare + "))"
+				want = "CAST(" + tc.bare + ", toTypeName(" + tc.bare + "))"
 			}
 			if got := render(typeCastStrategies); got != want {
 				t.Errorf("CanonicalMapTypeCast: rendered %q, want %q", got, want)
@@ -413,8 +400,8 @@ func TestMapTypeCastFree_WindowProjectOwesItsMaps(t *testing.T) {
 	if free[attrs] {
 		t.Errorf("a Map a window partitions by renders uncast")
 	}
-	for e := range free {
-		if f, ok := e.(*chplan.FuncCall); ok && f.Fn == chplan.FnMapSort && e != filterKey {
+	for f := range free {
+		if f.Fn == chplan.FnMapSort && f != filterKey {
 			t.Errorf("the window's PARTITION BY key renders uncast")
 		}
 	}
@@ -497,33 +484,5 @@ func TestExprCanonicalMap_OperandErrorSurfaces(t *testing.T) {
 		if err := b.Expr(key); err == nil {
 			t.Errorf("strategies %+v: a key over an unrenderable operand renders without error: %s", strategies, b.sb.String())
 		}
-	}
-}
-
-// A Map call nested inside another one the cast applies to is free even
-// where the enclosing call is owed: the enclosing call derives its own type
-// from the nested value, so only that type reaches the GROUP BY. A label set
-// that only passes its operand through (a MapWithoutKeys without keys) does
-// not derive a type, so a Map call under it stays owed.
-func TestMapTypeCastFree_NestedMapCallsAreFree(t *testing.T) {
-	t.Parallel()
-	filtered := &chplan.MapWithoutKeys{Map: &chplan.ColumnRef{Name: "ResourceAttributes"}, Keys: []string{"service.name"}}
-	merged := &chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{filtered, &chplan.ColumnRef{Name: "Attributes"}}}
-	key := chplan.CanonicalAttributesExpr(merged).(*chplan.FuncCall)
-	emptied := &chplan.MapWithoutEmptyValues{Map: &chplan.ColumnRef{Name: "Attributes"}}
-	passed := &chplan.MapWithoutKeys{Map: emptied}
-	plan := &chplan.Aggregate{
-		Input:   &chplan.Scan{Table: "otel_metrics_sum"},
-		GroupBy: []chplan.Expr{key, passed},
-	}
-	free := mapTypeCastFree(plan)
-	if free[key] {
-		t.Errorf("the GROUP BY's canonical key renders uncast")
-	}
-	if !free[merged] || !free[filtered] {
-		t.Errorf("a Map call nested in the canonical key is cast: mapConcat free=%v, mapFilter free=%v", free[merged], free[filtered])
-	}
-	if free[emptied] {
-		t.Errorf("a Map call a keyless MapWithoutKeys passes to the GROUP BY renders uncast")
 	}
 }

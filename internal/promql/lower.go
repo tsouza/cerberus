@@ -958,7 +958,7 @@ func lowerMatrixSelector(ms *parser.MatrixSelector, s schema.Metrics, ctx lowerC
 //   - `_bucket` (bucketSuffixed != ""): the scan-side filter feeds into
 //     the fan-out Project, which applies any `le=<bound>` matcher to each
 //     row's synthesised bucket bounds before arrayJoin expands them
-//     ([leMatchersPredicate]). `pred` is baked into the fan-out's input Filter
+//     ([keepBucketPairs]). `pred` is baked into the fan-out's input Filter
 //     and returned nil so the downstream wrapper doesn't re-apply it.
 //   - `_count` / `_sum` (companionValueColumn != ""): wrap the scan in the
 //     companion Project that aliases the source Count / Sum column as

@@ -35,7 +35,7 @@ import (
 //     DecisionWireSynthetic for it.
 //   - WireArmWireBound matchers (an `le` matcher on a classic-histogram
 //     selector) test the bucket bound string the lowering synthesises from
-//     the ladder (the fan-out's bucket filter, histogram_quantile's ladder
+//     the ladder (the fan-out's pair filter, histogram_quantile's ladder
 //     restriction); evaluated against the stored row's labels they are
 //     unconditionally unsatisfiable.
 //
