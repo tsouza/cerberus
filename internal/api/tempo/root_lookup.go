@@ -240,7 +240,7 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
 			},
 		},
-		Alias: "TraceStartNs",
+		Alias: traceStartNsCol,
 	}
 	// max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) AS TraceEndNs —
 	// the latest span-end across the trace. Coercing Duration to Int64
@@ -261,7 +261,7 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 				},
 			},
 		},
-		Alias: "TraceEndNs",
+		Alias: traceEndNsCol,
 	}
 	agg := &chplan.Aggregate{
 		Input:          &chplan.Filter{Input: &chplan.Scan{Table: s.SpansTable}, Predicate: traceMatch},
@@ -285,8 +285,8 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 	}}
 	traceDurationNs := &chplan.Binary{
 		Op:    chplan.OpSub,
-		Left:  &chplan.ColumnRef{Name: "TraceEndNs"},
-		Right: &chplan.ColumnRef{Name: "TraceStartNs"},
+		Left:  &chplan.ColumnRef{Name: traceEndNsCol},
+		Right: &chplan.ColumnRef{Name: traceStartNsCol},
 	}
 	return &chplan.Project{
 		Input: agg,

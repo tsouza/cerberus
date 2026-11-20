@@ -616,6 +616,14 @@ const (
 	sampleTimeUnixCol   = "TimeUnix"
 )
 
+// traceStartNsCol / traceEndNsCol name the per-trace extent columns a
+// spanset-aggregate search and the root lookup compute: the earliest span
+// start and the latest span end, in nanoseconds.
+const (
+	traceStartNsCol = "TraceStartNs"
+	traceEndNsCol   = "TraceEndNs"
+)
+
 // tsScanBound renders `<tsCol> <op> fromUnixTimestamp64Nano(<t.UnixNano()>)` —
 // a nanosecond Timestamp predicate that sits directly on the spans Scan so
 // ClickHouse partition-prunes toDate(Timestamp). Mirrors traceql.tsBound; kept
@@ -1609,9 +1617,9 @@ func spansetRowsPerTrace(plan chplan.Node) chplan.Node {
 // across a trace's group rows.
 func envelopeMergeFn(alias string) chplan.Fn {
 	switch alias {
-	case sampleTimeUnixCol, "TraceStartNs":
+	case sampleTimeUnixCol, traceStartNsCol:
 		return chplan.FnMin
-	case "TraceEndNs":
+	case traceEndNsCol:
 		return chplan.FnMax
 	case "Value":
 		return chplan.FnSum
@@ -1631,7 +1639,7 @@ const (
 // regroupEnvelopeAliases are the envelope columns of a by() or coalesce()
 // aggregate the per-trace aggregate of regroupRowsPerTrace carries over:
 // those regroupSampleProjections and boundNewestTraces read.
-var regroupEnvelopeAliases = []string{"Value", sampleTimeUnixCol, "TraceStartNs", "TraceEndNs"}
+var regroupEnvelopeAliases = []string{"Value", sampleTimeUnixCol, traceStartNsCol, traceEndNsCol}
 
 // regroupRowsPerTrace returns the per-trace aggregate of a search that ends
 // in by() or coalesce(): plan is that stage's aggregate itself, with no
@@ -1750,7 +1758,7 @@ func regroupSampleProjections(named bool) []chplan.Projection {
 		&chplan.LitString{V: searchKeyRootMatched},
 		toString(&chplan.ColumnRef{Name: regroupRootMatchedAlias}),
 		&chplan.LitString{V: searchKeyTraceDurationNs},
-		toString(&chplan.Binary{Op: chplan.OpSub, Left: &chplan.ColumnRef{Name: "TraceEndNs"}, Right: &chplan.ColumnRef{Name: "TraceStartNs"}}),
+		toString(&chplan.Binary{Op: chplan.OpSub, Left: &chplan.ColumnRef{Name: traceEndNsCol}, Right: &chplan.ColumnRef{Name: traceStartNsCol}}),
 	}
 	var name chplan.Expr = &chplan.LitString{V: ""}
 	if named {
@@ -1802,7 +1810,7 @@ func boundNewestTraces(plan chplan.Node, limit int64) chplan.Node {
 			// start-ns collision is deterministic and matches the old drain-all
 			// path. Both are Aggregate output columns.
 			Keys: []chplan.OrderKey{
-				{Expr: &chplan.ColumnRef{Name: "TraceStartNs"}, Desc: true},
+				{Expr: &chplan.ColumnRef{Name: traceStartNsCol}, Desc: true},
 				{Expr: &chplan.ColumnRef{Name: "TraceId"}, Desc: false},
 			},
 		},
@@ -1867,7 +1875,7 @@ func aggregateCarriesSpansetEnvelope(a *chplan.Aggregate) bool {
 		// too so the shape-matcher and the ORDER BY key stay in lockstep — a
 		// future envelope without TraceStartNs must not match (the ORDER BY
 		// would reference a non-existent alias).
-		"TraceStartNs": false,
+		traceStartNsCol: false,
 	}
 	for _, af := range a.AggFuncs {
 		if _, ok := wanted[af.Alias]; ok {
@@ -1931,8 +1939,8 @@ func aggregateCarriesSpansetEnvelope(a *chplan.Aggregate) bool {
 func spansetAggregateSampleProjections() []chplan.Projection {
 	traceDurationNs := &chplan.Binary{
 		Op:    chplan.OpSub,
-		Left:  &chplan.ColumnRef{Name: "TraceEndNs"},
-		Right: &chplan.ColumnRef{Name: "TraceStartNs"},
+		Left:  &chplan.ColumnRef{Name: traceEndNsCol},
+		Right: &chplan.ColumnRef{Name: traceStartNsCol},
 	}
 	traceIDMap := &chplan.FuncCall{Fn: chplan.FnMap, Args: []chplan.Expr{
 		&chplan.LitString{V: searchKeyTraceID},
