@@ -808,6 +808,33 @@ func SearchDrains(ctx context.Context, s schema.Traces) bool {
 	return widened
 }
 
+// SearchDrainOutside returns the predicate a span satisfies when its
+// Timestamp lies inside the drain window but outside the request window: the
+// spans a drain reads that the request window's read does not. A chosen trace
+// with no such span has every span its drain would read inside the request
+// window, so its drained answer is its request-window answer. It returns nil
+// when the search does not drain (SearchDrains is false).
+func SearchDrainOutside(ctx context.Context, s schema.Traces) chplan.Expr {
+	start, end := searchWindowFromCtx(ctx)
+	drainStart, drainEnd, widened := drainWindow(start, end, s)
+	if !widened {
+		return nil
+	}
+	var outside chplan.Expr
+	if !start.IsZero() {
+		outside = chplan.TimestampBound(chplan.OpLt, start, s.TimestampColumn)
+	}
+	if !end.IsZero() {
+		after := chplan.TimestampBound(chplan.OpGt, end, s.TimestampColumn)
+		if outside == nil {
+			outside = after
+		} else {
+			outside = &chplan.Binary{Op: chplan.OpOr, Left: outside, Right: after}
+		}
+	}
+	return andWindow(outside, drainStart, drainEnd, s.TimestampColumn)
+}
+
 // drainLowering returns the window and schema Lower stamps a plan with. Under
 // WithSearchDrain, with a window to widen, that is the drain window and s with
 // a zero maximum trace duration, so the per-trace subqueries read the drain

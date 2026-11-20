@@ -120,10 +120,11 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 	// on the Go heap anyway; the byte budget still charges the drain, and the
 	// two-phase split shrinks it to the response traces. Cancellation now surfaces
 	// at the query boundary (grpcStatusFor maps ctx errors).
-	res, err := s.Handler.SearchResult(ctx, req.Query, limit)
+	run, err := s.Handler.SearchResult(ctx, req.Query, limit)
 	if err != nil {
 		return grpcStatusFor(err)
 	}
+	res := run.Result
 	samples := res.Samples
 
 	// Honour the request's SpansPerSpanSet + Limit the same way the
@@ -145,7 +146,7 @@ func (s *Service) Search(req *tempopb.SearchRequest, stream tempopb.StreamingQue
 		// summaries stays in place). Errors here are NOT surfaced to
 		// the client — a downgraded summary is preferable to a hard
 		// 5xx when the primary query already succeeded.
-		if err := s.Handler.ResolveMissingRoots(ctx, summaries, missingRoots); err != nil {
+		if err := s.Handler.ResolveSearchRoots(ctx, run, summaries, missingRoots); err != nil {
 			s.Logger.Warn("tempo gRPC root-span lookup failed",
 				"err", err, "missing", len(missingRoots))
 		}
