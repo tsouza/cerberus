@@ -81,8 +81,8 @@ func TestRestrictStructural_LiteralWhenIneligible(t *testing.T) {
 
 // TestRestrictStructural_ExternalWhenEligibleAndWide pins the positive case:
 // externalEligible=true plus a wide closure switches every structural join in
-// the plan to the external-table form, and the returned ids are the padded
-// values runTwoPhase threads to chclient.WithExternalTraceIDs.
+// the plan to the external-table form, and the returned ids are the values
+// runTwoPhase threads to chclient.WithExternalTraceIDs.
 func TestRestrictStructural_ExternalWhenEligibleAndWide(t *testing.T) {
 	wide := make([]string, 2000)
 	for i := range wide {

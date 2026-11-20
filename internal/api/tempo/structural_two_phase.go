@@ -323,10 +323,9 @@ func (h *Handler) runTwoPhase(
 
 // runPhaseB runs plan restricted to the traces topN: every structural join
 // through restrictStructural and, for a drain, every leaf span scan through a
-// literal id list (chplan.PushLeafPredicate). The leaf list carries topN as
-// phase A read it from the trace-id column, so it matches that column's
-// stored values whatever form they take; restrictStructural's padded ids are
-// the structural closure's form, not the column's.
+// literal id list (chplan.PushLeafPredicate). Both carry topN as phase A read
+// it from the trace-id column, so they match that column's stored values
+// whatever form they take.
 func (h *Handler) runPhaseB(ctx context.Context, plan chplan.Node, topN []string, meta engine.Meta, drain bool) (engine.Result, error) {
 	restricted, ids, external := restrictStructural(plan, topN, h.ExternalTraceIDPush)
 	if drain {
@@ -401,7 +400,7 @@ func drainBatches(ids []string, sites int) [][]string {
 	var batches [][]string
 	start, bytes := 0, 0
 	for i, id := range ids {
-		idBytes := estimatedLiteralBytes([]string{normaliseTraceID(id)}) * sites
+		idBytes := estimatedLiteralBytes([]string{id}) * sites
 		if i > start && bytes+idBytes > traceIDLiteralByteBudget {
 			batches = append(batches, ids[start:i])
 			start, bytes = i, 0
@@ -531,11 +530,10 @@ func newestTracesPlan(input chplan.Node, s schema.Traces, limit int) chplan.Node
 
 // restrictStructural clones the lowered plan and stamps the phase-A top-N
 // TraceIds onto every structural join in it as the closure's restriction, so
-// phase B's wide fetch reads only those traces. The ids are routed through
-// padTraceIDs (the root-lookup literal-splice helper) — idempotent for the
-// on-disk 32-char form phase A returns, and a defensive left-pad for any short
-// id — so the restriction matches otel_traces.TraceId exactly whichever form
-// it takes.
+// phase B's wide fetch reads only those traces. The ids are the trace-id
+// column's values exactly as phase A read them, so the restriction matches
+// every stored id, including one shorter than the canonical 32 hex
+// characters; a canonicalised spelling of a short stored id matches no row.
 //
 // externalEligible is h.ExternalTraceIDPush: when false (the pre-#2783
 // default) every restriction is the literal splice, byte-identical to
@@ -543,8 +541,8 @@ func newestTracesPlan(input chplan.Node, s schema.Traces, limit int) chplan.Node
 // only once BOTH hold does it stamp TraceIDExternalTable instead of
 // TraceIDRestriction, and reports external=true so the caller
 // (runTwoPhase) knows to attach the actual id rows via
-// chclient.WithExternalTraceIDs. Returns the padded ids alongside the clone
-// either way, since the caller needs them again for that attach.
+// chclient.WithExternalTraceIDs. Returns the ids alongside the clone either
+// way, since the caller needs them again for that attach.
 func restrictStructural(plan chplan.Node, topN []string, externalEligible bool) (restricted chplan.Node, ids []string, external bool) {
 	// Clone as a plain Node (not *StructuralJoin): the plan may be a pure-select
 	// Project wrapped over the join (`… >> … | select(...)`), in which case the
@@ -552,7 +550,7 @@ func restrictStructural(plan chplan.Node, topN []string, externalEligible bool) 
 	// into it either way, so the restriction is stamped whether the root is the
 	// join or a wrapper over it.
 	clone := chplan.CloneNode(plan)
-	ids = padTraceIDs(topN)
+	ids = topN
 	external = externalEligible && useExternalTraceIDTable(ids)
 	// Stamp EVERY structural join in the plan, not just the root: a chain
 	// `A >> B >> C` is left-associative, so the root's Left is itself a
