@@ -103,8 +103,8 @@ export const mirroredImages = [
   'clickhouse/clickhouse-server:26.6.1.1193-alpine',
   // test/regexjit's exact builds (CH_REGEX_JIT_IMAGES): one release of each
   // line that compiles regular expressions to native code.
-  // test/querylog's exact builds (CH_QUERY_LOG_IMAGES): the supported floor
-  // and the first line maintaining system.all_query_log.
+  // The boot floor's exact build (versions.yaml boot_floor_clickhouse), which
+  // test/chserver's build-specific probes and the collector receiver test pin.
   'clickhouse/clickhouse-server:24.8.14.39-alpine',
   // The native time-series state-format boundary: exact builds on either side
   // of each format bump (see CH_TS_STATE_*_IMAGE).
@@ -116,7 +116,9 @@ export const mirroredImages = [
   'clickhouse/clickhouse-server:26.8.1.2041-alpine',
   // test/chserver's exact builds (CH_SERVER_SAFETY_IMAGES): the condition
   // cache's floor and every backport boundary, and the first releases whose
-  // functions honour cancellation mid-call.
+  // functions honour cancellation mid-call. 26.3.17.56 is also
+  // CH_MIN_SUPPORTED_IMAGE, the minimum supported line test/regexjit and
+  // test/querylog (CH_QUERY_LOG_IMAGES, with 26.8.10.6) run on.
   'clickhouse/clickhouse-server:25.3.14.14-alpine',
   'clickhouse/clickhouse-server:26.3.12.3-alpine',
   'clickhouse/clickhouse-server:26.3.13.31-alpine',

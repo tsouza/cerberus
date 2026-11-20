@@ -256,8 +256,8 @@ func checkByteLabelReplace(ctx context.Context, t *testing.T, conn driver.Conn) 
 // checkByteFns runs byteFnCases, each held to Go's regexp reading the
 // pattern as ClickHouse does: match and the extract family read `.` as
 // matching a newline, and the replaceRegexp pair as the server at hand
-// reads it (the 24.8 floor does not match a newline there, later builds
-// do).
+// reads it, probed per server (24.8 does not match a newline there; 26.7
+// and 26.8 do).
 func checkByteFns(ctx context.Context, t *testing.T, conn driver.Conn) {
 	v := &chplan.ColumnRef{Name: probeLabel}
 	replaceFlag := "(?-s)"

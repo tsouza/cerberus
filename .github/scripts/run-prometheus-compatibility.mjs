@@ -55,9 +55,9 @@
 //   TESTER_RANGE      range in seconds (default: 3600 = 1h, matches seed window)
 //   CH_IMAGE          docker-compose.yml's clickhouse service image tag
 //                      (default: clickhouse/clickhouse-server:26.8.36.3). Set to
-//                      clickhouse/clickhouse-server:24.8 to run this SAME
-//                      corpus against cerberus's declared minCHBase floor
-//                      (internal/preflight/preflight.go) — the
+//                      clickhouse/clickhouse-server:26.3 to run this SAME
+//                      corpus against cerberus's minimum supported version
+//                      (versions.yaml min_clickhouse) — the
 //                      compatibility/prometheus-floor CI job does exactly
 //                      that. `docker compose config` resolves the
 //                      interpolation before compose-pull-images.mjs reads

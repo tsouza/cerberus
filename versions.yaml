@@ -23,15 +23,22 @@
 # tag that tracks one of these may pin an exact build of that line; the checks
 # compare its major.minor.
 
-# min_clickhouse - the supported / CI-tested ClickHouse floor: the lowest
-# version the SQL cerberus emits is correct on. MUST equal internal/preflight
-# minCHBase (the boot-time requirements check rejects anything older).
-min_clickhouse: "24.8"
+# min_clickhouse - the minimum supported ClickHouse version: the oldest LTS
+# line upstream ClickHouse still supports. cerberus warns about any server
+# below it, and the compatibility/prometheus-floor lane runs on it. MUST equal
+# internal/chopt MinSupportedMajor.MinSupportedMinor.
+min_clickhouse: "26.3"
+
+# boot_floor_clickhouse - the oldest ClickHouse the boot-time requirements
+# check starts against (it rejects anything older). Below min_clickhouse, so a
+# server between the two starts unsupported, with a warning. MUST equal
+# internal/preflight minCHBase.
+boot_floor_clickhouse: "24.8"
 
 # min_native_rate - the floor the native timeSeries*ToGrid family was
 # introduced at. Only applies when an experimental native-rate feature is
-# enabled, which raises the effective preflight floor to max(min_clickhouse,
-# min_native_rate). MUST equal internal/preflight minCHNativeRate. Informational
+# enabled, which raises the effective preflight floor to
+# max(boot_floor_clickhouse, min_native_rate). MUST equal internal/preflight minCHNativeRate. Informational
 # here; the registry (ts_grid_range / ts_grid_resample = 25.9) is its SoT for
 # the per-feature gate.
 min_native_rate: "25.9"

@@ -26,7 +26,7 @@ import (
 const codeUnknownSetting = 115
 
 // settingFloorBuilds straddle both gate settings' first accepting releases:
-// the supported floor (24.8) predates both, 25.3 accepts
+// the boot floor (24.8, below the minimum supported version) predates both, 25.3 accepts
 // use_query_condition_cache only, and 25.10 accepts both.
 var settingFloorBuilds = []string{
 	"clickhouse/clickhouse-server:24.8.14.39-alpine",
@@ -34,7 +34,7 @@ var settingFloorBuilds = []string{
 	"clickhouse/clickhouse-server:25.10.7.6-alpine",
 }
 
-// mixedFleetAffectedImage is the node a mixed fleet pairs with the supported
+// mixedFleetAffectedImage is the node a mixed fleet pairs with the boot
 // floor: a 26.3 LTS build carrying ClickHouse#119168 and outside
 // condition_cache's known-unsafe ranges, so only the conversion shape is
 // gated.
@@ -77,7 +77,7 @@ func TestShapeDefectGates_SettingFloors(t *testing.T) {
 
 // assertStampSettingClasses checks the classes of the settings the engine
 // stamps against s's system.settings: every engine.FloorKnownStampSettings
-// entry is known, s being at or above the supported floor, and each
+// entry is known, s being at or above the boot floor, and each
 // chopt.DroppableSettings and chopt.GateSettings entry is known exactly when
 // s is at or above its Since.
 func assertStampSettingClasses(ctx context.Context, t *testing.T, s *server) {
@@ -110,7 +110,7 @@ func assertStampSettingClasses(ctx context.Context, t *testing.T, s *server) {
 }
 
 // TestShapeDefectGates_MixedFleetNeverAnswersWrong is the production wiring on
-// a fleet mixing the supported floor (24.8) with a node carrying
+// a fleet mixing the boot floor (24.8) with a node carrying
 // ClickHouse#119168. Both nodes get the same settings rules — the fleet
 // decision puts the defect in force, as one affected node does — and so the
 // same use_query_condition_cache=0 on the conversion shape, a LogQL numeric

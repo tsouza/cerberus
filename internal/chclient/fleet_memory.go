@@ -68,7 +68,7 @@ func retentionPasses(servers int) int {
 //   - An incomplete pass counts no miss, because the server it missed may sit
 //     behind the address that failed.
 //   - A pass that reached no server leaves the memory as it is and describes
-//     no fleet, so the caller falls back to the supported floor exactly as
+//     no fleet, so the caller falls back to its probe fallback version exactly as
 //     before any pass ran.
 //   - A pass that reads one identity on two builds — servers cloned from one
 //     data directory share a serverUUID() — keeps the older build for it, so

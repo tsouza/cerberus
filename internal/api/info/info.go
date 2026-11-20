@@ -68,7 +68,7 @@ type OptState struct {
 	ServerVersion string
 	// ServerVersionSource is [ServerVersionSourceProbe] when the version was
 	// read live, or [ServerVersionSourceFallback] when the probe failed and the
-	// supported floor was assumed.
+	// probe fallback version was assumed.
 	ServerVersionSource string
 	// Enabled is the EFFECTIVELY ENABLED feature ids (chopt EnabledSet IDs) —
 	// the headline field: it makes plain whether cerberus is running the
@@ -96,7 +96,7 @@ type OptState struct {
 const (
 	// ServerVersionSourceProbe marks a server version read live from the server.
 	ServerVersionSourceProbe = "probe"
-	// ServerVersionSourceFallback marks the assumed supported floor used when
+	// ServerVersionSourceFallback marks the assumed probe fallback version used when
 	// the version probe failed.
 	ServerVersionSourceFallback = "fallback"
 )

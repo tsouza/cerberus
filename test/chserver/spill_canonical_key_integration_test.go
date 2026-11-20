@@ -21,7 +21,9 @@ import (
 )
 
 // spillKeyBuilds are the builds the spilled-aggregation probe runs on: the
-// supported floor, whose mapSort returns a Map type unequal to the one its
+// boot floor (versions.yaml boot_floor_clickhouse, below the minimum supported
+// version but still started against), whose mapSort returns a Map type
+// unequal to the one its
 // spilled blocks are read back as (auto resolves
 // chopt.FeatureCanonicalMapTypeCast in), and a build whose mapSort returns
 // the parsed type itself (auto leaves it out).

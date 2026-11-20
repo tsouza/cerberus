@@ -321,7 +321,7 @@ like `auto`.
 
 ## Why a gate's setting is stamped on a mixed fleet
 
-The supported floor is 24.8, so a fleet can mix a node too old to know a gate's
+cerberus starts against servers down to 24.8, so a fleet can mix a node too old to know a gate's
 setting with a node inside a defect's range — a rolling upgrade from 24.8
 straight onto a 26.x LTS line is the common case. Cerberus sends every
 per-query setting through clickhouse-go's settings path over the native

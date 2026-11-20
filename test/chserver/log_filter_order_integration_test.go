@@ -20,9 +20,10 @@ import (
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
 
-// logFilterOrderImage is the supported floor (versions.yaml min_clickhouse):
-// a server that runs a multi-step PREWHERE in the order of the WHERE
-// conjuncts.
+// logFilterOrderImage is the boot floor (versions.yaml
+// boot_floor_clickhouse), below the minimum supported version but still
+// started against: a server that runs a multi-step PREWHERE in the order of
+// the WHERE conjuncts, which no supported line does.
 const logFilterOrderImage = "clickhouse/clickhouse-server:24.8.14.39-alpine"
 
 // logFilterReorderImage is a server that reorders the conditions it moves
@@ -56,8 +57,8 @@ var (
 	logFilterOrderEnd   = logFilterOrderStart.Add(24 * time.Hour)
 )
 
-// TestLogQueryLevelFilterSparesTheBody runs logFilterOrderQuery on the floor
-// server and requires it to read fewer bytes than the table's body column
+// TestLogQueryLevelFilterSparesTheBody runs logFilterOrderQuery on the
+// order-keeping server and requires it to read fewer bytes than the table's body column
 // holds. The level filter keeps only the error lines, which sit together at
 // the end of the window, so a statement that runs the filters in the order
 // the query writes them reads the body of those rows alone. One that runs the
@@ -102,7 +103,7 @@ var logFilterOrderRangeQueries = []string{
 }
 
 // TestRangeAggregationLevelFilterSparesTheBody runs logFilterOrderRangeQueries
-// on the floor server, with the strategies its build resolves to, and
+// on the order-keeping server, with the strategies its build resolves to, and
 // requires each to read fewer bytes than the body column holds, as the log
 // query does. The level filter has to run where the table is read, ahead of
 // the line filter, or the scan reads every body in the stream.

@@ -7,7 +7,7 @@
 // closes that gap with three gates run after the schema-create step:
 //
 //   - Gate 1 (version): the connected server's version() is compared
-//     against a config-derived minimum — the base supported floor, raised
+//     against a config-derived minimum — the base boot floor, raised
 //     to the native-rate floor when the experimental native-rate path is
 //     enabled (computed as max-of-applicable-minimums so future knobs can
 //     raise it).
@@ -96,20 +96,12 @@ import (
 // Patch and build suffixes are dropped: cerberus's SQL-surface requirements
 // track feature availability, which lands at minor-version granularity.
 
-// minCHBase is the supported / CI-tested ClickHouse floor — the version
-// README and docs state as the minimum. The three required compatibility/*
-// heads (the source of truth for all three heads' PARITY) run ClickHouse
-// 26.5, same as chDB; every feature above this floor is gated behind
-// internal/chopt's registry (auto-selected only once the probed server
-// satisfies the feature's own MinVersion), so those substrates always take
-// the newest eligible branch and never exercise the 24.8-safe fallback SQL
-// those gates protect. compatibility/prometheus-floor (see #1500) closes
-// that gap: it runs the SAME prometheus corpus against
-// clickhouse/clickhouse-server:24.8, forcing the auto-picker to resolve
-// every >24.8 feature to OFF and executing the fallback branches — the
-// empty-input / parse-unit / filter-path workarounds, the row-path
-// rate/increase/changes/resets/deriv/predict_linear fan-outs — end to end
-// against reference Prometheus.
+// minCHBase is the boot floor (versions.yaml boot_floor_clickhouse): the
+// oldest ClickHouse the requirements check starts against. It sits below the
+// minimum supported version (chopt.MinSupportedVersion); a server between
+// the two starts unsupported, and cmd/cerberus warns about it. Every feature
+// above this floor is gated behind internal/chopt's registry (auto-selected
+// only once the probed server satisfies the feature's own MinVersion).
 var minCHBase = chopt.Version{Major: 24, Minor: 8}
 
 // minCHNativeRate is the ClickHouse floor at which the native

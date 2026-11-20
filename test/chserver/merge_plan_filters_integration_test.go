@@ -24,8 +24,10 @@ import (
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
 
-// mergePlanFiltersImage is the supported floor, a release that has
-// query_plan_merge_filters off by default.
+// mergePlanFiltersImage is the boot floor (versions.yaml
+// boot_floor_clickhouse), a release below the minimum supported version that
+// cerberus still starts against and that has query_plan_merge_filters off by
+// default.
 const mergePlanFiltersImage = "clickhouse/clickhouse-server:24.8.14.39-alpine"
 
 // mergePlanFiltersQuery filters on a label its logfmt stage parses, after an

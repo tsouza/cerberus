@@ -1346,8 +1346,9 @@ const (
 	// VERSION FLOOR: 25.5 — the first release accepting `_part_offset` inside
 	// a normal projection's SELECT list (upstream PR #78429, "Projection
 	// Index Step 1: Support _part_offset in normal projections"); ADD
-	// PROJECTION with this shape is rejected outright below it. cerberus's
-	// supported floor is 24.8 (versions.yaml), so unlike every projection in
+	// PROJECTION with this shape is rejected outright below it. cerberus
+	// starts against servers down to 24.8 (versions.yaml
+	// boot_floor_clickhouse), so unlike every projection in
 	// metricCatalogProjections (unconditional today) this ALTER needs the
 	// version-conditional DDL gate internal/schema/ddl.Config.
 	// TraceIDProjectionEnabled threads — the boot resolver here supplies the
@@ -2389,8 +2390,8 @@ const (
 	// the setting off, and 24.11 turns it on by default, so auto picks the
 	// feature from 24.7 up to 24.11 (Feature.AutoRange), where it brings the
 	// server to the plan every later release runs for the plans it stamps.
-	// Result-equivalent. Raising the supported floor to 26.3 deletes this
-	// feature (https://github.com/tsouza/cerberus/issues/4451).
+	// Result-equivalent. Refusing servers below the minimum supported
+	// version (26.3) deletes this feature (https://github.com/tsouza/cerberus/issues/4451).
 	FeatureMergePlanFilters = "merge_plan_filters"
 )
 

@@ -100,7 +100,7 @@ func (n *node) initiatorRows(ctx context.Context, t *testing.T, shape string) ui
 		"SELECT sum(read_rows) FROM system.query_log WHERE type = 'QueryFinish' AND is_initial_query = 1 AND log_comment = ?", shape)
 }
 
-// TestFloorBuild measures the supported floor, which has no union table.
+// TestFloorBuild measures the minimum supported line, which has no union table.
 func TestFloorBuild(t *testing.T) {
 	ctx := t.Context()
 	rig := startTwoShardRig(ctx, t, floorImage)
@@ -348,7 +348,7 @@ func caseUnionNeedsNoClusterWideGrant(ctx context.Context, t *testing.T, rig two
 }
 
 // TestUnionFindsRowsRotatedByUpgrade is the acceptance for a rotated log: a
-// server upgraded from the supported floor to 26.8 renames its query_log to
+// server upgraded from the minimum supported line to 26.8 renames its query_log to
 // query_log_0 because the table's schema changed. The local source misses
 // every query logged before the upgrade; the union finds them, once, and the
 // query the packet path observed before the upgrade is still accounted once.

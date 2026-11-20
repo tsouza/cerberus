@@ -40,7 +40,7 @@ const (
 // A server that knows the setting may still refuse the value sent, by a
 // constraint of the user's settings profile (SETTING_CONSTRAINT_VIOLATION,
 // code 452). A query it refused is sent again without that setting alone, so
-// an entry whose Since is at or below the supported floor still names a
+// an entry whose Since is at or below the boot floor still names a
 // setting a node can refuse.
 //
 // A setting that is also a GateSettings entry is droppable only at OnlyAt,

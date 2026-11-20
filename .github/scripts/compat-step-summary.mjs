@@ -14,7 +14,7 @@
 //           and the section heading unless TITLE is set (prometheus|tempo|loki)
 //   SCORE   (required) path to that head's compat-score.json
 //   TITLE   (optional) the section heading, for a lane that is a variant of a
-//           head (`compatibility/prometheus-floor (ClickHouse 24.8)`)
+//           head (`compatibility/prometheus-floor (ClickHouse 26.3)`)
 //   LABEL   (optional) the table row label (`prometheus (floor)`)
 //   REPORT  (optional) path to the upstream tester's raw report.json; when
 //           set, its tally — total / passed / diffs / unexpected failures —

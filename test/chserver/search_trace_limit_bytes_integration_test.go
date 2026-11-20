@@ -21,7 +21,10 @@ import (
 	traceql_lower "github.com/tsouza/cerberus/internal/traceql"
 )
 
-// searchTraceLimitImage is the supported floor.
+// searchTraceLimitImage is the boot floor (versions.yaml
+// boot_floor_clickhouse), a server cerberus still starts against. On the
+// minimum supported line, 26.3, the limited search reads more bytes than the
+// unlimited one; issue #4505 fixes that and moves this probe onto 26.3.
 const searchTraceLimitImage = "clickhouse/clickhouse-server:24.8.14.39-alpine"
 
 // The seeded traces: searchTraceLimitTraces traces of searchTraceLimitSpans
@@ -45,7 +48,7 @@ var (
 )
 
 // TestSearchTraceLimitReadsNoMoreThanTheUnboundedSearch runs span-filtered
-// searches on the floor server with the search trace limit and without it.
+// searches on the boot-floor server with the search trace limit and without it.
 // The unlimited search reads every matching span once. The limited one reads
 // the matching spans' trace id and timestamp to rank the traces, then the
 // rest of the row only for the chosen traces' spans, so over spans whose
