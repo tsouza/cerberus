@@ -1308,3 +1308,56 @@ func TestLevelMatchesExprMatchesTheNormalisation(t *testing.T) {
 		}
 	}
 }
+
+// TestLevelEqualsExprHasNoCaseThatNeverHolds pins that every case of the
+// OR levelEqualsExpr builds holds for some level source: the predicate
+// carries a set membership of the lowercased source only for levels that
+// a variant or an empty source yields, and one of the source itself only
+// for levels the normalisation passes through, so it never tests a source
+// against an empty set.
+func TestLevelEqualsExprHasNoCaseThatNeverHolds(t *testing.T) {
+	t.Parallel()
+	sources := []string{"", "unknown", "custom", "Custom", "notice"}
+	for _, g := range levelNormalizationGroups {
+		sources = append(sources, g.variants...)
+	}
+	src := &chplan.ColumnRef{Name: "src"}
+	for _, levels := range [][]string{
+		{"error"}, {"unknown"}, {"custom"}, {"Custom"}, {"error", "custom"}, {"unknown", "notice"}, {"debug", "info", "custom"},
+	} {
+		predicate := levelEqualsExpr(src, levels...)
+		var cases []chplan.Expr
+		var split func(e chplan.Expr)
+		split = func(e chplan.Expr) {
+			if b, ok := e.(*chplan.Binary); ok && b.Op == chplan.OpOr {
+				split(b.Left)
+				split(b.Right)
+				return
+			}
+			cases = append(cases, e)
+		}
+		split(predicate)
+		for _, c := range cases {
+			if !slices.ContainsFunc(sources, func(source string) bool { return evalLevelPredicate(t, c, source).(bool) }) {
+				t.Errorf("levels %q: case %v holds for no source", levels, c)
+			}
+		}
+	}
+}
+
+// TestLowerASCIIFoldsAsClickHouseLower pins that lowerASCII folds every
+// ASCII capital, `A` through `Z`, and leaves every other byte as it is, as
+// ClickHouse's lower does: the plan-time variant checks and the level
+// predicates' tests read a lowercased value through it.
+func TestLowerASCIIFoldsAsClickHouseLower(t *testing.T) {
+	t.Parallel()
+	for c := range 128 {
+		in := string(rune(c))
+		if got, want := lowerASCII(in), strings.ToLower(in); got != want {
+			t.Errorf("lowerASCII(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := lowerASCII("İNFO"); got != "İnfo" {
+		t.Errorf("lowerASCII(%q) = %q, want the non-ASCII capital left as it is", "İNFO", got)
+	}
+}
