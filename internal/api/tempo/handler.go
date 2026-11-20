@@ -1702,11 +1702,11 @@ func readsStructuralRelation(n chplan.Node) bool {
 }
 
 // serviceNameOf is the service name of a row of rows: the schema's dedicated
-// service.name column where rows carry it, and the resource attribute
-// otherwise, such as over a scan closed over the columns its reader reads.
+// service.name column where rows are known to carry it, and the resource
+// attribute otherwise, which every span row carries.
 func serviceNameOf(rows chplan.Schema, s schema.Traces) chplan.Expr {
 	if s.ServiceNameColumn != "" {
-		if _, ok := rows.ByName(s.ServiceNameColumn); ok || rows.Open {
+		if _, ok := rows.ByName(s.ServiceNameColumn); ok {
 			return &chplan.ColumnRef{Name: s.ServiceNameColumn}
 		}
 	}
