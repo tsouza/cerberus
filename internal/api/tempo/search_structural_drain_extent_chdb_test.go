@@ -92,14 +92,18 @@ func newStatementServer(t *testing.T, c *spansStatementClient, maxTraceDuration 
 //
 // Over insideSeed no chosen trace has a span outside the window, so the
 // drained search returns the request window's answer — every trace summary
-// equal, root metadata included — through the request window's statements.
-// When some chosen trace lacks its root row, the root lookup carries the
-// outside-window question and the statement count is the same; when every
-// chosen trace has its root row, the question is one extra statement reading
-// the trace-id and timestamp columns alone.
+// equal, root metadata included — through as many statements as the request
+// window's search. For a direct relation, when some chosen trace lacks its
+// root row, the root lookup carries the outside-window question and the
+// statement count is the same; when every chosen trace has its root row, the
+// question is one extra statement reading the trace-id and timestamp columns
+// alone. A recursive relation reads its chosen traces drained in its phase B
+// in place of the request window's phase B, so it issues the same statements.
 //
-// Over shortIDSeed the short trace has span e4 outside the window, so the
-// search adds the drained read and the short trace returns e4 too.
+// Over shortIDSeed the short trace has span e4 outside the window, and every
+// relation returns e4 too. A direct relation adds the drained read to its
+// statements; a recursive one issues the statements it issues over
+// insideSeed, its phase B being the drained read.
 //
 // chDB's catalog is process-wide, so one client serves every search, and each
 // phase reseeds the spans table it reads.
@@ -112,15 +116,20 @@ func TestSearch_StructuralDrainOnlyOutside_ChDB(t *testing.T) {
 		// extentStatement is whether the outside-window question needs a
 		// statement of its own: every chosen trace carries its root row.
 		extentStatement bool
+		// recursive is whether the relation is recursive, read in a phase A
+		// and a drained phase B whatever the chosen traces' extent.
+		recursive bool
 		// outsideSpans is the short trace's span ids over shortIDSeed.
 		outsideSpans []string
 	}{
-		{`{ name = "op-6" } > { name = "op-2" }`, false, []string{"e3", "e4"}},
-		{`{ name = "op-6" } > { name = "op-2" } | select(span.x)`, false, []string{"e3", "e4"}},
-		{`{ name = "op-1" } ~ { name = "op-2" }`, false, []string{"e3", "e4"}},
-		{`{ name = "op-1" } < { name = "op-6" }`, true, []string{"e1"}},
-		{`{ name = "op-6" } >> { name = "op-2" }`, false, []string{"e3", "e4"}},
-		{`{ name = "op-6" } &> { name = "op-2" }`, true, []string{"e1", "e3", "e4"}},
+		{`{ name = "op-6" } > { name = "op-2" }`, false, false, []string{"e3", "e4"}},
+		{`{ name = "op-6" } > { name = "op-2" } | select(span.x)`, false, false, []string{"e3", "e4"}},
+		{`{ name = "op-1" } ~ { name = "op-2" }`, false, false, []string{"e3", "e4"}},
+		{`{ name = "op-1" } < { name = "op-6" }`, true, false, []string{"e1"}},
+		{`{ name = "op-6" } &> { name = "op-2" }`, true, false, []string{"e1", "e3", "e4"}},
+		{`{ name = "op-6" } >> { name = "op-2" }`, false, true, []string{"e3", "e4"}},
+		{`{ name = "op-6" } >> { name = "op-2" } | select(span.x)`, false, true, []string{"e3", "e4"}},
+		{`{ name = "op-6" } &>> { name = "op-2" }`, false, true, []string{"e1", "e3", "e4"}},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			path := fmt.Sprintf("/api/search?q=%s&limit=2&spss=20%s", url.QueryEscape(tc.query), drainWindow)
@@ -159,7 +168,11 @@ func TestSearch_StructuralDrainOnlyOutside_ChDB(t *testing.T) {
 			c.take()
 			outside := doSearch(t, drained, path)
 			outsideStmts := c.take()
-			if extra := len(outsideStmts) - len(drainedStmts); extra < 1 {
+			switch extra := len(outsideStmts) - len(drainedStmts); {
+			case tc.recursive && extra != 0:
+				t.Errorf("recursive search over a trace reaching outside the window issued %d statements, want the %d of one inside it",
+					len(outsideStmts), len(drainedStmts))
+			case !tc.recursive && extra < 1:
 				t.Errorf("search over a trace reaching outside the window issued %d statements, want more than the %d of one inside it",
 					len(outsideStmts), len(drainedStmts))
 			}
