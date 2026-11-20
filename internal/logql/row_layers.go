@@ -370,6 +370,21 @@ func (t tableReads) covers(reads tableReads) bool {
 	return true
 }
 
+// readsAnyColumnOutside reports whether reads reads a table column t reads
+// neither whole nor by any key.
+func (t tableReads) readsAnyColumnOutside(reads tableReads) bool {
+	columns := map[string]bool{}
+	for read := range t {
+		columns[read.column] = true
+	}
+	for read := range reads {
+		if !columns[read.column] {
+			return true
+		}
+	}
+	return false
+}
+
 // tableReads returns the table reads of expr.
 func (v layerValues) tableReads(expr chplan.Expr) tableReads {
 	reads := tableReads{}

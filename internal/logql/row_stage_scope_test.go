@@ -2,6 +2,7 @@ package logql_test
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -202,6 +203,74 @@ func TestRangeAggregationLevelRegexLeadsWhereOrderHolds(t *testing.T) {
 				t.Errorf("the level filter does not read the level source: %s", sql)
 			}
 		})
+	}
+}
+
+// TestRangeAggregationLevelFilterLeadsALaterLabelFilterWhereOrderHolds pins
+// that in WHERE order a level filter that a parsed label's filter follows
+// runs in the SELECT that reads otel_logs, ahead of that filter, even for a
+// level pattern whose predicate reads the source past the scope's expansion
+// bound: a server that keeps WHERE order then parses the body only for the
+// rows the level keeps. The regex matcher, alone or OR-ed, is the shape
+// that stayed above the scan while the label filter moved ahead of it. A
+// label filter, an error filter or an unwrap's filter after the label
+// filter still runs there after it, so joining the scope does not push
+// them out; the equality and the negative matcher fit the bound and pin
+// that they keep leading. A label filter whose own reads the conjunct ahead
+// of it already reads stays where the bound puts the one ahead of it, last.
+func TestRangeAggregationLevelFilterLeadsALaterLabelFilterWhereOrderHolds(t *testing.T) {
+	t.Parallel()
+	const level, label, unwrap = "lower(`_logql_level_source`)", "mapContains(`_logql_labels_", "`_logql_unwrap_source` != "
+	for _, tc := range []struct {
+		query string
+		// inOrder are the markers the WHERE of the SELECT reading otel_logs
+		// carries, each after the one before it.
+		inOrder []string
+	}{
+		{`sum by (method) (count_over_time({job="wide"} | detected_level=~"error|fatal" | logfmt | status="500" [5m]))`, []string{level, label}},
+		{`sum by (method) (count_over_time({job="wide"} | detected_level!~"info" | logfmt | status="500" [5m]))`, []string{level, label}},
+		{`sum by (method) (count_over_time({job="wide"} | detected_level="error" | logfmt | status="500" [5m]))`, []string{level, label}},
+		{`sum by (method) (count_over_time({job="wide"} | detected_level=~"error|fatal" | logfmt | status="500" | method="GET" [5m]))`, []string{level, label, label}},
+		{`sum by (method) (count_over_time({job="wide"} | detected_level=~"error|fatal" | logfmt | status="500" | __error__="" [5m]))`, []string{level, label, label}},
+		{`sum(sum_over_time({job="wide"} | detected_level=~"error|fatal" | logfmt | status="500" | unwrap latency [5m]))`, []string{level, label, unwrap}},
+		{`sum(count_over_time({job="wide"} | detected_level=~"error|fatal" or detected_level="warn" | logfmt | status="500" [5m]))`, []string{level, label}},
+		{`sum(count_over_time({job="wide"} | detected_level=~"error|fatal" | logfmt | status=~"5.*" | method="GET" [5m]))`, []string{level, label}},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			t.Parallel()
+			sql, _ := rangeAggregationSQLUnder(t, tc.query, chplan.SchemaStrategies{PrewhereInWhereOrder: true})
+			scope := scopeAround(t, sql, "FROM `otel_logs`")
+			where := scope[strings.Index(scope, "FROM `otel_logs`"):]
+			rest := where
+			for _, marker := range tc.inOrder {
+				at := strings.Index(rest, marker)
+				if at < 0 {
+					t.Fatalf("in WHERE order, the SELECT reading otel_logs does not run %q after the markers before it %q: %s", marker, tc.inOrder, where)
+				}
+				rest = rest[at+len(marker):]
+			}
+		})
+	}
+}
+
+// TestRangeAggregationOvertakingFilterThatReadsNoNewColumnLeavesTheOrder
+// pins that in WHERE order a filter left above the scan is not brought
+// ahead of a later moved filter that reads only the table columns it
+// already reads: the later one spares no column read by running after it,
+// so a regex alternation the expansion bound leaves above keeps running
+// after the equality that moved.
+func TestRangeAggregationOvertakingFilterThatReadsNoNewColumnLeavesTheOrder(t *testing.T) {
+	t.Parallel()
+	alternation := make([]string, 12)
+	for i := range alternation {
+		alternation[i] = `status=~"` + strconv.Itoa(i) + `.*"`
+	}
+	query := `sum(count_over_time({job="wide"} | logfmt | ` + strings.Join(alternation, " or ") + ` | method="GET" [5m]))`
+	sql, _ := rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{PrewhereInWhereOrder: true})
+	scope := scopeAround(t, sql, "FROM `otel_logs`")
+	where := scope[strings.Index(scope, "FROM `otel_logs`"):]
+	if strings.Contains(where, "match(") {
+		t.Errorf("in WHERE order, the SELECT reading otel_logs runs the status alternation, which reads no column the method filter does not: %s", where)
 	}
 }
 
