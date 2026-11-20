@@ -324,7 +324,10 @@ func TestRangeAggregationMultiplyingValuesStayNested(t *testing.T) {
 // scan's filter, and so does the
 // detected_level source; a range aggregation whose grouping label reads
 // LogAttributes whole leaves the source above the scan too, and one that
-// groups by detected_level alone moves it into the scan's scope.
+// groups by detected_level alone moves it into the scan's scope. It holds
+// on a server that keeps WHERE order as on one that does not: with no
+// ordered prefix, no place in the stack lets a value that reads such a map
+// by key move, the first two included.
 func TestRangeAggregationWholeMapReadsStayAboveTheScan(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -332,23 +335,27 @@ func TestRangeAggregationWholeMapReadsStayAboveTheScan(t *testing.T) {
 		scanDefines bool
 	}{
 		{`sum(count_over_time({job="wide"} | tenant="tenant-7" [5m]))`, false},
+		{`count_over_time({job="wide"} | tenant="tenant-7" [5m])`, false},
+		{`sum(rate({job="wide"} | tenant=~"tenant-7|tenant-8" [1m]))`, false},
 		{`sum by (env) (rate({job="api"}[5m]))`, false},
 		{`sum by (detected_level) (count_over_time({job="api"}[5m]))`, true},
 	} {
-		t.Run(tc.query, func(t *testing.T) {
-			t.Parallel()
-			sql, _ := rangeAggregationSQL(t, tc.query)
-			if !strings.Contains(sql, "AS `_logql_level_source`") {
-				t.Fatalf("the detected_level source is not defined: %s", sql)
-			}
-			scope := scopeAround(t, sql, "FROM `otel_logs`")
-			if strings.Contains(scope, "mapContains(`LogAttributes`") {
-				t.Errorf("the SELECT reading otel_logs reads LogAttributes whole: %s", scope)
-			}
-			if got := strings.Contains(scope, "AS `_logql_level_source`"); got != tc.scanDefines {
-				t.Errorf("the SELECT reading otel_logs defines the detected_level source = %v, want %v: %s", got, tc.scanDefines, scope)
-			}
-		})
+		for _, whereOrder := range []bool{false, true} {
+			t.Run(tc.query+"/where order "+strconv.FormatBool(whereOrder), func(t *testing.T) {
+				t.Parallel()
+				sql, _ := rangeAggregationSQLUnder(t, tc.query, chplan.SchemaStrategies{PrewhereInWhereOrder: whereOrder})
+				if !strings.Contains(sql, "AS `_logql_level_source`") {
+					t.Fatalf("the detected_level source is not defined: %s", sql)
+				}
+				scope := scopeAround(t, sql, "FROM `otel_logs`")
+				if strings.Contains(scope, "mapContains(`LogAttributes`") {
+					t.Errorf("the SELECT reading otel_logs reads LogAttributes whole: %s", scope)
+				}
+				if got := strings.Contains(scope, "AS `_logql_level_source`"); got != tc.scanDefines {
+					t.Errorf("the SELECT reading otel_logs defines the detected_level source = %v, want %v: %s", got, tc.scanDefines, scope)
+				}
+			})
+		}
 	}
 }
 

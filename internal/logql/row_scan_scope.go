@@ -129,7 +129,7 @@ func (r *rowLayers) gatherAtScan(maps []string, inWhereOrder bool, consumer ...c
 			g = ordered
 		}
 	}
-	if admitted := g.overtaken(items, values); len(admitted) > 0 {
+	if admitted := g.overtaken(items, values); admitted != nil {
 		g = r.gather(base, items, reads, g.keyedThrough, g.first, nil, admitted)
 	}
 	r.node = r.rebuild(g)
@@ -139,7 +139,7 @@ func (r *rowLayers) gatherAtScan(maps []string, inWhereOrder bool, consumer ...c
 // scan's scope while a conjunct the pipeline runs after them moves into
 // it and reads a table column that neither the scan's filter nor any
 // conjunct ahead of that one reads, whole or by any key, through the
-// layers they read; in pipeline order, and none when there are none. On a
+// layers they read; in pipeline order, and nil when there are none. On a
 // server that keeps WHERE order the moved conjunct reads that column for
 // every row the ones left above would drop. A moved conjunct that reads
 // only columns already read spares no column read by running after them,
@@ -161,7 +161,7 @@ func (g *scanGather) overtaken(items []chplan.Node, values layerValues) []chplan
 				if g.leftAbove(conjunct) {
 					pending = append(pending, conjunct)
 				}
-			case len(pending) > 0 && early.readsAnyColumnOutside(values.tableReads(conjunct)):
+			case early.readsAnyColumnOutside(values.tableReads(conjunct)):
 				overtaken, pending = append(overtaken, pending...), nil
 			}
 			values.addTableReads(early, conjunct)
