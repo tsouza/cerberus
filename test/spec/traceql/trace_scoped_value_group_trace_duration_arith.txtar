@@ -55,10 +55,10 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, Duration, Spa
     ('a0000000000000000000000000000004', '0000000000000031', '0000000000000030', toDateTime64('2024-01-01 00:00:02', 9), 1000000000, 'w', 'edge',     'Client',   map('service.name', 'edge'),     map('peer', 'q'));
 -- expected_rows --
 [
-  ["b", {"__cerberus_parentSpanID": "0000000000000000", "__cerberus_traceDurationNs": "2000000000", "__cerberus_traceID": "a0000000000000000000000000000002", "service.name": "svc-b"}, "2024-01-01T00:00:00Z", 2],
-  ["m", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "3000000000", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "frontend"}, "2024-01-01T00:00:00Z", 4],
-  ["n", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "1000000000", "__cerberus_traceID": "a0000000000000000000000000000003", "service.name": "api"}, "2024-01-01T00:00:00Z", 2],
-  ["q", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "3000000000", "__cerberus_traceID": "a0000000000000000000000000000004", "service.name": "edge"}, "2024-01-01T00:00:00Z", 2]
+  ["b", {"__cerberus_rootMatched": "1", "__cerberus_traceDurationNs": "2000000000", "__cerberus_traceID": "a0000000000000000000000000000002", "service.name": "svc-b"}, "2024-01-01T00:00:00Z", 2],
+  ["m", {"__cerberus_rootMatched": "1", "__cerberus_traceDurationNs": "3000000000", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "frontend"}, "2024-01-01T00:00:00Z", 4],
+  ["n", {"__cerberus_rootMatched": "1", "__cerberus_traceDurationNs": "1000000000", "__cerberus_traceID": "a0000000000000000000000000000003", "service.name": "api"}, "2024-01-01T00:00:00Z", 2],
+  ["q", {"__cerberus_rootMatched": "1", "__cerberus_traceDurationNs": "3000000000", "__cerberus_traceID": "a0000000000000000000000000000004", "service.name": "edge"}, "2024-01-01T00:00:00Z", 2]
 ]
 -- parity_exempt --
 reason: no-comparable-oracle
@@ -69,11 +69,21 @@ detail: `{ } | by(traceDuration * 2)` groups the spanset: its rows carry __cerbe
 [2] bool = true
 -- args_optimized --
 [0] string = "__cerberus_traceID"
-[1] string = "__cerberus_parentSpanID"
+[1] string = "__cerberus_rootMatched"
 [2] string = "__cerberus_traceDurationNs"
-[3] int64 = 2
+[3] string = "service.name"
 [4] int64 = 1
-[5] bool = true
+[5] string = ""
+[6] string = "0"
+[7] string = "0000000000000000"
+[8] string = ""
+[9] string = "0"
+[10] string = "0000000000000000"
+[11] string = "service.name"
+[12] string = ""
+[13] string = "0"
+[14] string = "0000000000000000"
+[15] bool = true
 -- chplan --
 Aggregate groupBy=[TraceId AS TraceId, (_cerb_trace_duration * 2) AS GroupKey] funcs=[FnAny(SpanId) AS SpanId, FnCount(1) AS Value, FnAny(SpanName) AS MetricName, FnAny(ResourceAttributes) AS ResourceAttrs, FnAny(ParentSpanId) AS ParentSpanId, FnMin(Timestamp) AS TimeUnix, FnMin(FnToUnixNanos(Timestamp)) AS TraceStartNs, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS TraceEndNs]
   TraceLookupFilter lookups=1 predicate=<nil> exposeLookups
@@ -93,4 +103,4 @@ use_query_condition_cache=1
 -- sql --
 SELECT `TraceId` AS `TraceId`, (`_cerb_trace_duration` * ?) AS `GroupKey`, any(`SpanId`) AS `SpanId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT `m`.*, `l0`.`_cerb_trace_duration` AS `_cerb_trace_duration` FROM (SELECT * FROM `otel_traces` WHERE ?) AS m LEFT JOIN (SELECT `_cerb_lookup_trace_id` AS `_cerb_lookup_trace_id`, (`_cerb_trace_end_ns` - `_cerb_trace_start_ns`) AS `_cerb_trace_duration` FROM (SELECT `TraceId` AS `_cerb_lookup_trace_id`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `_cerb_trace_start_ns`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `_cerb_trace_end_ns` FROM (SELECT * FROM `otel_traces`) GROUP BY `_cerb_lookup_trace_id`)) AS l0 ON m.`TraceId` = l0.`_cerb_lookup_trace_id`) GROUP BY `TraceId`, `GroupKey`
 -- sql_optimized --
-SELECT `MetricName` AS `MetricName`, mapConcat(`ResourceAttrs`, map(?, `TraceId`, ?, `ParentSpanId`, ?, toString((`TraceEndNs` - `TraceStartNs`)))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Value`) AS `Value` FROM (SELECT `TraceId` AS `TraceId`, any(`SpanId`) AS `SpanId`, sum(`Value`) AS `Value`, any(`MetricName`) AS `MetricName`, any(`ResourceAttrs`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`TimeUnix`) AS `TimeUnix`, min(`TraceStartNs`) AS `TraceStartNs`, max(`TraceEndNs`) AS `TraceEndNs` FROM (SELECT `TraceId` AS `TraceId`, (`_cerb_trace_duration` * ?) AS `GroupKey`, any(`SpanId`) AS `SpanId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT `m`.*, `l0`.`_cerb_trace_duration` AS `_cerb_trace_duration` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE ?) AS m LEFT JOIN (SELECT `_cerb_lookup_trace_id` AS `_cerb_lookup_trace_id`, (`_cerb_trace_end_ns` - `_cerb_trace_start_ns`) AS `_cerb_trace_duration` FROM (SELECT `TraceId` AS `_cerb_lookup_trace_id`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `_cerb_trace_start_ns`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `_cerb_trace_end_ns` FROM (SELECT `Duration`, `Timestamp`, `TraceId` FROM `otel_traces`) GROUP BY `_cerb_lookup_trace_id`)) AS l0 ON m.`TraceId` = l0.`_cerb_lookup_trace_id`) GROUP BY `TraceId`, `GroupKey`) GROUP BY `TraceId`)
+SELECT `RootName` AS `MetricName`, map(?, `TraceId`, ?, toString(`RootMatched`), ?, toString((`TraceEndNs` - `TraceStartNs`)), ?, toString(`RootService`)) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Value`) AS `Value` FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs`, max((`ParentSpanId` IN (?, ?, ?))) AS `RootMatched`, argMax(`SpanName`, (`ParentSpanId` IN (?, ?, ?))) AS `RootName`, argMax(`ResourceAttributes`[?], (`ParentSpanId` IN (?, ?, ?))) AS `RootService` FROM (SELECT `m`.*, `l0`.`_cerb_trace_duration` AS `_cerb_trace_duration` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE ?) AS m LEFT JOIN (SELECT `_cerb_lookup_trace_id` AS `_cerb_lookup_trace_id`, (`_cerb_trace_end_ns` - `_cerb_trace_start_ns`) AS `_cerb_trace_duration` FROM (SELECT `TraceId` AS `_cerb_lookup_trace_id`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `_cerb_trace_start_ns`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `_cerb_trace_end_ns` FROM (SELECT `Duration`, `Timestamp`, `TraceId` FROM `otel_traces`) GROUP BY `_cerb_lookup_trace_id`)) AS l0 ON m.`TraceId` = l0.`_cerb_lookup_trace_id`) GROUP BY `TraceId`)

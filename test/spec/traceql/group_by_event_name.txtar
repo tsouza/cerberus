@@ -18,10 +18,21 @@ reason: emitted-sql-only
 detail: `{ } | by(event:name)` carries no `seed:` or `expected_rows:` — it pins the emitted SQL for this shape, and executes no answer for any oracle to compare
 -- args_optimized --
 [0] string = "__cerberus_traceID"
-[1] string = "__cerberus_parentSpanID"
+[1] string = "__cerberus_rootMatched"
 [2] string = "__cerberus_traceDurationNs"
-[3] int64 = 1
-[4] bool = true
+[3] string = "service.name"
+[4] int64 = 1
+[5] string = ""
+[6] string = "0"
+[7] string = "0000000000000000"
+[8] string = ""
+[9] string = "0"
+[10] string = "0000000000000000"
+[11] string = "service.name"
+[12] string = ""
+[13] string = "0"
+[14] string = "0000000000000000"
+[15] bool = true
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
@@ -30,4 +41,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT `MetricName` AS `MetricName`, mapConcat(`ResourceAttrs`, map(?, `TraceId`, ?, `ParentSpanId`, ?, toString((`TraceEndNs` - `TraceStartNs`)))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Value`) AS `Value` FROM (SELECT `TraceId` AS `TraceId`, any(`SpanId`) AS `SpanId`, sum(`Value`) AS `Value`, any(`MetricName`) AS `MetricName`, any(`ResourceAttrs`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`TimeUnix`) AS `TimeUnix`, min(`TraceStartNs`) AS `TraceStartNs`, max(`TraceEndNs`) AS `TraceEndNs` FROM (SELECT `TraceId` AS `TraceId`, `Events.Name` AS `GroupKey`, any(`SpanId`) AS `SpanId`, toFloat64(count(?)) AS `Value`, any(`SpanName`) AS `MetricName`, any(`ResourceAttributes`) AS `ResourceAttrs`, any(`ParentSpanId`) AS `ParentSpanId`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs` FROM (SELECT `Duration`, `Events.Name`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE ?) GROUP BY `TraceId`, `GroupKey`) GROUP BY `TraceId`)
+SELECT `RootName` AS `MetricName`, map(?, `TraceId`, ?, toString(`RootMatched`), ?, toString((`TraceEndNs` - `TraceStartNs`)), ?, toString(`RootService`)) AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(`Value`) AS `Value` FROM (SELECT `TraceId` AS `TraceId`, toFloat64(count(?)) AS `Value`, min(`Timestamp`) AS `TimeUnix`, min(toUnixTimestamp64Nano(`Timestamp`)) AS `TraceStartNs`, max((toUnixTimestamp64Nano(`Timestamp`) + toInt64(`Duration`))) AS `TraceEndNs`, max((`ParentSpanId` IN (?, ?, ?))) AS `RootMatched`, argMax(`SpanName`, (`ParentSpanId` IN (?, ?, ?))) AS `RootName`, argMax(`ResourceAttributes`[?], (`ParentSpanId` IN (?, ?, ?))) AS `RootService` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` WHERE ?) GROUP BY `TraceId`)

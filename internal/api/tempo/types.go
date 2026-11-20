@@ -32,6 +32,9 @@ type TraceSummary struct {
 	// trace list) builds its spans table exclusively from
 	// trace.spanSets[].spans — a summary without it renders zero rows.
 	SpanSets []SpanSet `json:"spanSets,omitempty"`
+	// keepMatchedExtent leaves DurationMs at the matched spans' extent
+	// when the root lookup patches the summary (applyRootMetadata).
+	keepMatchedExtent bool
 }
 
 // SpanSet mirrors tempopb.SpanSet's JSON shape: the spans the TraceQL

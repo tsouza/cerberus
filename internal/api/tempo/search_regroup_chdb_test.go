@@ -187,3 +187,73 @@ func TestSearch_Coalesce_LimitKeepsTheNewestTraces_ChDB(t *testing.T) {
 	// root and the trace's whole extent.
 	wantRegroupTraces(t, runRegroupSearch(t, srv, `{ resource.service.name = "backend" } | coalesce()`, 2), newestFirst[:2]...)
 }
+
+// TestSearch_Regroup_StructuralSource_ChDB pins the answer of a search ending
+// in by() or coalesce() over a structural relation. The descendants of each
+// root are its two children, so no matched span is a root: every summary
+// still reports its trace's root, through the root lookup, and its whole
+// extent.
+func TestSearch_Regroup_StructuralSource_ChDB(t *testing.T) {
+	srv := newRegroupChDBServer(t)
+	for _, q := range []string{
+		`{ kind = server } >> { } | by(kind)`,
+		`{ kind = server } >> { } | coalesce()`,
+		`{ kind = server } > { } | by(resource.service.name)`,
+	} {
+		t.Run(q, func(t *testing.T) {
+			wantRegroupTraces(t, runRegroupSearch(t, srv, q, 20), "GET /c", "GET /b", "GET /a")
+			wantRegroupTraces(t, runRegroupSearch(t, srv, q, 2), "GET /c", "GET /b")
+		})
+	}
+}
+
+// TestSearch_Regroup_MatchedRoot_ChDB pins the summary of a trace whose
+// matched spans include its root alone: the ancestors of the db span, and
+// the server spans. The summary names the root, and durationMs stays the
+// matched spans' extent, as it is for a search that returns the root row
+// itself (#4315).
+func TestSearch_Regroup_MatchedRoot_ChDB(t *testing.T) {
+	srv := newRegroupChDBServer(t)
+	for _, q := range []string{
+		`{ name = "db" } << { } | by(kind)`,
+		`{ name = "db" } << { } | coalesce()`,
+		`{ kind = server } | by(name)`,
+		`{ kind = server } | coalesce()`,
+	} {
+		t.Run(q, func(t *testing.T) {
+			got := runRegroupSearch(t, srv, q, 20)
+			want := []string{"GET /c", "GET /b", "GET /a"}
+			if len(got) != len(want) {
+				t.Fatalf("got %d traces, want %d: %+v", len(got), len(want), got)
+			}
+			for i, tr := range got {
+				if tr.RootTraceName != want[i] || tr.RootServiceName != "frontend" || tr.DurationMs != 100 {
+					t.Errorf("trace %d = {rootTraceName %q, rootServiceName %q, durationMs %d}, want {%q, \"frontend\", 100}", i, tr.RootTraceName, tr.RootServiceName, tr.DurationMs, want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestSearch_Regroup_RootlessTrace_ChDB pins the summary of a trace whose
+// root span is absent: no matched span is a root and the root lookup finds
+// none, so the summary reports the root as not yet received, as Tempo does.
+func TestSearch_Regroup_RootlessTrace_ChDB(t *testing.T) {
+	c := chclienttest.NewChDB(t)
+	c.Seed(t, regroupDDL)
+	c.Seed(t, `INSERT INTO otel_traces VALUES
+    ('c0000000000000000000000000000009', '3000000000000092', '3000000000000091', 'db', 'Client', 140000000, toDateTime64('2026-05-01 11:00:00.010', 9), 'Unset', '', '', '', map(), map('service.name', 'backend'), 'backend');`)
+	h := tempo.New(c, schema.DefaultOTelTraces(), "v-test", nil)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	for _, q := range []string{`{ } | by(kind)`, `{ } | coalesce()`} {
+		t.Run(q, func(t *testing.T) {
+			got := runRegroupSearch(t, srv, q, 20)
+			if len(got) != 1 || got[0].RootTraceName != "" || got[0].RootServiceName != "<root span not yet received>" || got[0].DurationMs != 140 {
+				t.Fatalf("got %+v, want one trace {rootTraceName \"\", rootServiceName <root span not yet received>, durationMs 140}", got)
+			}
+		})
+	}
+}
