@@ -430,7 +430,7 @@ The rate-range story has two implementations — the `arrayJoin` fan-out and the
 native `timeSeriesRateToGrid` aggregate (`ts_grid_range`). Under
 `CERBERUS_CH_OPTIMIZATIONS=auto` (the default) the auto-picker enables the
 native path on any server `>= 25.9`, alongside the result-equivalent stable
-wins `aggregation_in_order` (24.8+) and `condition_cache` (25.3+). It carries
+wins `aggregation_in_order` and `condition_cache`. It carries
 the registry's **experimental** maturity label because it rides ClickHouse's
 own `allow_experimental_time_series_aggregate_functions` setting. To go back
 to the fan-out, pin an explicit list that omits it (or set

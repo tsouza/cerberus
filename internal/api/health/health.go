@@ -84,7 +84,7 @@ type Options struct {
 	// This models the SAME startup race SchemaPresent does, one layer up: a
 	// cerberus that boots beside its ClickHouse can win, probe a server that
 	// is not listening yet, and resolve its capability set against the
-	// supported floor. It is reachable and its schema is present, so every
+	// probe fallback version. It is reachable and its schema is present, so every
 	// other condition here says ready — but every native lowering is
 	// unavailable, and a wide panel served on the fan-out fallback is slow
 	// enough to exceed a dashboard proxy's timeout. Admitting traffic in that

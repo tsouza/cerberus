@@ -50,7 +50,8 @@ exceeds the quickstart's ClickHouse version, bump the quickstart
 reference to a version that supports it, and update the central versions file
 (`versions.yaml`). `versions.yaml` is the single source of truth for the
 ClickHouse versions the deployment surface depends on (`min_clickhouse` =
-preflight floor, `quickstart_clickhouse` = the demo, chart, migration and
+the minimum supported version, `boot_floor_clickhouse` = the preflight boot
+floor, `quickstart_clickhouse` = the demo, chart, migration and
 compatibility image line, `chdb_substrate` = the in-process chDB engine); the
 per-feature floors stay in
 `internal/chopt/registry.go` and are NOT duplicated there. The
@@ -61,8 +62,9 @@ quickstart is too old, so a floor-raising optimization that forgets this bump
 cannot merge. One lane is a deliberate, tracked exception to "every
 compatibility image tracks `quickstart_clickhouse`":
 `compatibility/prometheus-floor` (#1500) runs the same PromQL corpus against
-`min_clickhouse` instead, so the below-quickstart fallback branches
-(`ts_grid_*` fan-outs, `condition_cache` absence) actually execute somewhere
+`min_clickhouse` instead, so the below-quickstart branches (no `join_spill`,
+no `histogram_adaptive_aggregator_off`, the native-histogram analyzer stamp)
+actually execute somewhere
 in CI rather than being silently unreachable on every substrate. The
 version-sync gate's check (f) binds that lane's `CH_IMAGE` to `min_clickhouse`
 the same way its check (c) binds every other compatibility image to

@@ -190,7 +190,7 @@ func TestFleetResolutionVersion(t *testing.T) {
 	t.Parallel()
 
 	held := &chOptResolution{ResolvedVersion: fleetOldBuild}
-	fallback := &chOptResolution{ResolvedVersion: supportedFloorVersion, VersionFallback: true}
+	fallback := &chOptResolution{ResolvedVersion: probeFallbackVersion, VersionFallback: true}
 	cases := []struct {
 		name    string
 		fv      chclient.FleetVersions

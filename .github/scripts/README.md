@@ -1769,7 +1769,9 @@ derivation agrees with `lane-closure.mjs`'s own logic and never over-matches.
   source of truth) and asserts the docker-compose quickstart, the chart's
   bundled image, the migration lane's Tier-1 stack and the compatibility image
   tags all track the quickstart (deployment-surface) line rather than the chDB
-  substrate, that the preflight floor matches, and that the quickstart is new
+  substrate, that the preflight boot floor matches `boot_floor_clickhouse`,
+  that `internal/chopt`'s minimum supported version matches `min_clickhouse`
+  (check (i)), and that the quickstart is new
   enough for
   every optimization it enables (floors derived from
   `internal/chopt/registry.go`, not duplicated). See

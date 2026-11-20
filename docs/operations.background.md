@@ -1277,3 +1277,26 @@ the argument for its registry posture:
 - `update-golden-guard` — Structural, not a cost trade. It guards a PULL REQUEST against merging while an `update-golden.yml` dispatch is still regenerating its head branch (#2350). A publish commit has no head branch to strand and no pull request to hold back, and `update-golden-guard.yml` triggers on `pull_request` / `merge_group` / `workflow_run` only — with no push trigger on `main` or a maintenance line, a release commit can never carry that check-run, so requiring it would make the preflight wait out its window and abort every publish. It is not currently a required status check anywhere: absent from `main`'s seventeen-check ruleset (`docs/test-strategy.md`'s "CI gates" section) and from the separate `release/*.x` maintenance-line ruleset alike, so today a pending or red run does not by itself block a merge or a queue entry — it still runs and reports on every PR and merge-group entry, and stays out of `RELEASE_REQUIRED_CHECKS` for the structural reason above regardless of that.
 - `datashard-replica-affinity` — Sharding is EXPERIMENTAL and off by default; `.github/ci-lanes.json`'s `e2e.datashard-replica-affinity` entry already declares `release_posture: advisory`, and `notify-nightly-failure.mjs`'s `EXPERIMENTAL_LANES` lists it alongside `datashard` for the same reason. It was not in this set until it blocked v1.20.0's publish (#3155): unlisted in both `RELEASE_REQUIRED_CHECKS` and `RELEASE_INFORMATIONAL_CHECKS`, it fell into the preflight's own documented "gates by default" fallback despite its declared posture saying it should not gate.
 - `brew-verify` — Verifies the ALREADY-PUBLISHED Homebrew cask (`.github/ci-lanes.json`'s `release.brew-verify` entry: `main_posture: never`, `release_posture: post_publish`) — there is nothing meaningful to check pre-publish. `brew-verify.yml` runs on a `schedule`, independent of any push to main, so its check-run attaches to whatever main HEAD happens to be when the cron fires — the same "unlucky coincidence" `drought` above is de-gated against. v1.20.0's own publish was blocked this way: a nightly `brew-migration` run (that job has since been removed — see #3156) landed on the release merge commit by pure timing and reported a bug unrelated to the commit being released.
+
+## Why the minimum supported ClickHouse version is the oldest upstream-supported LTS line
+
+The minimum used to be 24.8, the oldest line the emitted SQL had been shown
+correct on. That definition never expired: upstream stopped fixing 24.8 long
+ago, so a wrong answer or a crash on it had no upstream fix to wait for, and
+every version-gated fallback cerberus kept for it (the below-25.1 map-type
+casts, the below-24.11 `query_plan_merge_filters` stamp, the in-range
+`move_to_prewhere` split) was code that only ran on servers nobody patched.
+Several v1.25.0 regressions surfaced only on 24.8 — shapes the 26.x servers
+never take — and fixing each on an unpatched line costs more than it returns.
+
+Tying the minimum to upstream's own LTS support makes it a rule rather than a
+judgement call: the oldest LTS line upstream still supports is the oldest line
+whose defects can still be fixed, and it moves on upstream's schedule instead
+of when someone remembers to move it.
+
+v1.25.0 warns rather than refuses so an operator still on an older server gets
+one release of notice — a WARN, a gauge to alert on, and an `/info` field —
+before v1.26.0 refuses to start. Behaviour below the minimum is otherwise
+unchanged in v1.25.0: the boot check still accepts down to 24.8 and the SQL
+still resolves against the server's own version, so the upgrade notice is the
+only thing an operator on an older server sees change.

@@ -8,12 +8,13 @@ reconciler that closes the loop between an emitted plan shape and its
 observed server-side cost.
 
 The suite is one cohesive capability. Every feature is version-safe by
-construction: cerberus's supported ClickHouse floor is 24.8, and a feature
-whose minimum version sits above the connected server is simply not
-enabled, so the binary keeps emitting its 24.8-safe SQL unchanged. There is
-no behaviour an operator must "turn off" to stay safe on 24.8 — the default
-posture (`auto`) only ever enables features the connected server actually
-supports.
+construction: a feature whose minimum version sits above the connected
+server is simply not enabled, so the binary keeps emitting the SQL that
+server runs. There is no behaviour an operator must "turn off" to stay safe
+on an older server — the default posture (`auto`) only ever enables features
+the connected server actually supports. The minimum supported ClickHouse
+version is 26.3 ([Startup requirements preflight](operations.md#supported-clickhouse-versions));
+features whose floor sits below it are on for every supported server.
 
 Auto-eligibility is a separate axis from maturity. A feature carries a
 `stability` class (operator-facing maturity) **and** an `autoSelect` flag
@@ -608,8 +609,8 @@ Notes:
   a metadata route (`/api/v1/labels`, `/api/v1/series`, …), which dispatches
   through `chclient.Client.Query`/`QueryStrings` directly and never reaches
   the engine's execute seam this rule lives on — is conservatively NOT
-  eligible. `AutoSelect` is `true` and the version floor is the 24.8 baseline
-  (the setting family shipped in ClickHouse 23.2), but unlike every
+  eligible. `AutoSelect` is `true` and the version floor is the 24.8 registry
+  baseline (the setting family shipped in ClickHouse 23.2), but unlike every
   version-only-gated feature above it is ALSO gated on its own boot capability
   probe (`ProbeResultCacheCapability`, `Config.ResultCacheCapability`) rather
   than trusting the version floor alone — a hardened/constrained profile can
@@ -667,7 +668,7 @@ Notes:
   `sum_over_time` (`increase`, `delta`, `irate`, `idelta`), continues to lower
   through the existing array-expression fan-out unchanged.
 - **`explain_estimate`** carries no version floor (available since ClickHouse
-  21.9, well below cerberus's own 24.8 floor) and the registry entry exists
+  21.9, well below the minimum supported ClickHouse version) and the registry entry exists
   purely as a rollout / kill switch, not a real capability gate. Unlike every
   other feature in this table it touches no ClickHouse SETTING and rewrites no
   SQL — it runs a SECOND statement (`EXPLAIN ESTIMATE <the same statement
@@ -1633,10 +1634,12 @@ compiled exactly when its corpus entry says so. `just regex-jit-bench` measures 
 
 ## Version safety
 
-Nothing in this suite can break ClickHouse 24.8:
+Nothing in this suite can break an older server than the one it is gated
+on. The list below names each feature's own floor; the minimum supported
+ClickHouse version, 26.3, clears every floor in it:
 
-- `aggregation_in_order` and `log_comment` are 24.8-safe (long-standing
-  result-equivalent / free-form knobs).
+- `aggregation_in_order` and `log_comment` run on every server cerberus
+  starts against (long-standing result-equivalent / free-form knobs).
 - `condition_cache` activates only on `>= 25.3`, outside its
   [known-defective builds](#known-defective-server-builds); below 25.3 it is a
   no-op.
@@ -1653,10 +1656,10 @@ Nothing in this suite can break ClickHouse 24.8:
 - `columnar_result_decode` is client-side and version-agnostic (no server
   setting); it is opt-in only, so `auto` never engages it.
 - Native regular-expression compilation is a server default cerberus does not
-  set; the patterns cerberus binds mean the same on 24.8, where RE2 evaluates
-  all of them.
-- Under `auto`, an unsupported feature is simply not enabled, so a deployment
-  on ClickHouse 24.8 keeps its 24.8-safe SQL unchanged.
+  set; the patterns cerberus binds mean the same on a server that leaves
+  them to RE2.
+- Under `auto`, a feature the server cannot run is simply not enabled, so a
+  deployment on an older server keeps the SQL that server runs.
 
 ---
 

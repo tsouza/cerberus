@@ -21,7 +21,9 @@ import (
 )
 
 // bucketSpillFloorBuild is the build the bucket fan-out spill probe runs
-// on: the supported floor, where mapConcat, like mapSort, returns a Map type
+// on: the boot floor (versions.yaml boot_floor_clickhouse), below the minimum
+// supported version but still started against, where mapConcat, like mapSort,
+// returns a Map type
 // unequal to the one its spilled blocks are read back as (auto resolves
 // chopt.FeatureCanonicalMapTypeCast in).
 const bucketSpillFloorBuild = "clickhouse/clickhouse-server:24.8.14.39-alpine"

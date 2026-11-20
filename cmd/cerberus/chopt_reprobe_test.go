@@ -62,10 +62,10 @@ func resolutionAt(t *testing.T, version chopt.Version, ids ...string) chOptResol
 func TestCHOptLive_PublishesTheResolutionInForce(t *testing.T) {
 	t.Parallel()
 
-	boot := resolutionAt(t, supportedFloorVersion, chopt.FeatureAggregationInOrder)
+	boot := resolutionAt(t, probeFallbackVersion, chopt.FeatureAggregationInOrder)
 	live := newCHOptLive(boot)
 
-	if got := live.get(); !got.Set.Equal(boot.Set) || got.ResolvedVersion != supportedFloorVersion {
+	if got := live.get(); !got.Set.Equal(boot.Set) || got.ResolvedVersion != probeFallbackVersion {
 		t.Fatalf("get() = %+v; want the boot resolution", got)
 	}
 
@@ -89,11 +89,11 @@ func TestCHOptLive_PublishesTheResolutionInForce(t *testing.T) {
 func TestCHOptLive_InfoStateTracksTheSwap(t *testing.T) {
 	t.Parallel()
 
-	live := newCHOptLive(resolutionAt(t, supportedFloorVersion, chopt.FeatureAggregationInOrder))
+	live := newCHOptLive(resolutionAt(t, probeFallbackVersion, chopt.FeatureAggregationInOrder))
 
 	before := live.infoState()
-	if before.ServerVersion != supportedFloorVersion.String() {
-		t.Fatalf("before: ServerVersion = %q; want %q", before.ServerVersion, supportedFloorVersion.String())
+	if before.ServerVersion != probeFallbackVersion.String() {
+		t.Fatalf("before: ServerVersion = %q; want %q", before.ServerVersion, probeFallbackVersion.String())
 	}
 	if before.ServerVersionSource != info.ServerVersionSourceProbe {
 		t.Errorf("before: ServerVersionSource = %q; want %q", before.ServerVersionSource, info.ServerVersionSourceProbe)
@@ -117,7 +117,7 @@ func TestCHOptLive_InfoStateTracksTheSwap(t *testing.T) {
 func TestCHOptLive_InfoStateReportsTheFallbackSource(t *testing.T) {
 	t.Parallel()
 
-	res := resolutionAt(t, supportedFloorVersion)
+	res := resolutionAt(t, probeFallbackVersion)
 	res.VersionFallback = true
 
 	if got := newCHOptLive(res).infoState().ServerVersionSource; got != info.ServerVersionSourceFallback {
@@ -257,7 +257,7 @@ func TestReprobeCHOptimizations_SwapsWhenTheAnswerChanges(t *testing.T) {
 
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		if got := live.get(); got.ResolvedVersion == supportedFloorVersion && !got.Set.Has(chopt.FeatureTSGridRange) {
+		if got := live.get(); got.ResolvedVersion == probeFallbackVersion && !got.Set.Has(chopt.FeatureTSGridRange) {
 			break
 		}
 		if time.Now().After(deadline) {

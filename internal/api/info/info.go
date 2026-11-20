@@ -68,7 +68,7 @@ type OptState struct {
 	ServerVersion string
 	// ServerVersionSource is [ServerVersionSourceProbe] when the version was
 	// read live, or [ServerVersionSourceFallback] when the probe failed and the
-	// supported floor was assumed.
+	// probe fallback version was assumed.
 	ServerVersionSource string
 	// Enabled is the EFFECTIVELY ENABLED feature ids (chopt EnabledSet IDs) —
 	// the headline field: it makes plain whether cerberus is running the
@@ -85,12 +85,18 @@ type OptState struct {
 	// unless) the boot or a later re-probe finds the connected server
 	// actually accepts it — see docs/operations.md#workload-scheduling-server-side-isolation-between-query-and-ingest.
 	QueryWorkload string
+	// MinimumSupportedVersion is the minimum supported ClickHouse version
+	// (chopt.MinSupportedVersion), as "<major>.<minor>".
+	MinimumSupportedVersion string
+	// UnsupportedNodes is how many ClickHouse nodes the latest fleet probe
+	// that read any node holds below MinimumSupportedVersion.
+	UnsupportedNodes int
 }
 
 const (
 	// ServerVersionSourceProbe marks a server version read live from the server.
 	ServerVersionSourceProbe = "probe"
-	// ServerVersionSourceFallback marks the assumed supported floor used when
+	// ServerVersionSourceFallback marks the assumed probe fallback version used when
 	// the version probe failed.
 	ServerVersionSourceFallback = "fallback"
 )
@@ -316,9 +322,13 @@ type clickHouseInfo struct {
 	Database            string `json:"database"`
 	ServerVersion       string `json:"serverVersion"`
 	ServerVersionSource string `json:"serverVersionSource"`
-	Reachable           bool   `json:"reachable"`
-	Breaker             string `json:"breaker"`
-	SchemaReady         bool   `json:"schemaReady"`
+	// MinimumSupportedVersion and UnsupportedNodes are the OptState fields
+	// of the same names.
+	MinimumSupportedVersion string `json:"minimumSupportedVersion"`
+	UnsupportedNodes        int    `json:"unsupportedNodes"`
+	Reachable               bool   `json:"reachable"`
+	Breaker                 string `json:"breaker"`
+	SchemaReady             bool   `json:"schemaReady"`
 }
 
 // optimizationsInfo is the nested "optimizations" object of the /info body.
@@ -422,13 +432,15 @@ func (h *Handler) snapshotResponse(ctx context.Context) infoResponse {
 		UptimeSeconds: int64(h.uptime().Seconds()),
 		Heads:         h.snap.Heads,
 		ClickHouse: clickHouseInfo{
-			Address:             h.snap.CHAddress,
-			Database:            h.snap.CHDatabase,
-			ServerVersion:       opts.ServerVersion,
-			ServerVersionSource: opts.ServerVersionSource,
-			Reachable:           h.reachableNow(pingCtx),
-			Breaker:             h.breakerNow(),
-			SchemaReady:         h.schemaReadyNow(),
+			Address:                 h.snap.CHAddress,
+			Database:                h.snap.CHDatabase,
+			ServerVersion:           opts.ServerVersion,
+			ServerVersionSource:     opts.ServerVersionSource,
+			MinimumSupportedVersion: opts.MinimumSupportedVersion,
+			UnsupportedNodes:        opts.UnsupportedNodes,
+			Reachable:               h.reachableNow(pingCtx),
+			Breaker:                 h.breakerNow(),
+			SchemaReady:             h.schemaReadyNow(),
 		},
 		Optimizations: optimizationsInfo{
 			Selection: h.snap.OptSelection,

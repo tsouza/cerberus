@@ -266,6 +266,12 @@ type Instruments struct {
 	// dashboard/alert rule is how an operator learns a shape's EXPLAIN
 	// ESTIMATE prior has drifted, instead of it silently rotting.
 	EstimateDriftAlertsTotal metric.Int64Counter
+
+	// ClickHouseUnsupportedNodes is the number of ClickHouse nodes the
+	// latest answering fleet probe holds whose version lies below
+	// chopt.MinSupportedVersion. No attributes; recorded on every probe pass
+	// that reads at least one node.
+	ClickHouseUnsupportedNodes metric.Int64Gauge
 }
 
 // Histogram bucket boundaries, one ladder per instrument, matched to the
@@ -496,7 +502,22 @@ func mustBuild(meter metric.Meter) *Instruments {
 		ExemplarFailuresTotal:         exemplarFailures,
 		EstimateDriftRatio:            estimateDriftRatio,
 		EstimateDriftAlertsTotal:      estimateDriftAlerts,
+		ClickHouseUnsupportedNodes:    mustBuildClickHouseUnsupportedNodes(meter),
 	}
+}
+
+// mustBuildClickHouseUnsupportedNodes builds the unsupported-node gauge; split
+// from mustBuild only to keep that constructor within the lint length budget.
+func mustBuildClickHouseUnsupportedNodes(meter metric.Meter) metric.Int64Gauge {
+	g, err := meter.Int64Gauge(
+		"cerberus_clickhouse_unsupported_nodes",
+		metric.WithDescription("ClickHouse nodes the latest fleet probe holds whose version is below the minimum supported version."),
+		metric.WithUnit("{node}"),
+	)
+	if err != nil {
+		panic("telemetry: build clickhouse_unsupported_nodes: " + err.Error())
+	}
+	return g
 }
 
 // mustBuildOptimizerInstruments builds the two optimizer instruments; split
@@ -690,6 +711,13 @@ func RecordRouteMemoHitSkipped(ctx context.Context, reason string) {
 // begin/end pair.
 func RecordRouteMemoPressureTransition(ctx context.Context, delta int64) {
 	Get().RouteMemoPressureActive.Add(ctx, delta)
+}
+
+// RecordClickHouseUnsupportedNodes records n, the number of ClickHouse nodes a
+// fleet probe pass holds below the minimum supported version, on
+// ClickHouseUnsupportedNodes.
+func RecordClickHouseUnsupportedNodes(ctx context.Context, n int) {
+	Get().ClickHouseUnsupportedNodes.Record(ctx, int64(n))
 }
 
 // ObserveRoutedDispatchInflight increments RoutedDispatchInflight and
