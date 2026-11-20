@@ -225,9 +225,9 @@ import (
 //         ORDER BY min(Timestamp) DESC, TraceId LIMIT 20)
 //
 //     internal/chsql/search_trace_limit.go's emitSearchTraceLimit renders
-//     EXACTLY this shape, and its own doc already names the mechanism in
-//     plain words: "the input subquery is emitted twice (outer drain +
-//     inner ranking)". Both arms scan the SAME otel_traces Distributed
+//     EXACTLY this shape for an input whose predicate stays in WHERE, and
+//     its own doc names the mechanism in plain words: "the input is
+//     emitted twice (drain + inner ranking)". Both arms scan the SAME otel_traces Distributed
 //     table. Round 3's finding 2 examined a query shape without an active
 //     /api/search trace limit and correctly found no self-reference for
 //     THAT shape — round 3 did not generalise to the (far more common in
