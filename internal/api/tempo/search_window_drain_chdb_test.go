@@ -302,6 +302,52 @@ func TestSearch_StructuralShortTraceID_ChDB(t *testing.T) {
 	}
 }
 
+// TestSearch_ShortTraceIDRootMetadata_ChDB pins that a search names the root
+// span and trace-wide duration of a trace whose stored TraceId is shorter than
+// 32 characters. The matched spans carry no root row, so the root lookup
+// resolves both from the trace's own rows; looking it up under any other
+// spelling of the id finds no row and leaves the earliest matched span's
+// name, service and duration in place of the root's.
+func TestSearch_ShortTraceIDRootMetadata_ChDB(t *testing.T) {
+	c := chclienttest.NewChDB(t)
+	c.Seed(t, tracesDDL)
+	c.Seed(t, shortIDSeed)
+	h := tempo.New(c, schema.DefaultOTelTraces(), "v-test", nil)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	// Both traces' roots are op-6 spans of frontend; the short trace runs from
+	// e1 at 10:59:00 to e4 at 11:00:30, the full-length one from f1 at
+	// 10:10:00 to f3 at 10:10:20.
+	want := map[string]tempo.TraceSummary{
+		shortTraceID:                       {RootServiceName: "frontend", RootTraceName: "op-6", DurationMs: 90000},
+		"f2000000000000000000000000000002": {RootServiceName: "frontend", RootTraceName: "op-6", DurationMs: 20000},
+	}
+	for _, query := range []string{
+		`{ name = "op-2" }`,
+		`{ name = "op-6" } > { name = "op-2" }`,
+	} {
+		t.Run(query, func(t *testing.T) {
+			path := fmt.Sprintf("/api/search?q=%s&limit=2&spss=20%s", url.QueryEscape(query), drainWindow)
+			got := doSearch(t, srv, path).Traces
+			if len(got) != len(want) {
+				t.Fatalf("got %d traces, want %d", len(got), len(want))
+			}
+			for _, tr := range got {
+				w, ok := want[tr.TraceID]
+				if !ok {
+					t.Fatalf("unexpected trace %s", tr.TraceID)
+				}
+				if tr.RootServiceName != w.RootServiceName || tr.RootTraceName != w.RootTraceName || tr.DurationMs != w.DurationMs {
+					t.Errorf("trace %s: root %q/%q duration %dms, want %q/%q %dms", tr.TraceID,
+						tr.RootServiceName, tr.RootTraceName, tr.DurationMs, w.RootServiceName, w.RootTraceName, w.DurationMs)
+				}
+			}
+		})
+	}
+}
+
 // spanCounts maps each trace a search response carries to its span count.
 func spanCounts(sr searchResult) map[string]int {
 	out := map[string]int{}

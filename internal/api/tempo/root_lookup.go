@@ -56,7 +56,7 @@ type rootMetadata struct {
 //	  min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs,
 //	  max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) AS TraceEndNs
 //	FROM otel_traces
-//	WHERE TraceId IN ('<padded-id-1>', '<padded-id-2>', ...)
+//	WHERE TraceId IN ('<id-1>', '<id-2>', ...)
 //	GROUP BY TraceId
 //
 // then an outer Project rewrites the Aggregate's columns into the
@@ -81,7 +81,7 @@ func (h *Handler) resolveTraceRoots(ctx context.Context, traceIDs []string) (map
 
 	plan := buildRootLookupPlan(h.Schema, traceIDs)
 	// The root-lookup plan scans the spans table bounded by a literal
-	// `TraceId IN (<padded ids>)` set (form-b). Thread the spans table onto the
+	// `TraceId IN (<ids>)` set (form-b). Thread the spans table onto the
 	// emit context so chsql.Emit's RequireSpansScansBounded verifies that bound
 	// is present — a regression that dropped the IN filter would fail closed
 	// rather than full-scan otel_traces.
@@ -169,7 +169,7 @@ func (h *Handler) resolveTraceRoots(ctx context.Context, traceIDs []string) (map
 // span within the same GROUP BY group — keeping the lookup a single
 // round trip while distinguishing root vs. non-root rows.
 func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
-	// Filter predicate: TraceId IN (<padded-id-1>, <padded-id-2>, ...)
+	// Filter predicate: TraceId IN (<id-1>, <id-2>, ...)
 	// as a single flat chplan.InList. The flatness is load-bearing: the
 	// previous shape rendered a nested OR-chain of Eq predicates, whose
 	// ClickHouse parser AST deepens by one level per trace ID — at
@@ -182,8 +182,10 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 	// TraceId only lets the trace start / end aggregates see every span
 	// of the trace; argMinIf (below) carries the ParentSpanId
 	// restriction on the root-span identifying aggregates so the same
-	// group computes both.
-	traceMatch := inStringList(s.TraceIDColumn, padTraceIDs(traceIDs))
+	// group computes both. The ids are the search summaries' trace ids,
+	// the trace-id column's values as stored, so the list matches a
+	// stored id shorter than the canonical 32 hex characters too.
+	traceMatch := inStringList(s.TraceIDColumn, traceIDs)
 
 	// rootCond expresses ParentSpanId IN ('', '0000000000000000') — the
 	// on-disk root marker (pre-strip empty form + canonical 16-char
@@ -330,19 +332,6 @@ func inStringList(col string, vals []string) chplan.Expr {
 		Left: &chplan.ColumnRef{Name: col},
 		List: list,
 	}
-}
-
-// padTraceIDs left-pads each stripped-zero TraceID back to the
-// canonical 32-char lowercase-hex on-disk form so the equality
-// predicate matches otel_traces.TraceId. Mirrors normaliseTraceID
-// but in bulk; sorted-stable so the generated SQL is deterministic
-// across calls (helps the chsql golden tests this helper unblocks).
-func padTraceIDs(ids []string) []string {
-	out := make([]string, 0, len(ids))
-	for _, id := range ids {
-		out = append(out, normaliseTraceID(id))
-	}
-	return out
 }
 
 // applyRootMetadata patches each summary whose TraceID appears in

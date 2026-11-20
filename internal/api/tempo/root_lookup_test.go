@@ -28,9 +28,9 @@ import (
 func TestBuildRootLookupPlan_SQLShape(t *testing.T) {
 	t.Parallel()
 	plan := buildRootLookupPlan(schema.DefaultOTelTraces(), []string{
-		"17",                               // short stripped form
-		"abc",                              // shorter, will be padded
-		"0123456789abcdef0123456789abcdef", // already 32 chars
+		"17",                               // shorter than 32 characters
+		"abc",                              // shorter than 32 characters
+		"0123456789abcdef0123456789abcdef", // 32 characters
 	})
 
 	sql, args, err := chsql.Emit(context.Background(), plan)
@@ -100,13 +100,12 @@ func TestBuildRootLookupPlan_SQLShape(t *testing.T) {
 		t.Errorf("SQL must use argMinIf so root-span identity scopes ParentSpanId without restricting the trace-duration aggregates; got %s", sql)
 	}
 
-	// Args must include each TraceID padded to 32-char lowercase hex
-	// so the equality match hits the otel_traces.TraceId column.
-	// padTraceIDs pads to 32 chars: "17" → 30 zeros + "17", "abc" → 29
-	// zeros + "abc", already-32-char input round-trips byte-for-byte.
-	wantPadded := map[string]bool{
-		"00000000000000000000000000000017": false,
-		"00000000000000000000000000000abc": false,
+	// Args must include each TraceID exactly as given: the ids are the
+	// trace-id column's stored values, so the lookup matches them as
+	// they are, whatever their length.
+	wantIDs := map[string]bool{
+		"17":                               false,
+		"abc":                              false,
 		"0123456789abcdef0123456789abcdef": false,
 	}
 	for _, a := range args {
@@ -114,13 +113,13 @@ func TestBuildRootLookupPlan_SQLShape(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if _, present := wantPadded[s]; present {
-			wantPadded[s] = true
+		if _, present := wantIDs[s]; present {
+			wantIDs[s] = true
 		}
 	}
-	for id, found := range wantPadded {
+	for id, found := range wantIDs {
 		if !found {
-			t.Errorf("padded TraceID %q missing from args %v", id, args)
+			t.Errorf("TraceID %q missing from args %v", id, args)
 		}
 	}
 
