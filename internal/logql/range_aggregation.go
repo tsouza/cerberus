@@ -401,15 +401,14 @@ func lowerLogRange(lr *syntax.LogRangeExpr, s schema.Logs, lc lowerCtx) (rows *r
 	labelsExpr = &chplan.ColumnRef{Name: s.ResourceAttributesColumn}
 	if pipeline != nil {
 		lc.row.level = level
-		// A detected_level filter reads the source only where WHERE order
-		// holds, so that it can run in the SELECT that reads the table
-		// ahead of a later line filter. A reordering server moves a filter
-		// on the normalised level to PREWHERE as well, and over the source
-		// the scan would hand on the source in place of the level: on
-		// 26.8 the empty source of a line without a level sizes the
-		// reader's blocks for a narrower row, and an aggregation whose
-		// filter keeps every row peaks at about twice the memory.
-		if lc.PrewhereInWhereOrder {
+		// A detected_level filter reads the source where WHERE order holds,
+		// and ahead of a later line filter, so that it can run in the
+		// SELECT that reads the table ahead of that line filter. Without
+		// WHERE order that SELECT then computes the normalised level beside
+		// the source ([rowLayers.gatherAtScan]). A level filter that no
+		// line filter follows reads the normalised level there, above the
+		// scan.
+		if lc.PrewhereInWhereOrder || lineFilterFollowsLevelFilter(pipeline) {
 			lc.row.levelSource = source
 		}
 		if labelsExpr, err = lowerPipelineStages(pipeline, s, lc, rows); err != nil {
@@ -417,6 +416,34 @@ func lowerLogRange(lr *syntax.LogRangeExpr, s schema.Logs, lc lowerCtx) (rows *r
 		}
 	}
 	return rows, labelsExpr, level, nil
+}
+
+// lineFilterFollowsLevelFilter reports whether a line filter stage of
+// pipeline follows a label filter stage that reads detected_level.
+func lineFilterFollowsLevelFilter(pipeline *syntax.PipelineExpr) bool {
+	level := false
+	for _, stage := range pipeline.MultiStages {
+		switch st := stage.(type) {
+		case *syntax.LabelFilterExpr:
+			level = level || filtersDetectedLevel(st.LabelFilterer)
+		case *syntax.LineFilterExpr:
+			if level {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// filtersDetectedLevel reports whether lf reads detected_level.
+func filtersDetectedLevel(lf syntax.LabelFilterer) bool {
+	switch v := lf.(type) {
+	case *syntax.StringLabelFilter:
+		return isDetectedLevelLabel(v.Name)
+	case *syntax.BinaryLabelFilter:
+		return filtersDetectedLevel(v.Left) || filtersDetectedLevel(v.Right)
+	}
+	return false
 }
 
 // applyUnwrapRowSemantics folds reference Loki's per-row unwrap

@@ -82,6 +82,11 @@ const maxScanScopeExpansion = 3
 //     the scope, and counts toward none of it, so every value and conjunct
 //     that moved without it still moves; the rule for map columns read as
 //     a whole holds for it as for the rest;
+//   - without inWhereOrder, a filter conjunct that reads the detected_level
+//     source joins the scope whatever the scope's expansion, as long as it
+//     reads only values in the scope, and so does the normalised level
+//     when it reads only values in the scope and a moved filter reads its
+//     source; otherwise the level stays in its place;
 //   - a moved layer that reads another value goes back to its place
 //     unless a moved filter reads it.
 //
@@ -104,6 +109,15 @@ const maxScanScopeExpansion = 3
 // can tune. A server that reorders the conditions chooses their order
 // itself.
 //
+// A detected_level filter reads the level source, so in the scan's scope
+// it runs ahead of a later line filter. A server that reorders the
+// conditions moves it to PREWHERE, and a scan whose output carries the
+// source without the normalised level hands on an empty string for a line
+// with no level: on 26.8 the reader then sizes its blocks for a narrower
+// row, and an aggregation whose filter keeps every row peaks at about
+// twice the memory. Computed in the scan's scope beside the source, the
+// level is what the scan hands on.
+//
 // Moving a value below the layers it does not read changes nothing it
 // computes: every layer is a pure per-row value, and an AND of predicates
 // over the same row keeps the same rows wherever each of them runs.
@@ -119,18 +133,18 @@ func (r *rowLayers) gatherAtScan(maps []string, inWhereOrder bool, consumer ...c
 	reads := stageMapReads(maps, consumer, items)
 	values := r.values(maps)
 	if !inWhereOrder {
-		r.node = r.rebuild(r.gather(base, items, reads, -1, nil, wholeMapFiltersAhead(items, values, reads), nil))
+		r.node = r.rebuild(r.gather(base, items, reads, -1, nil, wholeMapFiltersAhead(items, values, reads), nil, filtersLevelSource(items)))
 		return
 	}
-	g := r.gather(base, items, reads, -1, nil, nil, nil)
+	g := r.gather(base, items, reads, -1, nil, nil, nil, false)
 	through, first := orderedScanPrefix(base, items, values, reads)
 	if first != nil {
-		if ordered := r.gather(base, items, reads, through, first, nil, nil); slices.Contains(ordered.filtered, first) {
+		if ordered := r.gather(base, items, reads, through, first, nil, nil, false); slices.Contains(ordered.filtered, first) {
 			g = ordered
 		}
 	}
 	if admitted := g.overtaken(items, values); admitted != nil {
-		g = r.gather(base, items, reads, g.keyedThrough, g.first, nil, admitted)
+		g = r.gather(base, items, reads, g.keyedThrough, g.first, nil, admitted, false)
 	}
 	r.node = r.rebuild(g)
 }
@@ -188,14 +202,15 @@ func (r *rowLayers) rebuild(g scanGather) chplan.Node {
 
 // gather walks items, the stack over base, and returns what it moves into
 // the scan's scope, folds into the scan's filter and leaves above, with
-// keyedThrough, first, wholeAtScan and admitted as [scanGather]'s.
-func (r *rowLayers) gather(base chplan.Node, items []chplan.Node, reads stageMaps, keyedThrough int, first chplan.Expr, wholeAtScan, admitted []chplan.Expr) scanGather {
+// keyedThrough, first, wholeAtScan, admitted and levelBesideSource as
+// [scanGather]'s.
+func (r *rowLayers) gather(base chplan.Node, items []chplan.Node, reads stageMaps, keyedThrough int, first chplan.Expr, wholeAtScan, admitted []chplan.Expr, levelBesideSource bool) scanGather {
 	aliases := map[string]bool{}
 	for _, layer := range r.layers {
 		aliases[layer.Projections[0].Alias] = true
 	}
 	scope := scanScope{aliases: aliases, defs: map[string]chplan.Expr{}, expanded: map[string]int{}}
-	g := scanGather{reads: reads, base: base, keyedThrough: keyedThrough, first: first, wholeAtScan: wholeAtScan, admitted: admitted}
+	g := scanGather{reads: reads, base: base, keyedThrough: keyedThrough, first: first, wholeAtScan: wholeAtScan, admitted: admitted, levelBesideSource: levelBesideSource}
 	for i, item := range items {
 		switch n := item.(type) {
 		case *chplan.Project:
@@ -233,6 +248,11 @@ type scanGather struct {
 	// the scope's sizes, so the gather moves every value and conjunct the
 	// one without them moved.
 	admitted []chplan.Expr
+	// levelBesideSource reports that a filter conjunct on the
+	// detected_level source joins the scope whatever its expansion, and
+	// the normalised level with it, when each reads only values in the
+	// scope.
+	levelBesideSource bool
 	// base is the stream scan with the conjuncts folded into its filter.
 	base chplan.Node
 	// layers are the moved layers, bottom first, and layerAt each one's
@@ -273,11 +293,24 @@ func (g *scanGather) mapsAllow(i int, e chplan.Expr) bool {
 // above.
 func (g *scanGather) takeLayer(scope *scanScope, i int, n *chplan.Project) {
 	value := n.Projections[0]
+	if g.levelBesideSource && value.Alias == detectedLevelAlias && scope.readsOnlyScope(value.Expr) {
+		// Counted out of the scope's sizes: it stays only beside a moved
+		// filter on its source ([scanGather.demote]), and a filter on the
+		// level itself still pays for its expansion.
+		g.place(scope, i, n)
+		return
+	}
 	if !g.movable(scope, i, value.Expr) {
 		g.above = append(g.above, scanRest{at: i, layer: n})
 		return
 	}
 	scope.add(value.Expr)
+	g.place(scope, i, n)
+}
+
+// place moves the layer n, at place i, into the scope.
+func (g *scanGather) place(scope *scanScope, i int, n *chplan.Project) {
+	value := n.Projections[0]
 	scope.defs[value.Alias] = value.Expr
 	g.layers = append(g.layers, n)
 	g.layerAt = append(g.layerAt, i)
@@ -302,6 +335,9 @@ func (g *scanGather) takeFilter(scope *scanScope, i int, n *chplan.Filter) {
 			// conjunct after it to move as it would without it.
 			g.filtered = append(g.filtered, conjunct)
 		case (g.joinsFirst(i) || conjunct == g.first) && scope.readsOnlyScope(conjunct):
+			scope.add(conjunct)
+			g.filtered = append(g.filtered, conjunct)
+		case g.levelBesideSource && chplan.ReadsAnyColumn(conjunct, levelSourceAliases) && scope.readsOnlyScope(conjunct):
 			scope.add(conjunct)
 			g.filtered = append(g.filtered, conjunct)
 		case g.movable(scope, i, conjunct):
@@ -413,7 +449,7 @@ func (g *scanGather) demote(scope *scanScope) {
 	kept := g.layers[:0:0]
 	for i := len(g.layers) - 1; i >= 0; i-- {
 		value := g.layers[i].Projections[0]
-		if needed[value.Alias] || !scope.readsLayer(value.Expr) {
+		if g.keeps(scope, value, needed) {
 			addColumnsRead(needed, value.Expr)
 			kept = append(kept, g.layers[i])
 			continue
@@ -520,6 +556,38 @@ func (r *rowLayers) markAtScan(consumer *chplan.Project) {
 		}
 		parent = child
 	}
+}
+
+// levelSourceAliases names the detected_level source, for
+// [scanGather.levelBesideSource].
+var levelSourceAliases = map[string]bool{levelSourceAlias: true}
+
+// filtersLevelSource reports whether a filter conjunct of items reads the
+// detected_level source.
+func filtersLevelSource(items []chplan.Node) bool {
+	for _, item := range items {
+		if f, ok := item.(*chplan.Filter); ok && chplan.ReadsAnyColumn(f.Predicate, levelSourceAliases) {
+			return true
+		}
+	}
+	return false
+}
+
+// keeps reports whether the moved layer value stays in the scope, given
+// needed, the columns the moved filters and the layers kept above it
+// read: a value something there reads, one that reads no other value, and
+// with levelBesideSource the normalised detected_level when a moved filter
+// reads its source.
+func (g *scanGather) keeps(scope *scanScope, value chplan.Projection, needed map[string]bool) bool {
+	if needed[value.Alias] {
+		return true
+	}
+	if g.levelBesideSource && value.Alias == detectedLevelAlias {
+		return slices.ContainsFunc(g.filtered, func(conjunct chplan.Expr) bool {
+			return chplan.ReadsAnyColumn(conjunct, levelSourceAliases)
+		})
+	}
+	return !scope.readsLayer(value.Expr)
 }
 
 // scanScope is the part of a stack [rowLayers.gatherAtScan] has moved into
