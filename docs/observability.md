@@ -233,6 +233,7 @@ so a rename there cannot ship silently.
 | `cerberus_tempo_exemplar_failures_total`      | counter            | `stage`                                                                                     |
 | `cerberus_solver_estimate_drift_ratio`        | histogram          | `cerberus_actuals_source`                                                                   |
 | `cerberus_solver_estimate_drift_alerts_total` | counter            | `cerberus_actuals_source`                                                                   |
+| `cerberus_clickhouse_unsupported_nodes`       | gauge              | —                                                                                           |
 
 The four `cerberus_route_*` / `cerberus_routed_*` instruments describe the
 failure-driven route memo and the A/B route outcome; the two
@@ -247,6 +248,18 @@ concurrency cap refused, and `cerberus_solver_parallelism_clamped_total`
 whose shard parallelism was clamped below the configured `P`.
 
 `cerberus_tempo_exemplar_failures_total` counts Tempo `/api/metrics/query_range` (and its gRPC `MetricsQueryRange` counterpart) exemplar-enrichment failures, split by which half of the best-effort exemplar attach failed: `stage="emit"` for a `chsql.EmitMetricsExemplars` render failure, `stage="execute"` for a ClickHouse query failure on the rendered SQL. Both failures still return the matrix response with an empty `exemplars` array — the same wire shape as a window with genuinely no exemplars — so this counter is the only way to notice a systematic exemplar outage without reading logs.
+
+`cerberus_clickhouse_unsupported_nodes` is how many ClickHouse nodes the
+latest version probe that reached any node found below the minimum
+supported ClickHouse version (26.3). It is recorded at boot and on every
+re-probe; a probe that reaches no node leaves the last value in place. Each
+unsupported build the probe finds is also logged at WARN as
+`clickhouse server is below the minimum supported version; …`, with
+`server_version`, `minimum_supported_version` and `nodes`. cerberus still
+serves queries against such a server; v1.26.0 refuses to start against it.
+`/info` reports the same count as `clickhouse.unsupportedNodes`
+([Health](health.md#info--metadata-fingerprint)). Alert on
+`cerberus_clickhouse_unsupported_nodes > 0`.
 
 `cerberus_optimizer_fixpoint_cap_hits_total` counts optimizer `FixedPoint` batches that exhausted their iteration cap with a rule still reporting change, by batch name. Every production batch converges well inside its cap, so a non-zero rate is a rule bug (two rules undoing each other, or one that always reports a change) that otherwise shows only as a slower `optimize` stage; the same event is logged at WARN as `optimizer: fixpoint batch hit its iteration cap without converging` with the batch name.
 
