@@ -400,7 +400,18 @@ func lowerLogRange(lr *syntax.LogRangeExpr, s schema.Logs, lc lowerCtx) (rows *r
 	// No pipeline — labels-map is the ResourceAttributes column.
 	labelsExpr = &chplan.ColumnRef{Name: s.ResourceAttributesColumn}
 	if pipeline != nil {
-		lc.row.level, lc.row.levelSource = level, source
+		lc.row.level = level
+		// A detected_level filter reads the source only where WHERE order
+		// holds, so that it can run in the SELECT that reads the table
+		// ahead of a later line filter. A reordering server moves a filter
+		// on the normalised level to PREWHERE as well, and over the source
+		// the scan would hand on the source in place of the level: on
+		// 26.8 the empty source of a line without a level sizes the
+		// reader's blocks for a narrower row, and an aggregation whose
+		// filter keeps every row peaks at about twice the memory.
+		if lc.PrewhereInWhereOrder {
+			lc.row.levelSource = source
+		}
 		if labelsExpr, err = lowerPipelineStages(pipeline, s, lc, rows); err != nil {
 			return nil, nil, nil, err
 		}

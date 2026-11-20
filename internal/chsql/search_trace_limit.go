@@ -59,8 +59,16 @@ import (
 // window chooses the traces, and the outer drain returns each chosen trace's
 // matching spans over Input's wider window.
 //
-// Without a Rank the input subquery is emitted twice (outer drain + inner
-// ranking) by design. The window predicate keeps each scan cheap, and a `WITH src AS
+// When the input is a Filter directly above a Scan whose rendering carries a
+// PREWHERE, the drain is that Filter(Scan) statement itself, with the
+// membership test appended to its PREWHERE (prewhereDrain):
+//
+//	SELECT <columns> FROM <table>
+//	PREWHERE <input PREWHERE> AND `<trace-id role>` GLOBAL IN (<top-N>)
+//	WHERE <input WHERE>
+//
+// Without a Rank the input is emitted twice (drain + inner ranking) by
+// design. The window predicate keeps each scan cheap, and a `WITH src AS
 // (...)` CTE would not remove the second scan: ClickHouse inlines a CTE at
 // every reference rather than materialising it, so there is nothing to lift.
 func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
@@ -86,10 +94,6 @@ func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
 		return fmt.Errorf("%w: SearchTraceLimit with non-positive TraceLimit=%d", ErrUnsupported, n.TraceLimit)
 	}
 
-	outerSub, err := e.subqueryFrag(n.Input)
-	if err != nil {
-		return err
-	}
 	if err := sameRankDrivers(owner, n, traceID, timestamp); err != nil {
 		return err
 	}
@@ -106,12 +110,53 @@ func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
 		OrderBy(Col(traceID), false).
 		Limit(n.TraceLimit).
 		Frag()
+	chosen := InSubquery(Col(traceID), topN)
 
+	drain, ok, err := prewhereDrain(n.Input, chosen, e.strategies)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return e.emitSelect(drain)
+	}
+
+	outerSub, err := e.subqueryFrag(n.Input)
+	if err != nil {
+		return err
+	}
 	sb := NewQuery().
 		Select(verbatim("s.*")).
 		From(aliasedFrag(outerSub, "s")).
-		Where(InSubquery(Col(traceID), topN))
+		Where(chosen)
 	return e.emitSelect(sb)
+}
+
+// prewhereDrain renders the drain of a SearchTraceLimit whose input is a
+// Filter directly above a Scan that the emitter splits into PREWHERE and
+// WHERE itself: the Filter(Scan) statement with chosen, the chosen-traces
+// membership, appended to its PREWHERE after the input's own PREWHERE
+// conjuncts. ClickHouse then reads the trace-id column only for the rows
+// those conjuncts keep, and the rest of the row only for the chosen traces'
+// rows. ok is false for any other input, and for a Filter(Scan) rendered
+// without a PREWHERE (the server places it, or no conjunct qualifies): the
+// drain then filters the input's rows from outside.
+func prewhereDrain(input chplan.Node, chosen Frag, strategies SchemaStrategies) (sb *QueryBuilder, ok bool, err error) {
+	f, isFilter := input.(*chplan.Filter)
+	if !isFilter {
+		return nil, false, nil
+	}
+	scan, isScan := f.Input.(*chplan.Scan)
+	if !isScan {
+		return nil, false, nil
+	}
+	sb, err = filterScanQuery(f, scan, strategies)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(sb.prewhere) == 0 {
+		return nil, false, nil
+	}
+	return sb.Prewhere(chosen), true, nil
 }
 
 // sameRankDrivers checks that a SearchTraceLimit's Rank, when set, names its
