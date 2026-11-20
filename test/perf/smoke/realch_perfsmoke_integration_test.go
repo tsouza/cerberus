@@ -16,7 +16,8 @@
 // cardinality on a real ClickHouse server. Before this lane, NOTHING in CI
 // ran real CH with real memory measurement.
 //
-// This test drives the mounted PRODUCTION prom + tempo handlers over real
+// This test drives the mounted PRODUCTION prom + tempo handlers, and the Loki
+// handler on a logs floor, over real
 // HTTP against a real ClickHouse (testcontainers-go), seeded at the scale
 // each incident's own root-cause mechanism needs to actually engage (see
 // sentinels.go's Sentinels and seed.go's builders), and reads peak per-query
@@ -31,8 +32,9 @@
 // container per floor: perfSmokeCHImage (25.9-alpine, the tag every other
 // strict-scan real-CH lane uses) for FloorBase, perfSmokeJoinSpillCHImage
 // for FloorJoinSpill, whose mechanism chopt gates behind a 26.4 server, and
-// perfSmokeDistinctSpillCHImage for FloorDistinctSpill, gated behind 26.9.
-// Each constant's own comment carries the why.
+// perfSmokeDistinctSpillCHImage for FloorDistinctSpill, gated behind 26.9,
+// and perfSmokeMergePlanFiltersCHImage for FloorMergePlanFilters, which
+// resolves only below 24.11. Each constant's own comment carries the why.
 //
 // # Two boot-resolved axes, and two kinds of lane
 //
@@ -67,18 +69,24 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 
+	"github.com/tsouza/cerberus/internal/api/loki"
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/chopttest"
 	"github.com/tsouza/cerberus/internal/choptwire"
+	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/optcorpus"
+	"github.com/tsouza/cerberus/internal/preflight"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
@@ -123,6 +131,16 @@ const perfSmokeJoinSpillCHImage = "clickhouse/clickhouse-server:26.6-alpine"
 // pre-pulls (just/common.just's CH_SERVER_SAFETY_IMAGES); the harness
 // asserts the feature resolved in against it before running the tier.
 const perfSmokeDistinctSpillCHImage = "clickhouse/clickhouse-server:26.9.25.15-alpine"
+
+// perfSmokeMergePlanFiltersCHImage backs smoke.FloorMergePlanFilters: a
+// FOURTH container. chopt.FeatureMergePlanFilters resolves only on the
+// releases from 24.7 to before 24.11, which ship query_plan_merge_filters
+// off; every other image here is past 24.11, where auto never stamps it. The
+// tag is the supported floor's build test/chserver already pins and
+// pre-pulls through CH_SERVER_SAFETY_IMAGES, and the perf-smoke recipes pull
+// as just/common.just's CH_PERF_SMOKE_MERGE_FILTERS_IMAGE; the harness
+// asserts the feature resolved in against it before running the tier.
+const perfSmokeMergePlanFiltersCHImage = "clickhouse/clickhouse-server:24.8.14.39-alpine"
 
 const perfSmokeDB = "default"
 
@@ -191,6 +209,14 @@ const wideTraceCount = 40_000
 // at the spill boundary would make the memory prongs flap around that
 // boundary for no gain in what the sentinel actually proves.
 const joinSpillSeriesCount = 4_000
+
+// mergePlanFiltersLogLines is the merge_plan_filters tier's log line count:
+// the line count of the parts on which query_plan_merge_filters=1 raised a
+// detected_level range aggregation's peak memory on 24.8 from 25.6 MiB to
+// about 80 MiB (https://github.com/tsouza/cerberus/issues/4469). On this
+// seed's narrower lines over the hour the stamp leaves the peak within a few
+// percent, so the tier gates on the settings the statements carry.
+const mergePlanFiltersLogLines = 3_000_000
 
 // --- harness --------------------------------------------------------------
 
@@ -398,11 +424,18 @@ func runSentinelFloor(
 func runSentinelOnce(t *testing.T, mux *http.ServeMux, sentinel Sentinel, start, end time.Time, queryID string) int {
 	t.Helper()
 	params := sentinel.Params(start, end)
-	if sentinel.Path == "/api/v1/query_range" {
+	switch {
+	case sentinel.Path == "/api/v1/query_range":
 		params.Set("start", formatPromTime(start))
 		params.Set("end", formatPromTime(end))
 		params.Set("step", formatPromStep(sentinel.Step))
-	} else {
+	case strings.HasPrefix(sentinel.Path, "/loki/"):
+		// Loki's wire format: nanosecond epochs, and a step the Prom
+		// spelling of which the Loki head parses the same way.
+		params.Set("start", fmt.Sprintf("%d", start.UnixNano()))
+		params.Set("end", fmt.Sprintf("%d", end.UnixNano()))
+		params.Set("step", formatPromStep(sentinel.Step))
+	default:
 		params.Set("start", fmt.Sprintf("%d", start.UnixNano()))
 		params.Set("end", fmt.Sprintf("%d", end.UnixNano()))
 		if sentinel.Step > 0 {
@@ -484,6 +517,11 @@ func startSentinelLane(ctx context.Context, t *testing.T, floor ServerFloor, sta
 		// Traces only: the tier's one sentinel reads the seeded traces.
 		signals = []ddl.Signal{ddl.Traces}
 	}
+	if floor == FloorMergePlanFilters {
+		image = perfSmokeMergePlanFiltersCHImage
+		// Logs only: the tier's sentinels read the seeded log lines.
+		signals = []ddl.Signal{ddl.Logs}
+	}
 
 	client := startPerfSmokeCH(ctx, t, image)
 	conn := client.Conn()
@@ -536,6 +574,14 @@ func startSentinelLane(ctx context.Context, t *testing.T, floor ServerFloor, sta
 		t.Logf("seeded wide-attribute traces: %d rows, %d traces", traceRows, wideTraceCount)
 
 		tables = []string{"otel_traces"}
+	case FloorMergePlanFilters:
+		logRows, err := SeedDetectedLevelLogs(ctx, conn, mergePlanFiltersLogLines, start, end)
+		if err != nil {
+			t.Fatalf("seed detected_level logs: %v", err)
+		}
+		t.Logf("seeded detected_level logs: %d rows", logRows)
+
+		tables = []string{"otel_logs"}
 	}
 
 	// OPTIMIZE ... FINAL before measuring: controls background-merge-state
@@ -569,8 +615,16 @@ func startSentinelLane(ctx context.Context, t *testing.T, floor ServerFloor, sta
 			"below would pass vacuously against a server that cannot stamp %s at all",
 			floor, image, settingMaxBytesBeforeExternalJoin)
 	}
+	if floor == FloorMergePlanFilters && !rules.MergePlanFilters {
+		t.Fatalf("%s: chopt.FeatureMergePlanFilters did NOT resolve enabled against %s — the tier's sentinels "+
+			"would pass vacuously against a server the engine never stamps %s on",
+			floor, image, chopt.SettingQueryPlanMergeFilters)
+	}
 	metricsHandler.Engine.SetSettings(rules)
 	tracesHandler.Engine.SetSettings(rules)
+	if floor == FloorMergePlanFilters {
+		mountLogs(ctx, t, client, mux, set, rules)
+	}
 	t.Logf("%s (%s): settings rules wired: %+v", floor, image, rules)
 
 	muxes := map[string]*http.ServeMux{"": mux}
@@ -583,6 +637,32 @@ func startSentinelLane(ctx context.Context, t *testing.T, floor ServerFloor, sta
 		muxes:     muxes,
 		logSource: optcorpus.NewCHQueryLogSource(conn, 30*time.Second, time.Hour),
 	}
+}
+
+// mountLogs mounts a Loki handler on mux the way cmd/cerberus wires one from
+// the boot-resolved set: the per-query settings rules, and the
+// SchemaStrategies the requirements check resolves from the deployed logs
+// table, with the server facts set decides (the WHERE-order fact the
+// per-row stage reads among them).
+func mountLogs(ctx context.Context, t *testing.T, client *chclient.Client, mux *http.ServeMux, set chopt.EnabledSet, rules engine.SettingsRules) {
+	t.Helper()
+	logs := schema.DefaultOTelLogs()
+	res := preflight.Run(ctx, client, preflight.Requirements{
+		Database: perfSmokeDB,
+		Metrics:  schema.DefaultOTelMetrics(),
+		Logs:     logs,
+		Traces:   schema.DefaultOTelTraces(),
+		Signals:  preflight.Signals{Logs: true},
+	})
+	if res.Fatal != nil {
+		t.Fatalf("requirements check on the logs table: %v", res.Fatal)
+	}
+	cell := chsql.NewSchemaStrategiesCell(res.Strategies)
+	choptwire.SetServerStrategies(cell, set)
+	handler := loki.New(client, logs, nil)
+	handler.Strategies = cell
+	handler.Engine.SetSettings(rules)
+	handler.Mount(mux)
 }
 
 // optInLaneKeys collects the distinct non-empty Sentinel.Optimizations

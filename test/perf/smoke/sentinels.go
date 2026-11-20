@@ -92,11 +92,18 @@ const (
 	// all. See realch_perfsmoke_integration_test.go's
 	// perfSmokeDistinctSpillCHImage.
 	FloorDistinctSpill
+
+	// FloorMergePlanFilters is chopt.FeatureMergePlanFilters' own range, 24.7
+	// up to 24.11: the releases that ship query_plan_merge_filters off, the
+	// only ones on which the engine stamps it. Every other tier is past
+	// 24.11, where auto never resolves the feature. See
+	// realch_perfsmoke_integration_test.go's perfSmokeMergePlanFiltersCHImage.
+	FloorMergePlanFilters
 )
 
 // Floors is every tier the harness boots, in boot order. A sentinel whose
 // Floor is not listed here never runs.
-var Floors = []ServerFloor{FloorBase, FloorJoinSpill, FloorDistinctSpill}
+var Floors = []ServerFloor{FloorBase, FloorJoinSpill, FloorDistinctSpill, FloorMergePlanFilters}
 
 // String renders the floor for test output and failure messages.
 func (f ServerFloor) String() string {
@@ -105,6 +112,8 @@ func (f ServerFloor) String() string {
 		return "join_spill (>= 26.4)"
 	case FloorDistinctSpill:
 		return "distinct_spill (>= 26.9)"
+	case FloorMergePlanFilters:
+		return "merge_plan_filters (>= 24.7, < 24.11)"
 	}
 	return "base"
 }
@@ -214,6 +223,29 @@ const (
 	wantSortedSlabOverTimeMaxBlockSize = "1"
 )
 
+// mergePlanFiltersStep is the merge_plan_filters sentinels' query_range
+// step: a dashboard panel's one-minute grid over the hour.
+const mergePlanFiltersStep = time.Minute
+
+// mergePlanFiltersRangeSelector is the merge_plan_filters sentinels' range
+// selector, the seed's detectedLevelLogsLookback.
+var mergePlanFiltersRangeSelector = "[" + strconv.Itoa(int(detectedLevelLogsLookback/time.Minute)) + "m]"
+
+// mergePlanFiltersWithheldQuery is a detected_level range aggregation whose
+// only filter above the scan's scope reads the level source the scope
+// computes. query_plan_merge_filters=1 spares it no bytes and, on 24.8,
+// moves the whole statement into PREWHERE, which on the issue's 3M-line
+// 30-minute parts tripled the peak memory, so the engine withholds the stamp.
+var mergePlanFiltersWithheldQuery = `sum by (detected_level) (count_over_time({service_name="` +
+	DetectedLevelLogsService + `"} | detected_level=~"warn|error" ` + mergePlanFiltersRangeSelector + `))`
+
+// mergePlanFiltersStampedQuery filters on the labels its unwrap computes
+// above the scan's scope, the filter the server pushes into PREWHERE only
+// with query_plan_merge_filters=1, so the engine stamps it. The filter keeps
+// the one line in detectedLevelLogsFailedEvery logged with status=500.
+var mergePlanFiltersStampedQuery = `count(sum_over_time({service_name="` +
+	DetectedLevelLogsService + `"} | logfmt | unwrap spans | status >= 500 ` + mergePlanFiltersRangeSelector + `))`
+
 // Sentinel describes one real-ClickHouse memory-bounding differential
 // target: an HTTP request against the mounted production handlers, built to
 // reach a specific plan shape and memory-bounding mechanism the #2364
@@ -228,7 +260,7 @@ type Sentinel struct {
 	// targets, for logging/doc purposes only.
 	Mechanism string
 	// Path is the HTTP path to issue the request against, on the combined
-	// prom+tempo mux.
+	// prom+tempo mux, or the Loki handler a logs floor mounts.
 	Path string
 	// Params returns the query-string params (sans start/end/step, which the
 	// caller fills from Window/Step) for the request over [start, end).
@@ -526,6 +558,48 @@ var Sentinels = []Sentinel{
 		Step:   sortedSlabOverTimeSentinelStep,
 		RequiredQuerySettings: func(memoryCapBytes int64) map[string]string {
 			return map[string]string{settingMaxBlockSize: wantSortedSlabOverTimeMaxBlockSize}
+		},
+	},
+	{
+		// query_plan_merge_filters withheld: on the releases that ship it
+		// off, the engine stamps it only on a plan whose per-row stage
+		// leaves a filter on a value computed above the scan's scope
+		// (internal/engine/plan_shape.go's filterReadsAboveRowScope). This
+		// plan's level filter reads the level source the scope computes, so
+		// the statement must carry no setting: with it, 24.8 reads every
+		// column through the PREWHERE readers, which on the issue's parts
+		// tripled the peak memory
+		// (https://github.com/tsouza/cerberus/issues/4469).
+		//
+		// AbsentQuerySettings is the load-bearing assertion. On this seed
+		// the stamp leaves the peak within a few percent of where it is
+		// without it, inside the committed bound's headroom, so the memory
+		// ceiling does not tell the two apart.
+		Name:                "merge_plan_filters_withheld_level_filter",
+		Mechanism:           "SettingsRules.MergePlanFilters (internal/engine/query_settings_rules.go) withheld by planShapeFacts.filterAboveRowScope",
+		Floor:               FloorMergePlanFilters,
+		Path:                "/loki/api/v1/query_range",
+		Params:              func(start, end time.Time) url.Values { return url.Values{"query": {mergePlanFiltersWithheldQuery}} },
+		Window:              sentinelWindow,
+		Step:                mergePlanFiltersStep,
+		AbsentQuerySettings: []string{chopt.SettingQueryPlanMergeFilters},
+	},
+	{
+		// query_plan_merge_filters stamped: the twin of the sentinel above,
+		// on a plan whose status filter reads the labels its unwrap computes
+		// above the scan's scope, which the server runs in PREWHERE only
+		// with the setting. RequiredQuerySettings is the load-bearing
+		// assertion, so a narrowing that withholds the stamp from every plan
+		// fails here.
+		Name:      "merge_plan_filters_stamped_unwrap_filter",
+		Mechanism: "SettingsRules.MergePlanFilters (internal/engine/query_settings_rules.go) stamped by planShapeFacts.filterAboveRowScope",
+		Floor:     FloorMergePlanFilters,
+		Path:      "/loki/api/v1/query_range",
+		Params:    func(start, end time.Time) url.Values { return url.Values{"query": {mergePlanFiltersStampedQuery}} },
+		Window:    sentinelWindow,
+		Step:      mergePlanFiltersStep,
+		RequiredQuerySettings: func(int64) map[string]string {
+			return map[string]string{chopt.SettingQueryPlanMergeFilters: "1"}
 		},
 	},
 }

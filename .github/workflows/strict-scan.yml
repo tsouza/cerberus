@@ -441,12 +441,15 @@ jobs:
         run: just ts-grid-state-format-integration
 
       # ---- shard `perf`: test/perf/smoke and test/perf/nightly. The perf-smoke
-      # sentinels boot THREE ClickHouse images: CH_TEST_IMAGE, then the
+      # sentinels boot FOUR ClickHouse images: CH_TEST_IMAGE, then the
       # join-spill and distinct-spill tiers (test/perf/smoke's
       # perfSmokeJoinSpillCHImage and perfSmokeDistinctSpillCHImage, >=
       # chopt.FeatureJoinSpill's 26.4 and chopt.FeatureDistinctSpill's 26.9
       # floors), each of which boots and runs its own sentinel in about a
-      # minute.
+      # minute, and the merge_plan_filters tier
+      # (perfSmokeMergePlanFiltersCHImage, below
+      # chopt.FeatureMergePlanFilters' 24.11 ceiling), which seeds 3M log
+      # lines and runs its two sentinels in about three minutes.
 
       # The perf-smoke sentinel differential (#2370 PR 1): the real-CH
       # memory-bounding guard for the #2364 incident class. PR #2358 disabled
@@ -471,8 +474,9 @@ jobs:
       # tier — chopt.FeatureJoinSpill floors at 26.4, above this job's own
       # server, and max_bytes_before_external_join does not exist below it, so
       # that sentinel cannot run on the container this job already owns
-      # (cerberus issue #2820) — and a THIRD for the distinct-spill tier,
-      # whose chopt.FeatureDistinctSpill floors at 26.9.
+      # (cerberus issue #2820) — a THIRD for the distinct-spill tier,
+      # whose chopt.FeatureDistinctSpill floors at 26.9, and a FOURTH for the
+      # merge_plan_filters tier, which resolves only below 24.11.
       - name: Run perf-smoke sentinel differential (real ClickHouse)
         if: matrix.shard == 'perf'
         run: just perf-smoke-integration

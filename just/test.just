@@ -615,6 +615,10 @@ perf-smoke-integration:
     @# chopt.FeatureDistinctSpill floors at 26.9. The tag is
     @# CH_DISTINCT_SPILL_IMAGE, a build test/chserver already pins.
     @just _pull-retry {{CH_DISTINCT_SPILL_IMAGE}}
+    @# The merge_plan_filters tier (smoke.FloorMergePlanFilters) boots a FOURTH:
+    @# chopt.FeatureMergePlanFilters resolves only below 24.11. The tag is
+    @# CH_PERF_SMOKE_MERGE_FILTERS_IMAGE, a build test/chserver already pins.
+    @just _pull-retry {{CH_PERF_SMOKE_MERGE_FILTERS_IMAGE}}
     go test -timeout 20m -tags=integration -count=1 -run TestPerfSmoke ./test/perf/smoke/...
 
 # Run the ts_grid_* native range-window lowerer activation lane (#2487): wires
@@ -1420,7 +1424,7 @@ update-scale-wall-baseline:
 
 # Regenerate the PERF-SMOKE baseline (#2370 PR 1) — the committed per-sentinel
 # memory ceilings the real-ClickHouse sentinel differential asserts against.
-# Boots a real ClickHouse (testcontainers-go), seeds all three sentinels at
+# Boots a real ClickHouse (testcontainers-go), seeds every sentinel at
 # their calibrated scale, issues each sentinel-N (max-of-N) times, and writes
 # perf-smoke-baseline.json: for each sentinel the calibration-time
 # max-of-N peak memory_usage plus the headroom-multiplied ceiling
@@ -1433,9 +1437,10 @@ update-scale-wall-baseline:
 # Regenerate the perf-smoke per-sentinel memory ceilings. Needs Docker; review the diff.
 update-perf-smoke-baseline:
     @just _pull-retry {{CH_TEST_IMAGE}}
-    @# Second and third tiers — see the perf-smoke-integration recipe for why.
-    @just _pull-retry {{CH_STRICT_SCAN_IMAGE}}
+    @# The other tiers — see the perf-smoke-integration recipe for why.
+    @just _pull-retry {{CH_PERF_SMOKE_JOIN_SPILL_IMAGE}}
     @just _pull-retry {{CH_DISTINCT_SPILL_IMAGE}}
+    @just _pull-retry {{CH_PERF_SMOKE_MERGE_FILTERS_IMAGE}}
     UPDATE_PERF_SMOKE_BASELINE=1 go test -timeout 20m -tags=integration -count=1 -run TestPerfSmokeRealCH ./test/perf/smoke/...
     @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/perf-smoke-baseline.json
 
@@ -1447,8 +1452,9 @@ update-perf-smoke-baseline:
 # Calibrate the perf-smoke sentinels that have no committed bound yet. Needs Docker.
 add-perf-smoke-baseline:
     @just _pull-retry {{CH_TEST_IMAGE}}
-    @just _pull-retry {{CH_STRICT_SCAN_IMAGE}}
+    @just _pull-retry {{CH_PERF_SMOKE_JOIN_SPILL_IMAGE}}
     @just _pull-retry {{CH_DISTINCT_SPILL_IMAGE}}
+    @just _pull-retry {{CH_PERF_SMOKE_MERGE_FILTERS_IMAGE}}
     UPDATE_PERF_SMOKE_BASELINE=missing go test -timeout 20m -tags=integration -count=1 -run TestPerfSmokeRealCH ./test/perf/smoke/...
     @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/perf-smoke-baseline.json
 

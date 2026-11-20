@@ -14,7 +14,7 @@ import (
 // broken request in the real-ClickHouse integration lane, where a driver
 // error is much more expensive to root-cause than this unit check.
 func TestSentinels_Roster(t *testing.T) {
-	const wantCount = 7
+	const wantCount = 9
 	if len(Sentinels) != wantCount {
 		t.Fatalf("len(Sentinels) = %d, want %d", len(Sentinels), wantCount)
 	}
@@ -38,6 +38,9 @@ func TestSentinels_Roster(t *testing.T) {
 		}
 		if s.Window <= 0 {
 			t.Fatalf("sentinel %s has non-positive Window %v", s.Name, s.Window)
+		}
+		if strings.HasPrefix(s.Path, "/loki/") && s.Optimizations != "" {
+			t.Fatalf("sentinel %s reads the Loki head on an opt-in lane, which mounts only the prom and tempo handlers", s.Name)
 		}
 	}
 }
@@ -94,6 +97,41 @@ func TestSentinels_JoinSpillStampIsAsserted(t *testing.T) {
 	for k, v := range want {
 		if got[k] != v {
 			t.Errorf("join_spill sentinel RequiredSettings[%q] = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+// TestSentinels_MergePlanFiltersStampsAreAsserted pins what makes the
+// merge_plan_filters pair falsifiable: on the 24.8 tier, the detected_level
+// range aggregation whose level filter reads a value the scan's scope
+// computes must find query_plan_merge_filters absent, and the unwrap twin
+// whose status filter reads labels computed above the scope must find it at
+// 1. Peak memory alone cannot tell a withheld stamp from a stamped one.
+func TestSentinels_MergePlanFiltersStampsAreAsserted(t *testing.T) {
+	pair := SentinelsForFloor(FloorMergePlanFilters)
+	if len(pair) != 2 {
+		t.Fatalf("SentinelsForFloor(FloorMergePlanFilters) returned %d sentinels, want 2", len(pair))
+	}
+	window := time.Unix(0, 0).Add(sentinelWindow)
+	withheld := floorSentinel(t, FloorMergePlanFilters, "merge_plan_filters_withheld_level_filter")
+	stamped := floorSentinel(t, FloorMergePlanFilters, "merge_plan_filters_stamped_unwrap_filter")
+	if q := withheld.Params(time.Unix(0, 0), window).Get("query"); !strings.Contains(q, "| detected_level=~") || strings.Contains(q, "unwrap") {
+		t.Errorf("withheld sentinel query %q is not a detected_level matcher range aggregation", q)
+	}
+	if len(withheld.AbsentQuerySettings) != 1 || withheld.AbsentQuerySettings[0] != chopt.SettingQueryPlanMergeFilters || withheld.RequiredQuerySettings != nil {
+		t.Errorf("withheld sentinel asserts %v absent and %v required; want only %s absent",
+			withheld.AbsentQuerySettings, withheld.RequiredSettings(1), chopt.SettingQueryPlanMergeFilters)
+	}
+	if q := stamped.Params(time.Unix(0, 0), window).Get("query"); !strings.Contains(q, "| unwrap spans | status >= ") {
+		t.Errorf("stamped sentinel query %q does not filter on labels its unwrap computes", q)
+	}
+	if got := stamped.RequiredSettings(1); len(got) != 1 || got[chopt.SettingQueryPlanMergeFilters] != "1" || len(stamped.AbsentQuerySettings) != 0 {
+		t.Errorf("stamped sentinel requires %v and asserts %v absent; want only %s=1",
+			got, stamped.AbsentQuerySettings, chopt.SettingQueryPlanMergeFilters)
+	}
+	for _, s := range pair {
+		if !strings.HasPrefix(s.Path, "/loki/") {
+			t.Errorf("sentinel %s path %q is not the Loki head's", s.Name, s.Path)
 		}
 	}
 }
@@ -168,12 +206,19 @@ func TestSentinels_MetadataSpillStampsAreAsserted(t *testing.T) {
 // name, failing the test when the tier has none.
 func distinctSpillFloorSentinel(t *testing.T, name string) Sentinel {
 	t.Helper()
-	for _, s := range SentinelsForFloor(FloorDistinctSpill) {
+	return floorSentinel(t, FloorDistinctSpill, name)
+}
+
+// floorSentinel returns floor's sentinel named name, failing t when the
+// floor has none.
+func floorSentinel(t *testing.T, floor ServerFloor, name string) Sentinel {
+	t.Helper()
+	for _, s := range SentinelsForFloor(floor) {
 		if s.Name == name {
 			return s
 		}
 	}
-	t.Fatalf("SentinelsForFloor(FloorDistinctSpill) has no %s sentinel", name)
+	t.Fatalf("SentinelsForFloor(%s) has no %s sentinel", floor, name)
 	return Sentinel{}
 }
 
