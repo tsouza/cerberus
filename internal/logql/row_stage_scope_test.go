@@ -2,6 +2,7 @@ package logql_test
 
 import (
 	"context"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -36,7 +37,8 @@ func rangeAggregationSQLUnder(t *testing.T, q string, strategies chplan.SchemaSt
 // TestRangeAggregationFiltersRunWhereTheTableIsRead pins that a range
 // aggregation evaluates its filters, and the values they read, in the
 // SELECT that reads the logs table: a line filter joins the scan's own
-// predicates, the detected_level source reads the table's map there, an
+// predicates, the detected_level source reads the table's map there, in
+// WHERE order a detected_level filter runs there over that source, an
 // absent_over_time reads its line filter there, and a filter on a parsed
 // label or on
 // the unwrap source runs there with the parser's labels map it reads.
@@ -44,22 +46,25 @@ func rangeAggregationSQLUnder(t *testing.T, q string, strategies chplan.SchemaSt
 // place the filter in PREWHERE.
 func TestRangeAggregationFiltersRunWhereTheTableIsRead(t *testing.T) {
 	t.Parallel()
+	inWhereOrder := chplan.SchemaStrategies{PrewhereInWhereOrder: true}
 	for _, tc := range []struct {
 		query string
+		// strategies are the ones the query is rendered under.
+		strategies chplan.SchemaStrategies
 		// reads are what the SELECT reading the table must contain.
 		reads []string
 	}{
-		{`sum(count_over_time({job="wide"} |= "orders/5 " [5m]))`, []string{"position(`Body`", "AS `_logql_level_source`"}},
-		{`sum(count_over_time({job="wide"} | detected_level="fatal" [5m]))`, []string{"AS `_logql_level_source`", "has(array(?), lower(`_logql_level_source`))"}},
-		{`sum by (detected_level) (count_over_time({job="wide"} | detected_level="debug" or detected_level="info" or detected_level="custom" [5m]))`, []string{"(has(array(?, ?, ?, ?, ?), lower(`_logql_level_source`)) OR has(array(?), `_logql_level_source`))"}},
-		{`absent_over_time({job="api"} |= "timeout" [5m])`, []string{"position(`Body`"}},
-		{`sum_over_time({job="api"} | logfmt | unwrap duration(latency) [5m])`, []string{"AS `_logql_unwrap_source`", "(`_logql_unwrap_source` != ?)"}},
-		{`sum by (level) (count_over_time({service_name="api"} | logfmt | level=~"error|warn" [1h]))`, []string{"AS `_logql_labels_0`", "mapContains(`_logql_labels_0`"}},
-		{`sum by (category) (count_over_time({job="api"} | unpack | __error__="" [5m]))`, []string{"AS `_logql_labels_0`", "mapContains(`_logql_labels_0`"}},
+		{`sum(count_over_time({job="wide"} |= "orders/5 " [5m]))`, chplan.SchemaStrategies{}, []string{"position(`Body`", "AS `_logql_level_source`"}},
+		{`sum(count_over_time({job="wide"} | detected_level="fatal" [5m]))`, inWhereOrder, []string{"AS `_logql_level_source`", "has(array(?), lower(`_logql_level_source`))"}},
+		{`sum by (detected_level) (count_over_time({job="wide"} | detected_level="debug" or detected_level="info" or detected_level="custom" [5m]))`, inWhereOrder, []string{"(has(array(?, ?, ?, ?, ?), lower(`_logql_level_source`)) OR has(array(?), `_logql_level_source`))"}},
+		{`absent_over_time({job="api"} |= "timeout" [5m])`, chplan.SchemaStrategies{}, []string{"position(`Body`"}},
+		{`sum_over_time({job="api"} | logfmt | unwrap duration(latency) [5m])`, chplan.SchemaStrategies{}, []string{"AS `_logql_unwrap_source`", "(`_logql_unwrap_source` != ?)"}},
+		{`sum by (level) (count_over_time({service_name="api"} | logfmt | level=~"error|warn" [1h]))`, chplan.SchemaStrategies{}, []string{"AS `_logql_labels_0`", "mapContains(`_logql_labels_0`"}},
+		{`sum by (category) (count_over_time({job="api"} | unpack | __error__="" [5m]))`, chplan.SchemaStrategies{}, []string{"AS `_logql_labels_0`", "mapContains(`_logql_labels_0`"}},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			t.Parallel()
-			sql, _ := rangeAggregationSQL(t, tc.query)
+			sql, _ := rangeAggregationSQLUnder(t, tc.query, tc.strategies)
 			scope := scopeAround(t, sql, "FROM `otel_logs`")
 			for _, want := range tc.reads {
 				if !strings.Contains(scope, want) {
@@ -70,11 +75,11 @@ func TestRangeAggregationFiltersRunWhereTheTableIsRead(t *testing.T) {
 	}
 }
 
-// TestRangeAggregationScanFiltersKeepTheirOrder pins that the filters a
-// range aggregation evaluates where the table is read keep the order the
-// pipeline gives them: a detected_level filter written ahead of a line
-// filter runs ahead of it, so a server that runs a multi-step PREWHERE in
-// WHERE order reads the line only for the rows the level keeps.
+// TestRangeAggregationScanFiltersKeepTheirOrder pins that, in WHERE order,
+// the filters a range aggregation evaluates where the table is read keep
+// the order the pipeline gives them: a detected_level filter written ahead
+// of a line filter runs ahead of it, so a server that runs a multi-step
+// PREWHERE in WHERE order reads the line only for the rows the level keeps.
 func TestRangeAggregationScanFiltersKeepTheirOrder(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -87,7 +92,7 @@ func TestRangeAggregationScanFiltersKeepTheirOrder(t *testing.T) {
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			t.Parallel()
-			sql, _ := rangeAggregationSQL(t, tc.query)
+			sql, _ := rangeAggregationSQLUnder(t, tc.query, chplan.SchemaStrategies{PrewhereInWhereOrder: true})
 			scope := scopeAround(t, sql, "FROM `otel_logs`")
 			first, then := strings.Index(scope, tc.first), strings.Index(scope, tc.then)
 			if first < 0 || then < 0 || first > then {
@@ -177,7 +182,8 @@ func TestRangeAggregationFilterBetweenLevelAndLineJoinsThemWhereOrderHolds(t *te
 // the source past the scope's expansion bound: a server that keeps WHERE
 // order then reads the
 // body only for the rows the level keeps. On a reordering server, which
-// chooses the order itself, it reads the level source too.
+// chooses the order itself, it reads the normalised level
+// ([TestRangeAggregationLevelFilterReadsTheNormalisedLevelOnAReorderingServer]).
 func TestRangeAggregationLevelRegexLeadsWhereOrderHolds(t *testing.T) {
 	t.Parallel()
 	const level, line = "lower(`_logql_level_source`)", "position(`Body`"
@@ -195,12 +201,11 @@ func TestRangeAggregationLevelRegexLeadsWhereOrderHolds(t *testing.T) {
 			if first < 0 || then < 0 || first > then {
 				t.Errorf("in WHERE order, the SELECT reading otel_logs does not read %s ahead of %s: %s", level, line, where)
 			}
-			// The filter itself reads the level source, on a reordering
-			// server too: only levelMatchesExpr renders it as a set
-			// membership of its lowercased value.
-			sql, _ = rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{})
+			// The filter itself reads the level source: only
+			// levelMatchesExpr renders it as a set membership of its
+			// lowercased value.
 			if !strings.Contains(sql, "has(array(") || !strings.Contains(sql, "), "+level+")") {
-				t.Errorf("the level filter does not read the level source: %s", sql)
+				t.Errorf("in WHERE order, the level filter does not read the level source: %s", sql)
 			}
 		})
 	}
@@ -416,6 +421,57 @@ func definingScopeReads(t *testing.T, sql, alias string) bool {
 		t.Fatalf("no definition of %s in %s", alias, sql)
 	}
 	return strings.Count(scopeAt(t, sql, def), quoted) > 1
+}
+
+// levelFilterShapes are range aggregations with every kind of
+// detected_level matcher a range aggregation lowers over the level source
+// in WHERE order.
+var levelFilterShapes = []string{
+	`sum(count_over_time({job="jsonapp"} | detected_level="unknown" [5m]))`,
+	`sum(count_over_time({job="jsonapp"} | detected_level="info" or detected_level="unknown" [5m]))`,
+	`sum(count_over_time({job="jsonapp"} | detected_level!="info" [5m]))`,
+	`sum(count_over_time({job="jsonapp"} | detected_level=~"unknown" [5m]))`,
+	`sum(count_over_time({job="jsonapp"} | detected_level=~"info|unknown" [5m]))`,
+	`sum(count_over_time({job="jsonapp"} | detected_level!~"unknown" [5m]))`,
+	`sum(count_over_time({job="wide"} | detected_level=~"err.*" |= "error" [5m]))`,
+}
+
+// TestRangeAggregationLevelFilterReadsTheNormalisedLevelOnAReorderingServer
+// pins that a range aggregation's detected_level filter reads the
+// normalised level, not the level source, unless every server runs a
+// multi-step PREWHERE in WHERE order. ClickHouse moves the filter to
+// PREWHERE either way; over the source, the scan hands on the source
+// rather than the level, and on 26.8 a line without a level gives an empty
+// source, so the reader sizes its blocks for a narrower row and an
+// aggregation whose filter keeps every row peaks at about twice the
+// memory. In WHERE order the filter reads the source, so that it runs in
+// the SELECT that reads otel_logs ahead of a line filter written after
+// it.
+func TestRangeAggregationLevelFilterReadsTheNormalisedLevelOnAReorderingServer(t *testing.T) {
+	t.Parallel()
+	const source, level = "lower(`_logql_level_source`))", "`_logql_detected_level`"
+	for _, query := range levelFilterShapes {
+		t.Run(query, func(t *testing.T) {
+			t.Parallel()
+			sql, _ := rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{})
+			if strings.Contains(sql, source) {
+				t.Errorf("on a reordering server, a filter reads the level source: %s", sql)
+			}
+			if !levelFilterReads(sql, level) {
+				t.Errorf("on a reordering server, the level filter does not read %s: %s", level, sql)
+			}
+			sql, _ = rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{PrewhereInWhereOrder: true})
+			if !strings.Contains(sql, source) {
+				t.Errorf("in WHERE order, the level filter does not read the level source: %s", sql)
+			}
+		})
+	}
+}
+
+// levelFilterReads reports whether a WHERE of sql opens on a predicate
+// over column: a comparison, or the UTF-8 guard around a regex match.
+func levelFilterReads(sql, column string) bool {
+	return regexp.MustCompile(`WHERE \(*(if\(isValidUTF8\()?` + regexp.QuoteMeta(column)).MatchString(sql)
 }
 
 // scopeAround returns the text of the innermost SELECT of sql holding the

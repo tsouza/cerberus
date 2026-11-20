@@ -553,9 +553,11 @@ The emitter is also CH-native rather than ANSI-ish:
   filter, or, behind a moved filter, the scope's `WHERE`, so the
   conjuncts keep the pipeline's order; one whose own text reads a key of
   a map column the stage reads as a whole joins the scan's filter even
-  behind a moved filter. In a range aggregation, a
-  `detected_level` equality, an OR of them, an inequality, or a regex
-  matcher reads the level source rather than the normalised level. A filter conjunct that
+  behind a moved filter. In a range aggregation, when every server runs
+  a multi-step PREWHERE in `WHERE` order, a `detected_level` equality,
+  an OR of them, an inequality, or a regex matcher reads the level
+  source rather than the normalised level; on any other server it reads
+  the normalised level. A filter conjunct that
   reads a map column as a whole stays where it is, and nothing that
   reads a key of a map column the stage reads as a whole moves. When
   every server runs a multi-step PREWHERE in `WHERE` order

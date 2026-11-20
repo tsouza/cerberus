@@ -44,11 +44,11 @@ INSERT INTO otel_traces VALUES
 ]
 -- args --
 [0] string = "checkout"
-[1] int64 = 1767222000000000000
-[2] int64 = 1767229260000000000
-[3] string = "checkout"
-[4] int64 = 1767225600000000000
-[5] int64 = 1767225660000000000
+[1] string = "checkout"
+[2] int64 = 1767225600000000000
+[3] int64 = 1767225660000000000
+[4] int64 = 1767222000000000000
+[5] int64 = 1767229260000000000
 -- chplan --
 SearchTraceLimit traceLimit=5 rank=second-child
   Filter predicate=(((SpanName = "checkout") AND (Timestamp >= FnFromUnixNanos(1767222000000000000))) AND (Timestamp <= FnFromUnixNanos(1767229260000000000)))
@@ -56,7 +56,7 @@ SearchTraceLimit traceLimit=5 rank=second-child
   Filter predicate=(((SpanName = "checkout") AND (Timestamp >= FnFromUnixNanos(1767225600000000000))) AND (Timestamp <= FnFromUnixNanos(1767225660000000000)))
     Scan(otel_traces, columns=[Duration, ParentSpanId, ResourceAttributes, SpanId, SpanName, Timestamp, TraceId])
 -- sql --
-SELECT s.* FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) AS s WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 5)
+SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` PREWHERE (`SpanName` = ?) AND `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 5) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))
 -- parity --
 oracle: tempo
 endpoint: /api/search
@@ -66,11 +66,11 @@ scope: full
 [1] string = "__cerberus_parentSpanID"
 [2] string = "__cerberus_spanID"
 [3] string = "checkout"
-[4] int64 = 1767222000000000000
-[5] int64 = 1767229260000000000
-[6] string = "checkout"
-[7] int64 = 1767225600000000000
-[8] int64 = 1767225660000000000
+[4] string = "checkout"
+[5] int64 = 1767225600000000000
+[6] int64 = 1767225660000000000
+[7] int64 = 1767222000000000000
+[8] int64 = 1767229260000000000
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
@@ -79,4 +79,4 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql_optimized --
-SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT s.* FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) AS s WHERE `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 5))
+SELECT `SpanName` AS `MetricName`, mapConcat(`ResourceAttributes`, map(?, `TraceId`, ?, `ParentSpanId`, ?, `SpanId`)) AS `Attributes`, `Timestamp` AS `TimeUnix`, toFloat64(`Duration`) AS `Value` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` PREWHERE (`SpanName` = ?) AND `TraceId` GLOBAL IN (SELECT `TraceId` FROM (SELECT `Duration`, `ParentSpanId`, `ResourceAttributes`, `SpanId`, `SpanName`, `Timestamp`, `TraceId` FROM `otel_traces` PREWHERE (`SpanName` = ?) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?))) GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 5) WHERE (`Timestamp` >= fromUnixTimestamp64Nano(?)) AND (`Timestamp` <= fromUnixTimestamp64Nano(?)))
