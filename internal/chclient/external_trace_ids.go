@@ -57,8 +57,8 @@ const externalTraceIDColumnType = "String"
 //
 // ids are sent as-is with no further validation — the caller is responsible
 // for handing the exact on-disk TraceId values a literal splice would
-// otherwise carry (internal/api/tempo.padTraceIDs is cerberus's canonical
-// normalizer for that).
+// otherwise carry (internal/api/tempo hands the ids its search phase A read
+// from the trace-id column).
 func WithExternalTraceIDs(ctx context.Context, table, column string, ids []string) (context.Context, error) {
 	t, err := ext.NewTable(table, ext.Column(column, externalTraceIDColumnType))
 	if err != nil {

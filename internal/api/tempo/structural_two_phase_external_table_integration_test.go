@@ -273,11 +273,7 @@ func extTblDoSearch(t *testing.T, mux *http.ServeMux, q *loggedCappedQuerier, ma
 // assertions — only idx_trace_id is under test.
 //
 // traceid is left-padded to the canonical 32-char TraceId hex width
-// (handler.go's traceIDHexLen / normaliseTraceID): padTraceIDs left-pads any
-// SHORTER id with leading zeros before splicing/pushing it as the phase-B
-// restriction, so an unpadded (here, 16-char) synthetic id would restrict on
-// a value that never matches what otel_traces actually stores — phase B
-// would silently return zero rows even though phase A found the trace.
+// (handler.go's traceIDHexLen), the form the OTel-CH exporter writes.
 func seedExtTblTraces(ctx context.Context, t *testing.T, conn driver.Conn) {
 	t.Helper()
 	insert := fmt.Sprintf(`

@@ -453,9 +453,13 @@ func SettingsRules(set chopt.EnabledSet, metrics schema.Metrics, traces schema.T
 // chsql.SchemaStrategies.CanonicalMapTypeCast), and whether every server
 // runs a multi-step PREWHERE in WHERE order
 // (chopt.EnabledSet.PrewhereInWhereOrder,
-// chsql.SchemaStrategies.PrewhereInWhereOrder).
+// chsql.SchemaStrategies.PrewhereInWhereOrder), and whether a bounded
+// search drains its chosen traces with a filter over the input statement
+// (chopt.FeatureSearchDrainOuterFilter,
+// chsql.SchemaStrategies.SearchDrainOuterFilter).
 func SetServerStrategies(cell *chsql.SchemaStrategiesCell, set chopt.EnabledSet) {
 	cell.SetPrewhereByServer(set.Has(chopt.FeatureMoveToPrewhere))
 	cell.SetCanonicalMapTypeCast(set.Has(chopt.FeatureCanonicalMapTypeCast))
 	cell.SetPrewhereInWhereOrder(set.PrewhereInWhereOrder())
+	cell.SetSearchDrainOuterFilter(set.Has(chopt.FeatureSearchDrainOuterFilter))
 }

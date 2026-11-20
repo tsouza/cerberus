@@ -32,7 +32,21 @@ type rootMetadata struct {
 	ServiceName     string
 	SpanName        string
 	TraceDurationNs int64
+	// SpansOutsideWindow reports whether the trace has a span matching the
+	// outside predicate a resolveTraceRootsWithin lookup carried; false for a
+	// lookup that carried none.
+	SpansOutsideWindow bool
 }
+
+// searchKeySpansOutside is the Attributes key the root lookup carries the
+// count of a trace's spans matching its outside predicate under, when it
+// carries one. Namespaced under `__cerberus_*`, like searchKeyTraceID, so it
+// cannot collide with the canonical `service.name` key beside it.
+const searchKeySpansOutside = "__cerberus_spansOutside"
+
+// spansOutsideCol aliases the root lookup's count of a trace's spans matching
+// its outside predicate.
+const spansOutsideCol = "SpansOutside"
 
 // resolveTraceRoots issues a follow-up CH query that fetches each
 // missing trace's root-span identity (SpanName + service.name) and the
@@ -56,7 +70,7 @@ type rootMetadata struct {
 //	  min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs,
 //	  max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) AS TraceEndNs
 //	FROM otel_traces
-//	WHERE TraceId IN ('<padded-id-1>', '<padded-id-2>', ...)
+//	WHERE TraceId IN ('<id-1>', '<id-2>', ...)
 //	GROUP BY TraceId
 //
 // then an outer Project rewrites the Aggregate's columns into the
@@ -75,13 +89,22 @@ type rootMetadata struct {
 // this was the leading-zero-stripped variant). Returns an empty map
 // when traceIDs is empty; never returns nil on success.
 func (h *Handler) resolveTraceRoots(ctx context.Context, traceIDs []string) (map[string]rootMetadata, error) {
+	return h.resolveTraceRootsWithin(ctx, traceIDs, nil)
+}
+
+// resolveTraceRootsWithin is resolveTraceRoots whose lookup also counts, per
+// trace, the spans matching outside (when non-nil) and reports a positive
+// count as rootMetadata.SpansOutsideWindow. The count reads the Timestamp
+// column the trace-extent aggregates already read, so it adds no column to
+// the lookup.
+func (h *Handler) resolveTraceRootsWithin(ctx context.Context, traceIDs []string, outside chplan.Expr) (map[string]rootMetadata, error) {
 	if len(traceIDs) == 0 {
 		return map[string]rootMetadata{}, nil
 	}
 
-	plan := buildRootLookupPlan(h.Schema, traceIDs)
+	plan := buildRootLookupPlanWithin(h.Schema, traceIDs, outside)
 	// The root-lookup plan scans the spans table bounded by a literal
-	// `TraceId IN (<padded ids>)` set (form-b). Thread the spans table onto the
+	// `TraceId IN (<ids>)` set (form-b). Thread the spans table onto the
 	// emit context so chsql.Emit's RequireSpansScansBounded verifies that bound
 	// is present — a regression that dropped the IN filter would fail closed
 	// rather than full-scan otel_traces.
@@ -135,9 +158,10 @@ func (h *Handler) resolveTraceRoots(ctx context.Context, traceIDs []string) (map
 			durationNs = int64(s.Value)
 		}
 		out[tid] = rootMetadata{
-			ServiceName:     s.Labels["service.name"],
-			SpanName:        s.MetricName,
-			TraceDurationNs: durationNs,
+			ServiceName:        s.Labels["service.name"],
+			SpanName:           s.MetricName,
+			TraceDurationNs:    durationNs,
+			SpansOutsideWindow: s.Labels[searchKeySpansOutside] != "" && s.Labels[searchKeySpansOutside] != "0",
 		}
 	}
 	return out, nil
@@ -169,7 +193,15 @@ func (h *Handler) resolveTraceRoots(ctx context.Context, traceIDs []string) (map
 // span within the same GROUP BY group — keeping the lookup a single
 // round trip while distinguishing root vs. non-root rows.
 func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
-	// Filter predicate: TraceId IN (<padded-id-1>, <padded-id-2>, ...)
+	return buildRootLookupPlanWithin(s, traceIDs, nil)
+}
+
+// buildRootLookupPlanWithin is buildRootLookupPlan whose aggregate also counts
+// each trace's spans matching outside, when non-nil, as
+// countIf(outside) AS SpansOutside, carried in the Attributes map under
+// searchKeySpansOutside.
+func buildRootLookupPlanWithin(s schema.Traces, traceIDs []string, outside chplan.Expr) chplan.Node {
+	// Filter predicate: TraceId IN (<id-1>, <id-2>, ...)
 	// as a single flat chplan.InList. The flatness is load-bearing: the
 	// previous shape rendered a nested OR-chain of Eq predicates, whose
 	// ClickHouse parser AST deepens by one level per trace ID — at
@@ -182,8 +214,10 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 	// TraceId only lets the trace start / end aggregates see every span
 	// of the trace; argMinIf (below) carries the ParentSpanId
 	// restriction on the root-span identifying aggregates so the same
-	// group computes both.
-	traceMatch := inStringList(s.TraceIDColumn, padTraceIDs(traceIDs))
+	// group computes both. The ids are the search summaries' trace ids,
+	// the trace-id column's values as stored, so the list matches a
+	// stored id shorter than the canonical 32 hex characters too.
+	traceMatch := inStringList(s.TraceIDColumn, traceIDs)
 
 	// rootCond expresses ParentSpanId IN ('', '0000000000000000') — the
 	// on-disk root marker (pre-strip empty form + canonical 16-char
@@ -269,6 +303,14 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 		GroupByAliases: []string{"TraceId"},
 		AggFuncs:       []chplan.AggFunc{aggSpanName, aggSvc, aggTraceStart, aggTraceEnd},
 	}
+	if outside != nil {
+		agg.AggFuncs = append(agg.AggFuncs, chplan.AggFunc{
+			Fn:          chplan.FnCount,
+			Combinators: []chplan.AggCombinator{chplan.CombIf},
+			Args:        []chplan.Expr{outside},
+			Alias:       spansOutsideCol,
+		})
+	}
 
 	// Outer Project rewrites to canonical Sample shape so chclient
 	// decodes positionally: MetricName (RootSpanName), Attributes
@@ -283,6 +325,13 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 		&chplan.LitString{V: "service.name"},
 		&chplan.ColumnRef{Name: "RootSvc"},
 	}}
+	if outside != nil {
+		attrsMap.Args = append(
+			attrsMap.Args,
+			&chplan.LitString{V: searchKeySpansOutside},
+			&chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{&chplan.ColumnRef{Name: spansOutsideCol}}},
+		)
+	}
 	traceDurationNs := &chplan.Binary{
 		Op:    chplan.OpSub,
 		Left:  &chplan.ColumnRef{Name: traceEndNsCol},
@@ -330,19 +379,6 @@ func inStringList(col string, vals []string) chplan.Expr {
 		Left: &chplan.ColumnRef{Name: col},
 		List: list,
 	}
-}
-
-// padTraceIDs left-pads each stripped-zero TraceID back to the
-// canonical 32-char lowercase-hex on-disk form so the equality
-// predicate matches otel_traces.TraceId. Mirrors normaliseTraceID
-// but in bulk; sorted-stable so the generated SQL is deterministic
-// across calls (helps the chsql golden tests this helper unblocks).
-func padTraceIDs(ids []string) []string {
-	out := make([]string, 0, len(ids))
-	for _, id := range ids {
-		out = append(out, normaliseTraceID(id))
-	}
-	return out
 }
 
 // applyRootMetadata patches each summary whose TraceID appears in

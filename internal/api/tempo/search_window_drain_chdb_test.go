@@ -211,6 +211,143 @@ func TestSearch_WindowDrainManyTraces_ChDB(t *testing.T) {
 	}
 }
 
+// shortTraceID is a stored TraceId shorter than the canonical 32 hex
+// characters: an exporter that hex-encodes the id without zero-padding writes
+// this form, and the trace-id column holds it as written.
+const shortTraceID = "9ea6d03e994880f4a3c2212dd6bbee"
+
+// shortIDSeed holds two traces inside drainWindow with the same tree: the
+// newest one under shortTraceID, the older one under a full 32-character id.
+//
+//	trace shortTraceID (newest)
+//	  e1 root  op-6  10:59:00  inside
+//	  e2 ⤷ e1  op-1  10:59:10  inside
+//	  e3 ⤷ e1  op-2  10:59:20  inside
+//	  e4 ⤷ e1  op-2  11:00:30  outside (after end)
+//	trace f2000000000000000000000000000002 (older)
+//	  f1 root  op-6  10:10:00  inside
+//	  f2 ⤷ f1  op-1  10:10:10  inside
+//	  f3 ⤷ f1  op-2  10:10:20  inside
+const shortIDSeed = `INSERT INTO otel_traces VALUES
+    ('` + shortTraceID + `', '00000000000000e1', '',                 'op-6', 'Server',   1, toDateTime64('2026-05-01 10:59:00', 9), 'Unset', '', '', '', map(), map('service.name', 'frontend')),
+    ('` + shortTraceID + `', '00000000000000e2', '00000000000000e1', 'op-1', 'Internal', 1, toDateTime64('2026-05-01 10:59:10', 9), 'Unset', '', '', '', map(), map('service.name', 'backend')),
+    ('` + shortTraceID + `', '00000000000000e3', '00000000000000e1', 'op-2', 'Internal', 1, toDateTime64('2026-05-01 10:59:20', 9), 'Unset', '', '', '', map(), map('service.name', 'backend')),
+    ('` + shortTraceID + `', '00000000000000e4', '00000000000000e1', 'op-2', 'Internal', 1, toDateTime64('2026-05-01 11:00:30', 9), 'Unset', '', '', '', map(), map('service.name', 'backend')),
+    ('f2000000000000000000000000000002', '00000000000000f1', '',                 'op-6', 'Server',   1, toDateTime64('2026-05-01 10:10:00', 9), 'Unset', '', '', '', map(), map('service.name', 'frontend')),
+    ('f2000000000000000000000000000002', '00000000000000f2', '00000000000000f1', 'op-1', 'Internal', 1, toDateTime64('2026-05-01 10:10:10', 9), 'Unset', '', '', '', map(), map('service.name', 'backend')),
+    ('f2000000000000000000000000000002', '00000000000000f3', '00000000000000f1', 'op-2', 'Internal', 1, toDateTime64('2026-05-01 10:10:20', 9), 'Unset', '', '', '', map(), map('service.name', 'backend'));`
+
+// TestSearch_StructuralShortTraceID_ChDB pins that a structural search
+// returns a trace whose stored TraceId is shorter than 32 characters, with
+// the spans a full-length id returns. Phase B confines its structural joins
+// to the trace ids phase A read from the trace-id column; confining them to
+// any other spelling of those ids matches no stored row, and the trace drops
+// out of the response although it took one of the limit slots. Each relation
+// runs drained (the default maximum trace duration) and over the request
+// window alone (zero), where the recursive relation still runs in two phases.
+func TestSearch_StructuralShortTraceID_ChDB(t *testing.T) {
+	servers := map[string]*httptest.Server{}
+	for name, lookback := range map[string]time.Duration{"drained": schema.DefaultMaxTraceDuration, "narrow": 0} {
+		c := chclienttest.NewChDB(t)
+		c.Seed(t, tracesDDL)
+		c.Seed(t, shortIDSeed)
+		s := schema.DefaultOTelTraces()
+		s.MaxTraceDuration = lookback
+		h := tempo.New(c, s, "v-test", nil)
+		mux := http.NewServeMux()
+		h.Mount(mux)
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+		servers[name] = srv
+	}
+	wantTraces := []string{shortTraceID, "f2000000000000000000000000000002"}
+	for _, tc := range []struct {
+		query   string
+		narrow  []string
+		drained []string
+	}{
+		{`{ name = "op-6" } > { name = "op-2" }`, []string{"e3"}, []string{"e3", "e4"}},
+		{`{ name = "op-1" } < { name = "op-6" }`, []string{"e1"}, []string{"e1"}},
+		{`{ name = "op-1" } ~ { name = "op-2" }`, []string{"e3"}, []string{"e3", "e4"}},
+		{`{ name = "op-6" } >> { name = "op-2" }`, []string{"e3"}, []string{"e3", "e4"}},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			path := fmt.Sprintf("/api/search?q=%s&limit=2&spss=20%s", url.QueryEscape(tc.query), drainWindow)
+			for _, run := range []struct {
+				name string
+				want []string
+			}{{"drained", tc.drained}, {"narrow", tc.narrow}} {
+				var traces, spans []string
+				for _, tr := range doSearch(t, servers[run.name], path).Traces {
+					traces = append(traces, tr.TraceID)
+					if tr.TraceID != shortTraceID {
+						continue
+					}
+					for _, set := range tr.SpanSets {
+						for _, sp := range set.Spans {
+							spans = append(spans, strings.TrimLeft(sp.SpanID, "0"))
+						}
+					}
+				}
+				slices.Sort(traces)
+				slices.Sort(spans)
+				if !slices.Equal(traces, wantTraces) {
+					t.Errorf("%s: traces %v, want %v", run.name, traces, wantTraces)
+				}
+				if !slices.Equal(spans, run.want) {
+					t.Errorf("%s: trace %s spans %v, want %v", run.name, shortTraceID, spans, run.want)
+				}
+			}
+		})
+	}
+}
+
+// TestSearch_ShortTraceIDRootMetadata_ChDB pins that a search names the root
+// span and trace-wide duration of a trace whose stored TraceId is shorter than
+// 32 characters. The matched spans carry no root row, so the root lookup
+// resolves both from the trace's own rows; looking it up under any other
+// spelling of the id finds no row and leaves the earliest matched span's
+// name, service and duration in place of the root's.
+func TestSearch_ShortTraceIDRootMetadata_ChDB(t *testing.T) {
+	c := chclienttest.NewChDB(t)
+	c.Seed(t, tracesDDL)
+	c.Seed(t, shortIDSeed)
+	h := tempo.New(c, schema.DefaultOTelTraces(), "v-test", nil)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	// Both traces' roots are op-6 spans of frontend; the short trace runs from
+	// e1 at 10:59:00 to e4 at 11:00:30, the full-length one from f1 at
+	// 10:10:00 to f3 at 10:10:20.
+	want := map[string]tempo.TraceSummary{
+		shortTraceID:                       {RootServiceName: "frontend", RootTraceName: "op-6", DurationMs: 90000},
+		"f2000000000000000000000000000002": {RootServiceName: "frontend", RootTraceName: "op-6", DurationMs: 20000},
+	}
+	for _, query := range []string{
+		`{ name = "op-2" }`,
+		`{ name = "op-6" } > { name = "op-2" }`,
+	} {
+		t.Run(query, func(t *testing.T) {
+			path := fmt.Sprintf("/api/search?q=%s&limit=2&spss=20%s", url.QueryEscape(query), drainWindow)
+			got := doSearch(t, srv, path).Traces
+			if len(got) != len(want) {
+				t.Fatalf("got %d traces, want %d", len(got), len(want))
+			}
+			for _, tr := range got {
+				w, ok := want[tr.TraceID]
+				if !ok {
+					t.Fatalf("unexpected trace %s", tr.TraceID)
+				}
+				if tr.RootServiceName != w.RootServiceName || tr.RootTraceName != w.RootTraceName || tr.DurationMs != w.DurationMs {
+					t.Errorf("trace %s: root %q/%q duration %dms, want %q/%q %dms", tr.TraceID,
+						tr.RootServiceName, tr.RootTraceName, tr.DurationMs, w.RootServiceName, w.RootTraceName, w.DurationMs)
+				}
+			}
+		})
+	}
+}
+
 // spanCounts maps each trace a search response carries to its span count.
 func spanCounts(sr searchResult) map[string]int {
 	out := map[string]int{}

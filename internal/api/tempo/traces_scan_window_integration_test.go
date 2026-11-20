@@ -37,6 +37,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -159,8 +161,9 @@ func TestTracesScanWindowRealCH(t *testing.T) {
 		name   string
 		path   string
 		params url.Values
-		// readRowsFactor sets this case's per-request ceiling as a multiple of
-		// ONE partition's span count (scanWinPartitionSpans). It is per-case,
+		// readRowsFactor sets the ceiling on this case's window-scoped
+		// statements as a multiple of ONE partition's span count
+		// (scanWinPartitionSpans). It is per-case,
 		// not shared, because the cases below issue genuinely different
 		// numbers of windowed sub-scans within their one combined SQL
 		// statement: compare_metrics_range is a single root-lookup GROUP BY,
@@ -181,8 +184,8 @@ func TestTracesScanWindowRealCH(t *testing.T) {
 		{
 			// Grafana Traces Drilldown "Structure" tab: union-structural arm OR'd
 			// with the plain root filter, piped into select() over the nested-set
-			// intrinsics — the recursive numbering CTE OOM shape. Measured 46500
-			// (46.5x partition-spans) on a correctly-windowed run.
+			// intrinsics — the recursive numbering CTE OOM shape. Measured 50884
+			// (50.9x partition-spans) on a correctly-windowed run.
 			name: "structure_tab_search",
 			path: "/api/search",
 			params: url.Values{
@@ -205,11 +208,13 @@ func TestTracesScanWindowRealCH(t *testing.T) {
 		{
 			// Bare structural descendant closure (`A >> B`) — both the relation's
 			// recursive `t` scan and the root-reachability gate added for #2128
-			// must stay window-pruned. Measured 27802 (27.8x partition-spans) on a
-			// correctly-windowed run: the original 13.8x relation shape remains,
-			// while the rooted L operand adds one bounded anchor + recursive walk.
-			// A lost window still multiplies those physical scans by scanWinDays;
-			// 37x keeps the same ~1.3x headroom over the measured bounded cost.
+			// must stay window-pruned. Its window-scoped statement is the
+			// search's phase A ranking, measured at 24802 rows (24.8x
+			// partition-spans) on a correctly-windowed run; its phase B and root
+			// lookup are restricted to the chosen traces and bounded by what
+			// those traces hold. A lost window still multiplies phase A's
+			// physical scans by scanWinDays; 37x keeps ~1.5x headroom over the
+			// measured bounded cost.
 			name: "structural_descendant_search",
 			path: "/api/search",
 			params: url.Values{
@@ -235,23 +240,53 @@ func TestTracesScanWindowRealCH(t *testing.T) {
 					tc.name, code, scanWinMemoryCapBytes)
 			}
 
-			readRows := scanWinRequestReadRows(ctx, t, conn, marker)
-			if readRows == 0 {
+			// The request's statements split in two by what bounds their reads.
+			// A window-scoped statement (a ranking, a numbering, a metrics
+			// aggregate) reads whatever the request window lets through, so
+			// the window reaching its spans scans is what keeps it within a
+			// multiple of one partition. A statement restricted to the chosen
+			// traces' ids (a search's phase B, its root lookup) reads only
+			// those traces, so its ceiling is what they hold: per spans scan
+			// it renders, the rows ClickHouse reads to return exactly the
+			// chosen traces' spans from this seed.
+			stmts := scanWinRequestStatements(ctx, t, conn, marker)
+			if len(stmts) == 0 {
 				t.Fatalf("%s: no QueryFinish rows recorded for log_comment %q — read_rows correlation broke", tc.name, marker)
 			}
-			// readRowsBound is THIS case's per-request ceiling: a windowed
-			// drilldown must stay within its declared multiple of ONE partition.
-			// A no-prune regression (every windowed sub-scan degrading to a full
-			// scanWinDays-day scan) inflates read_rows by ~scanWinDays (30x),
-			// which blows past every case's bound with a wide margin — see the
-			// per-case readRowsFactor comments in the cases table above for why
-			// the bound is not a single shared constant. (A blanket
-			// "read_rows >= whole table" check does NOT hold here: a case that
-			// legitimately issues several separate, correctly-windowed
-			// sub-scans within one combined SQL statement — e.g.
-			// structure_tab_search's two structural closures + nested-set CTE —
-			// can sum to more than one table's worth of rows while every
-			// individual sub-scan stays properly pruned to its own partition.)
+			var windowRows uint64
+			for i, st := range stmts {
+				ids := scanWinChosenTraceIDs(st.query)
+				if len(ids) == 0 {
+					windowRows += st.readRows
+					continue
+				}
+				chosenSpans, chosenRead := scanWinChosenTraces(ctx, t, conn, fmt.Sprintf("%s_chosen_%d", marker, i), ids)
+				if chosenSpans == 0 {
+					t.Fatalf("%s: statement %d restricts to %d trace ids the seed does not hold: %v", tc.name, i, len(ids), ids)
+				}
+				scans := scanWinSpansScans(st.query)
+				chosenBound := uint64(scans) * chosenRead
+				if st.readRows > chosenBound {
+					t.Errorf("%s: statement %d, restricted to %d chosen traces (%d spans), read %d rows > bound %d (%d spans scans * %d rows read for the chosen traces' spans) — the trace-id restriction did not reach every spans scan\n%s",
+						tc.name, i, len(ids), chosenSpans, st.readRows, chosenBound, scans, chosenRead, st.query)
+				}
+				t.Logf("%s: statement %d restricted to %d chosen traces (%d spans) read %d rows (bound %d = %d scans * %d)",
+					tc.name, i, len(ids), chosenSpans, st.readRows, chosenBound, scans, chosenRead)
+			}
+			// readRowsBound is THIS case's ceiling on its window-scoped
+			// statements: a windowed drilldown must stay within its declared
+			// multiple of ONE partition. A no-prune regression (every windowed
+			// sub-scan degrading to a full scanWinDays-day scan) inflates
+			// read_rows by ~scanWinDays (30x), which blows past every case's
+			// bound with a wide margin — see the per-case readRowsFactor
+			// comments in the cases table above for why the bound is not a
+			// single shared constant. (A blanket "read_rows >= whole table"
+			// check does NOT hold here: a case that legitimately issues
+			// several separate, correctly-windowed sub-scans within one
+			// combined SQL statement — e.g. structure_tab_search's two
+			// structural closures + nested-set CTE — can sum to more than one
+			// table's worth of rows while every individual sub-scan stays
+			// properly pruned to its own partition.)
 			readRowsBound := uint64(scanWinPartitionSpans) * tc.readRowsFactor
 			// Sanity-check the bound itself, independent of the measured
 			// readRows: a factor set so large the bound could never meaningfully
@@ -265,17 +300,20 @@ func TestTracesScanWindowRealCH(t *testing.T) {
 				t.Fatalf("misconfigured bound: %s readRowsBound=%d must stay under %d to remain a meaningful regression guard",
 					tc.name, readRowsBound, scanWinTotalSpans*scanWinBoundSlackMultiplier)
 			}
-			if readRows > readRowsBound {
-				t.Errorf("%s read %d rows > bound %d (%d partition-spans * %d) — the request window did not reach a recursive/grouped spans scan",
-					tc.name, readRows, readRowsBound, scanWinPartitionSpans, tc.readRowsFactor)
+			if windowRows == 0 {
+				t.Fatalf("%s: no window-scoped statement recorded — every statement restricts to chosen trace ids, so the window bound guards nothing", tc.name)
+			}
+			if windowRows > readRowsBound {
+				t.Errorf("%s: its window-scoped statements read %d rows > bound %d (%d partition-spans * %d) — the request window did not reach a recursive/grouped spans scan",
+					tc.name, windowRows, readRowsBound, scanWinPartitionSpans, tc.readRowsFactor)
 			}
 			// Report the measured cost even on a pass. The ceiling only says
 			// "not catastrophically worse"; the number underneath it is what a
 			// scan-count change (a subquery collapsing into one binding, a
 			// pushdown gained or lost) actually moves, and without it every
 			// such change looks identical from the outside — green.
-			t.Logf("%s read %d rows (%.1fx one partition's %d spans; bound %d)",
-				tc.name, readRows, float64(readRows)/float64(scanWinPartitionSpans), scanWinPartitionSpans, readRowsBound)
+			t.Logf("%s: window-scoped statements read %d rows (%.1fx one partition's %d spans; bound %d)",
+				tc.name, windowRows, float64(windowRows)/float64(scanWinPartitionSpans), scanWinPartitionSpans, readRowsBound)
 		})
 	}
 }
@@ -316,6 +354,91 @@ func scanWinRequestReadRows(ctx context.Context, t *testing.T, conn driver.Conn,
 			"WHERE type = 'QueryFinish' AND log_comment = '%s' AND query NOT LIKE '%%query_log%%'",
 		marker,
 	))
+}
+
+// scanWinStatement is one statement a request ran: its text and the rows it
+// read.
+type scanWinStatement struct {
+	query    string
+	readRows uint64
+}
+
+// scanWinRequestStatements flushes the query log and returns every
+// QueryFinish carrying marker, in the order the request ran them.
+func scanWinRequestStatements(ctx context.Context, t *testing.T, conn driver.Conn, marker string) []scanWinStatement {
+	t.Helper()
+	if err := conn.Exec(ctx, "SYSTEM FLUSH LOGS"); err != nil {
+		t.Fatalf("flush logs: %v", err)
+	}
+	rows, err := conn.Query(ctx,
+		"SELECT query, toUInt64(read_rows) FROM system.query_log "+
+			"WHERE type = 'QueryFinish' AND log_comment = ? AND query NOT LIKE '%query_log%' "+
+			"ORDER BY event_time_microseconds", marker)
+	if err != nil {
+		t.Fatalf("read the statements of %s: %v", marker, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []scanWinStatement
+	for rows.Next() {
+		var st scanWinStatement
+		if err := rows.Scan(&st.query, &st.readRows); err != nil {
+			t.Fatalf("scan a statement of %s: %v", marker, err)
+		}
+		out = append(out, st)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the statements of %s: %v", marker, err)
+	}
+	return out
+}
+
+// scanWinTraceIDList matches a literal trace-id list a statement restricts
+// its spans to: `TraceId` IN ('…', '…'), GLOBAL or not.
+var scanWinTraceIDList = regexp.MustCompile("`TraceId` (?:GLOBAL )?IN \\(('[^']*'(?:, '[^']*')*)\\)")
+
+// scanWinTraceIDLiteral matches one quoted id inside such a list.
+var scanWinTraceIDLiteral = regexp.MustCompile(`'([^']*)'`)
+
+// scanWinChosenTraceIDs returns the distinct trace ids a statement's literal
+// trace-id lists name, or none for a statement that restricts its spans by no
+// such list.
+func scanWinChosenTraceIDs(query string) []string {
+	seen := map[string]bool{}
+	var ids []string
+	for _, list := range scanWinTraceIDList.FindAllStringSubmatch(query, -1) {
+		for _, lit := range scanWinTraceIDLiteral.FindAllStringSubmatch(list[1], -1) {
+			if !seen[lit[1]] {
+				seen[lit[1]] = true
+				ids = append(ids, lit[1])
+			}
+		}
+	}
+	return ids
+}
+
+// scanWinSpansScans counts the spans-table scans a statement renders.
+func scanWinSpansScans(query string) int {
+	return strings.Count(query, "FROM `otel_traces`") + strings.Count(query, "JOIN `otel_traces`")
+}
+
+// scanWinChosenTraces returns how many spans the seed holds for ids, and the
+// rows ClickHouse reads to return exactly those spans, every column of them:
+// one spans scan of the chosen traces, over the whole table.
+func scanWinChosenTraces(ctx context.Context, t *testing.T, conn driver.Conn, marker string, ids []string) (spans, readRows uint64) {
+	t.Helper()
+	quoted := make([]string, len(ids))
+	for i, id := range ids {
+		quoted[i] = "'" + id + "'"
+	}
+	list := strings.Join(quoted, ", ")
+	spans = scanWinScalar(ctx, t, conn, "SELECT count() FROM otel_traces WHERE TraceId IN ("+list+")")
+	// The query condition cache is off for this read: the request's own
+	// statements filled it for this same predicate, and a read answered from
+	// it skips the granules the skip index cannot rule out but no chosen span
+	// is in, which the request's first read of them could not.
+	readRows = scanWinRawReadRows(ctx, t, conn, marker,
+		"SELECT * FROM otel_traces WHERE TraceId IN ("+list+") SETTINGS use_query_condition_cache = 0")
+	return spans, readRows
 }
 
 // scanWinRawReadRows runs a raw query under a unique log_comment and returns its

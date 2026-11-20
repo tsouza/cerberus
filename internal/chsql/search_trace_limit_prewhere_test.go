@@ -40,8 +40,9 @@ const searchTraceLimitDrainPrewhere = "FROM `otel_traces` PREWHERE (`SpanKind` =
 // the emitter splits itself, the test joins the Filter's own PREWHERE after
 // its conjuncts, so the rest of the row is read only for the chosen traces'
 // rows: the drain is the Filter(Scan) statement, not a SELECT over it. Where
-// the emitter writes no PREWHERE of its own (the server places it, or the
-// input is a bare Scan), the drain filters the input's rows from outside.
+// the strategies ask for the outer filter (SearchDrainOuterFilter), or the
+// emitter writes no PREWHERE of its own (the server places it, or the input
+// is a bare Scan), the drain filters the input's rows from outside.
 func TestEmitSearchTraceLimit_DrainTestsTheChosenTracesInPrewhere(t *testing.T) {
 	t.Parallel()
 
@@ -58,6 +59,7 @@ func TestEmitSearchTraceLimit_DrainTestsTheChosenTracesInPrewhere(t *testing.T) 
 		strategies SchemaStrategies
 		input      chplan.Node
 	}{
+		{"outer filter", SchemaStrategies{SearchDrainOuterFilter: true}, searchTraceLimitServerSpans()},
 		{"prewhere by server", SchemaStrategies{PrewhereByServer: true}, searchTraceLimitServerSpans()},
 		{"bare scan", SchemaStrategies{}, searchTraceLimitSpanScan()},
 	} {

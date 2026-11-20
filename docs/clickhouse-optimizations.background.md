@@ -616,6 +616,47 @@ case, but is not the safe default to design around. See
 [#2790](https://github.com/tsouza/cerberus/issues/2790) for the full numbers
 and methodology from both PRs.
 
+## Why `search_drain_outer_filter` is auto-picked on 26.2 and 26.3 only
+
+A bounded Tempo search ranks the matching spans' traces in a subquery and
+drains the chosen ones from the same scan. The drain can test the chosen traces
+from outside the scan statement (`SELECT s.* FROM (<scan>) AS s WHERE TraceId
+GLOBAL IN (<top-N>)`) or append that test to the scan's own `PREWHERE` after
+the span filter. On every line measured except 26.2 and 26.3, the `PREWHERE`
+placement reads the rest of a row only for the chosen traces' rows and reads
+fewer bytes. On 26.2 and 26.3 it reads more: the server does not use the
+`PREWHERE` set to skip granules, so the drain reads every granule the span
+filter keeps. With the condition cache off, on 26.3.17.56, the `PREWHERE`
+placement of `{ kind = server } | by(name)` read 2,000,000 rows (23,722,059
+bytes) and the outer filter 1,393,792 rows (21,988,586 bytes). Every 26.3 patch
+build measured behaves the same, so the range is a release-line one.
+
+Limited-search read bytes, outer filter / `PREWHERE`, on the
+`test/chserver` probe's data (200,000 traces of 5 spans, limit 20). Each cell is
+the median of 7 alternated runs:
+
+| server      | `{ kind = server } \| by(name)` | `{ kind = server }`     |
+| ----------- | ------------------------------- | ----------------------- |
+| 24.8.14.39  | 24,687,572 / 21,136,043         | 27,293,196 / 22,431,681 |
+| 24.10.4.191 | 24,687,572 / 21,136,043         | 27,293,196 / 22,431,681 |
+| 25.3.14.14  | 24,687,572 / 21,136,043         | 27,293,196 / 22,431,681 |
+| 25.8.33.6   | 23,091,717 / 19,946,465         | 25,593,085 / 21,190,263 |
+| 25.12.11.4  | 21,287,877 / 18,142,625         | 23,267,389 / 19,126,647 |
+| 26.1.12.23  | 21,287,877 / 18,142,625         | 23,267,389 / 19,126,647 |
+| 26.2.19.43  | 20,989,162 / 23,001,163         | 22,968,674 / 23,985,185 |
+| 26.3.12.3   | 20,989,162 / 23,001,163         | 22,968,674 / 23,985,185 |
+| 26.3.17.56  | 20,158,646 / 22,170,647         | 22,138,158 / 23,154,669 |
+| 26.3.67.30  | 20,989,162 / 23,001,163         | 22,968,674 / 23,985,185 |
+| 26.4.5.143  | 20,989,162 / 18,096,007         | 22,968,674 / 19,080,029 |
+| 26.5.7.64   | 20,989,162 / 18,096,007         | 22,968,674 / 19,080,029 |
+| 26.6.8.7    | 20,518,988 / 17,625,833         | 22,498,500 / 18,609,855 |
+| 26.8.36.3   | 20,602,231 / 17,689,315         | 22,581,743 / 18,673,337 |
+
+`{ kind = server } | by(kind) | coalesce()` reads what `{ kind = server }`
+reads on every line. A spans table with `map_serialization_version =
+'with_buckets'` reads the same bytes as the flat one on 26.4, 26.5, 26.6 and
+26.8. Both placements answer the same rows on every line.
+
 ## Why `map_bucketed_serialization`'s floor is 26.4 rather than 26.3
 
 **Version floor is 26.4, not the 26.3 the upstream backport (v26.3.2.3-lts)

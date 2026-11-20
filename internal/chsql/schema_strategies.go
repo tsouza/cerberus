@@ -101,6 +101,10 @@ type SchemaStrategiesCell struct {
 	// prewhereInWhereOrder is stamped on every signal's strategies at Load
 	// (SetPrewhereInWhereOrder), the same way prewhereByServer is.
 	prewhereInWhereOrder atomic.Bool
+
+	// searchDrainOuterFilter is stamped on every signal's strategies at Load
+	// (SetSearchDrainOuterFilter), the same way prewhereByServer is.
+	searchDrainOuterFilter atomic.Bool
 }
 
 // NewSchemaStrategiesCell returns a cell holding r.
@@ -111,7 +115,8 @@ func NewSchemaStrategiesCell(r ResolvedSchemaStrategies) *SchemaStrategiesCell {
 }
 
 // Load returns the strategies the cell holds, each signal's carrying the
-// cell's PrewhereByServer, CanonicalMapTypeCast and PrewhereInWhereOrder.
+// cell's PrewhereByServer, CanonicalMapTypeCast, PrewhereInWhereOrder and
+// SearchDrainOuterFilter.
 func (c *SchemaStrategiesCell) Load() ResolvedSchemaStrategies {
 	if c == nil {
 		return ResolvedSchemaStrategies{}
@@ -132,6 +137,10 @@ func (c *SchemaStrategiesCell) Load() ResolvedSchemaStrategies {
 	r.Metrics.PrewhereInWhereOrder = inOrder
 	r.Logs.PrewhereInWhereOrder = inOrder
 	r.Traces.PrewhereInWhereOrder = inOrder
+	outerFilter := c.searchDrainOuterFilter.Load()
+	r.Metrics.SearchDrainOuterFilter = outerFilter
+	r.Logs.SearchDrainOuterFilter = outerFilter
+	r.Traces.SearchDrainOuterFilter = outerFilter
 	return r
 }
 
@@ -157,6 +166,14 @@ func (c *SchemaStrategiesCell) SetCanonicalMapTypeCast(typeCast bool) {
 // (chopt.EnabledSet.PrewhereInWhereOrder) before the heads serve.
 func (c *SchemaStrategiesCell) SetPrewhereInWhereOrder(inOrder bool) {
 	c.prewhereInWhereOrder.Store(inOrder)
+}
+
+// SetSearchDrainOuterFilter sets the SearchDrainOuterFilter every signal's
+// strategies load with, whatever strategies the cell holds now or is stored
+// later. cmd/cerberus sets it from the resolved optimizations
+// (chopt.FeatureSearchDrainOuterFilter) before the heads serve.
+func (c *SchemaStrategiesCell) SetSearchDrainOuterFilter(outerFilter bool) {
+	c.searchDrainOuterFilter.Store(outerFilter)
 }
 
 // Store replaces the strategies the cell holds. r's AttrStrategies maps are
