@@ -23,24 +23,31 @@ import (
 // itself, and chopt.FeatureCanonicalMapTypeCast leaves the cast off there.
 //
 // Every Map function that derives its result type that way returns the
-// same unequal Map on those servers: mapConcat and mapApply among the ones
-// cerberus emits, as well as mapSort. mapFilter keeps its operand's type,
-// and mapUpdate, mapFromArrays and map() return the parsed type. Under the
-// same strategy, a mapConcat or mapApply result is cast back to its parsed
-// type wherever it is rendered ([ParsedMapType]): a bucket fan-out's
+// same unequal Map on those servers: mapConcat, mapApply and mapFilter
+// among the ones cerberus emits, as well as mapSort. mapFilter does so
+// even over an operand of the parsed type. mapUpdate, mapFromArrays and
+// map() return the parsed type. Under the same strategy, a mapConcat,
+// mapApply or mapFilter result is cast back to its parsed type wherever it
+// is rendered ([ParsedMapType]). That covers the plan-IR nodes that render
+// as a mapFilter: [chplan.MapWithoutKeys], [chplan.MapWithoutEmptyValues],
+// [chplan.LabelReplace] and [chplan.LabelJoin]. A bucket fan-out's
 // Attributes, merged with mapConcat, is the key of the range lookback's
-// GROUP BY, and a spilled block of that GROUP BY fails the same way. The
-// direct operand of a canonical key renders without that cast, because
-// the key's own cast already gives the column it feeds the parsed type,
-// and casting both would render the operand four times.
+// GROUP BY, and histogram_quantile groups its buckets by the series'
+// Attributes without `le`, a MapWithoutKeys; a spilled block of either
+// GROUP BY fails the same way. The direct operand of a canonical key
+// renders without that cast, because the key's own cast already gives the
+// column it feeds the parsed type, and casting both would render the
+// operand four times.
 //
 // The cast copies the Map column, so it is rendered only where the value
 // can reach an operator that writes blocks to disk. [mapTypeCastFree]
 // walks the plan an emission renders and returns the Map calls whose value
 // never does: one a Filter's predicate consumes, or one a Project computes
 // into a column that no operator above reads except through Filters,
-// Limits and Projects up to the statement's result. Those render bare,
-// under the strategy too. Every other Map call keeps its cast, so any
+// Limits and Projects up to the statement's result, and one nested inside
+// another Map call the cast applies to, whose own derived type is the only
+// one that reaches the operator. Those render bare, under the strategy
+// too. Every other Map call keeps its cast, so any
 // operator other than a Filter, a Limit or a Project counts as one that
 // spills, and a Map call the walk does not reach keeps its cast.
 //
@@ -65,8 +72,8 @@ func (b *Builder) exprCanonicalMap(key *chplan.FuncCall) error {
 	}
 	var err error
 	canonicalMap(b.strategies.CanonicalMapTypeCast && !b.mapTypeCastFree(key), func(b *Builder) {
-		if f, ok := args[0].(*chplan.FuncCall); ok && parsedMapTypeFns[f.Fn] {
-			err = b.exprFuncCall(f)
+		if isMapTypeCastExpr(args[0]) {
+			err = b.parsedMapBare(args[0])
 			return
 		}
 		_ = b.Expr(args[0])
@@ -82,26 +89,68 @@ func (b *Builder) exprCanonicalMap(key *chplan.FuncCall) error {
 // value)) the way mapSort does; exprFunc renders them through
 // [ParsedMapType].
 var parsedMapTypeFns = map[chplan.Fn]bool{
-	chplan.FnMapMerge: true,
-	chplan.FnMapApply: true,
+	chplan.FnMapMerge:  true,
+	chplan.FnMapApply:  true,
+	chplan.FnMapFilter: true,
 }
 
-// mapTypeCastFree reports whether f, a Map call of the emission b renders
-// inside, renders without the parsed-Map-type cast: its value reaches no
-// operator that can spill (see [mapTypeCastFree]). A Builder outside an
-// emission renders every Map call cast.
-func (b *Builder) mapTypeCastFree(f *chplan.FuncCall) bool {
-	return b.env != nil && b.env.mapCastFree[f]
+// mapTypeCastFree reports whether e, a Map expression of the emission b
+// renders inside, renders without the parsed-Map-type cast: its value
+// reaches no operator that can spill (see [mapTypeCastFree]). A Builder
+// outside an emission renders every Map expression cast.
+func (b *Builder) mapTypeCastFree(e chplan.Expr) bool {
+	return b.env != nil && b.env.mapCastFree[e]
 }
 
-// isMapTypeCastCall reports whether e is a Map call the parsed-Map-type
-// cast applies to: a canonical key or a call in parsedMapTypeFns.
-func isMapTypeCastCall(e chplan.Expr) (*chplan.FuncCall, bool) {
-	f, ok := e.(*chplan.FuncCall)
-	if !ok || (f.Fn != chplan.FnMapSort && !parsedMapTypeFns[f.Fn]) {
-		return nil, false
+// isMapTypeCastExpr reports whether e is a Map expression the
+// parsed-Map-type cast applies to: a canonical key, a call in
+// parsedMapTypeFns, or a plan-IR node that renders as a mapFilter
+// ([Builder.parsedMapBare]). A MapWithoutKeys with no keys renders its
+// operand unchanged, so the cast applies to that operand, not to it.
+func isMapTypeCastExpr(e chplan.Expr) bool {
+	switch v := e.(type) {
+	case *chplan.FuncCall:
+		return v.Fn == chplan.FnMapSort || parsedMapTypeFns[v.Fn]
+	case *chplan.MapWithoutKeys:
+		return len(v.Keys) > 0
+	case *chplan.MapWithoutEmptyValues, *chplan.LabelReplace, *chplan.LabelJoin:
+		return true
 	}
-	return f, true
+	return false
+}
+
+// exprParsedMap renders e, a Map expression in parsedMapTypeFns or a
+// plan-IR node that renders as a mapFilter, cast back to its parsed type
+// ([ParsedMapType]) unless the emission b renders inside marks it
+// cast-free.
+func (b *Builder) exprParsedMap(e chplan.Expr) error {
+	if !isMapTypeCastExpr(e) || b.mapTypeCastFree(e) {
+		return b.parsedMapBare(e)
+	}
+	var err error
+	ParsedMapType(func(b *Builder) { err = b.parsedMapBare(e) })(b)
+	if err != nil {
+		return err
+	}
+	return b.err
+}
+
+// parsedMapBare renders e, a Map expression [Builder.exprParsedMap]
+// accepts, without the parsed-Map-type cast.
+func (b *Builder) parsedMapBare(e chplan.Expr) error {
+	switch v := e.(type) {
+	case *chplan.FuncCall:
+		return b.exprFuncCall(v)
+	case *chplan.MapWithoutKeys:
+		return b.exprMapWithoutKeys(v)
+	case *chplan.MapWithoutEmptyValues:
+		return b.exprMapWithoutEmptyValues(v)
+	case *chplan.LabelReplace:
+		return b.exprLabelReplace(v)
+	case *chplan.LabelJoin:
+		return b.exprLabelJoin(v)
+	}
+	return fmt.Errorf("%w: %T is not a Map expression the parsed-Map-type cast applies to", ErrUnsupported, e)
 }
 
 // mapTypeCastFree returns the Map calls of the plan n whose value no
@@ -124,18 +173,18 @@ func isMapTypeCastCall(e chplan.Expr) (*chplan.FuncCall, bool) {
 // when every expression it appears in is a predicate or a projection that
 // is not owed; one inside an owed projection, or in a spilling node's own
 // expressions, is not.
-func mapTypeCastFree(n chplan.Node) map[*chplan.FuncCall]bool {
+func mapTypeCastFree(n chplan.Node) map[chplan.Expr]bool {
 	w := castWalk{owed: map[chplan.Node]castDemand{}}
 	w.node(n, castDemand{})
-	free, bound := map[*chplan.FuncCall]bool{}, map[*chplan.FuncCall]bool{}
+	free, bound := map[chplan.Expr]bool{}, map[chplan.Expr]bool{}
 	for node, d := range w.owed {
 		switch v := node.(type) {
 		case *chplan.Filter:
-			collectMapTypeCastCalls(free, v.Predicate)
+			collectMapTypeCastCalls(free, free, v.Predicate)
 		case *chplan.Project:
 			classifyProjectMapCalls(v, d, bound, free)
 		default:
-			chplan.InspectNodeExprs(node, func(e chplan.Expr) { collectMapTypeCastCalls(bound, e) })
+			chplan.InspectNodeExprs(node, func(e chplan.Expr) { collectMapTypeCastCalls(bound, free, e) })
 		}
 	}
 	for f := range bound {
@@ -147,22 +196,22 @@ func mapTypeCastFree(n chplan.Node) map[*chplan.FuncCall]bool {
 // classifyProjectMapCalls adds the Map calls of p, whose output owes d,
 // into bound or free: every call of a Project that sorts is bound, and
 // otherwise a projection's calls follow whether d owes the projection.
-func classifyProjectMapCalls(p *chplan.Project, d castDemand, bound, free map[*chplan.FuncCall]bool) {
+func classifyProjectMapCalls(p *chplan.Project, d castDemand, bound, free map[chplan.Expr]bool) {
 	if projectSorts(p) {
-		chplan.InspectNodeExprs(p, func(e chplan.Expr) { collectMapTypeCastCalls(bound, e) })
+		chplan.InspectNodeExprs(p, func(e chplan.Expr) { collectMapTypeCastCalls(bound, free, e) })
 		return
 	}
 	for _, pr := range p.Projections {
-		collectMapTypeCastCalls(pickCastSet(d.owes(projectionName(pr)), bound, free), pr.Expr)
+		collectMapTypeCastCalls(pickCastSet(d.owes(projectionName(pr)), bound, free), free, pr.Expr)
 	}
 	for _, pr := range p.Replacements {
-		collectMapTypeCastCalls(pickCastSet(d.owes(pr.Alias), bound, free), pr.Expr)
+		collectMapTypeCastCalls(pickCastSet(d.owes(pr.Alias), bound, free), free, pr.Expr)
 	}
 }
 
 // pickCastSet returns bound when the expression it classifies is owed,
 // free otherwise.
-func pickCastSet(owed bool, bound, free map[*chplan.FuncCall]bool) map[*chplan.FuncCall]bool {
+func pickCastSet(owed bool, bound, free map[chplan.Expr]bool) map[chplan.Expr]bool {
 	if owed {
 		return bound
 	}
@@ -184,14 +233,24 @@ func projectionName(pr chplan.Projection) string {
 }
 
 // collectMapTypeCastCalls adds every Map call of e the cast applies to into
-// set. It stays within e's own expression tree: a plan embedded in e is a
-// node of its own walk.
-func collectMapTypeCastCalls(set map[*chplan.FuncCall]bool, e chplan.Expr) {
+// set, except one nested inside another: the enclosing call derives its own
+// result type from the nested value, so only the enclosing call's type can
+// reach the operator e feeds, and the nested call is added to free. It stays
+// within e's own expression tree: a plan embedded in e is a node of its own
+// walk.
+func collectMapTypeCastCalls(set, free map[chplan.Expr]bool, e chplan.Expr) {
 	chplan.InspectExpr(e, func(x chplan.Expr) bool {
-		if f, ok := isMapTypeCastCall(x); ok {
-			set[f] = true
+		if !isMapTypeCastExpr(x) {
+			return true
 		}
-		return true
+		set[x] = true
+		chplan.InspectExpr(x, func(nested chplan.Expr) bool {
+			if nested != x && isMapTypeCastExpr(nested) {
+				free[nested] = true
+			}
+			return true
+		})
+		return false
 	})
 }
 

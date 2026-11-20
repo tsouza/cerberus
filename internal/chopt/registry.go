@@ -2362,8 +2362,8 @@ const (
 	// FeatureCanonicalMapTypeCast casts every canonical series key — the
 	// mapSort-ordered label Map a GROUP BY, ORDER BY, PARTITION BY or match
 	// key binds to — back to the type ClickHouse parses from its operand's
-	// type name, and every mapConcat or mapApply result back to the type
-	// parsed from its own (chsql.SchemaStrategies.CanonicalMapTypeCast),
+	// type name, and every mapConcat, mapApply or mapFilter result back to the
+	// type parsed from its own (chsql.SchemaStrategies.CanonicalMapTypeCast),
 	// wherever the value can reach an operator that spills: a Map only
 	// Filters, Limits and Projects carry to the result renders bare.
 	// Below 25.1 those functions return a Map whose inner Tuple is unnamed, a
@@ -3054,7 +3054,7 @@ var registry = []Feature{
 		Stability:  Stable,
 		AutoSelect: true,
 		AutoRange:  VersionRange{Until: Version{Major: 25, Minor: 1}},
-		Doc: "cast the mapSort-ordered series key, and every mapConcat or mapApply result an operator that can spill " +
+		Doc: "cast the mapSort-ordered series key, and every mapConcat, mapApply or mapFilter result an operator that can spill " +
 			"reads, back to its parsed type so a GROUP BY or sort over it that spills reads its blocks back " +
 			"(result-equivalent; auto picks it on server " +
 			"< 25.1, where those functions return a type the spilled read-back rejects)",
