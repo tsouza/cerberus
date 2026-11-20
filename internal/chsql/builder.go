@@ -652,14 +652,8 @@ func (b *Builder) Expr(x chplan.Expr) (err error) {
 		return b.exprFunc(v)
 	case *chplan.MapAccess:
 		return b.exprMapAccess(v)
-	case *chplan.MapWithoutKeys:
-		return b.exprMapWithoutKeys(v)
-	case *chplan.MapWithoutEmptyValues:
-		return b.exprMapWithoutEmptyValues(v)
-	case *chplan.LabelReplace:
-		return b.exprLabelReplace(v)
-	case *chplan.LabelJoin:
-		return b.exprLabelJoin(v)
+	case *chplan.MapWithoutKeys, *chplan.MapWithoutEmptyValues, *chplan.LabelReplace, *chplan.LabelJoin:
+		return b.exprParsedMap(v)
 	case *chplan.LineContent:
 		return b.exprLineContent(v)
 	case *chplan.FieldAccess:
@@ -1192,13 +1186,8 @@ func (b *Builder) exprFunc(f *chplan.FuncCall) error {
 	if f.Fn == chplan.FnMapSort {
 		return b.exprCanonicalMap(f)
 	}
-	if parsedMapTypeFns[f.Fn] && !b.mapTypeCastFree(f) {
-		var err error
-		ParsedMapType(func(b *Builder) { err = b.exprFuncCall(f) })(b)
-		if err != nil {
-			return err
-		}
-		return b.err
+	if parsedMapTypeFns[f.Fn] {
+		return b.exprParsedMap(f)
 	}
 	return b.exprFuncCall(f)
 }
@@ -2655,7 +2644,8 @@ func canonicalMap(typeCast bool, m Frag) Frag {
 }
 
 // ParsedMapType renders m, a call to a Map function that derives its result
-// type from the underlying Array(Tuple(key, value)) (mapConcat, mapApply),
+// type from the underlying Array(Tuple(key, value)) (mapConcat, mapApply,
+// mapFilter),
 // cast back to the type ClickHouse parses from m's own type name under
 // SchemaStrategies.CanonicalMapTypeCast:
 //
