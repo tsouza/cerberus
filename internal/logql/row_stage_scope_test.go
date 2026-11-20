@@ -355,48 +355,101 @@ func definingScopeReads(t *testing.T, sql, alias string) bool {
 }
 
 // levelFilterShapes are range aggregations with every kind of
-// detected_level matcher a range aggregation lowers over the level source
-// in WHERE order.
-var levelFilterShapes = []string{
-	`sum(count_over_time({job="jsonapp"} | detected_level="unknown" [5m]))`,
-	`sum(count_over_time({job="jsonapp"} | detected_level="info" or detected_level="unknown" [5m]))`,
-	`sum(count_over_time({job="jsonapp"} | detected_level!="info" [5m]))`,
-	`sum(count_over_time({job="jsonapp"} | detected_level=~"unknown" [5m]))`,
-	`sum(count_over_time({job="jsonapp"} | detected_level=~"info|unknown" [5m]))`,
-	`sum(count_over_time({job="jsonapp"} | detected_level!~"unknown" [5m]))`,
-	`sum(count_over_time({job="wide"} | detected_level=~"err.*" |= "error" [5m]))`,
-}
+// detected_level matcher a range aggregation lowers over the level source,
+// each alone; levelLineFilterShapes have one ahead of a line filter.
+var (
+	levelFilterShapes = []string{
+		`sum(count_over_time({job="jsonapp"} | detected_level="unknown" [5m]))`,
+		`sum(count_over_time({job="jsonapp"} | detected_level="info" or detected_level="unknown" [5m]))`,
+		`sum(count_over_time({job="jsonapp"} | detected_level!="info" [5m]))`,
+		`sum(count_over_time({job="jsonapp"} | detected_level=~"unknown" [5m]))`,
+		`sum(count_over_time({job="jsonapp"} | detected_level=~"info|unknown" [5m]))`,
+		`sum(count_over_time({job="jsonapp"} | detected_level!~"unknown" [5m]))`,
+		`sum(count_over_time({job="wide"} |= "error" | detected_level="error" [5m]))`,
+	}
+	levelLineFilterShapes = []string{
+		`sum(count_over_time({service_name="web-server"} | detected_level="error" |= "error" [5m]))`,
+		`sum(count_over_time({service_name="web-server"} | detected_level="error" or detected_level="warn" |= "error" [5m]))`,
+		`sum(count_over_time({service_name="web-server"} | detected_level!="info" |= "error" [5m]))`,
+		`sum(count_over_time({service_name="tempo"} | detected_level=~"error|fatal" |= "request" [5m]))`,
+		`sum(count_over_time({service_name="tempo"} | detected_level!~"info|debug" |= "request" [5m]))`,
+		`sum(count_over_time({job="wide"} | detected_level=~"err.*" |= "error" [5m]))`,
+		`sum(count_over_time({job="jsonapp"} | detected_level="unknown" | json |= "req" [5m]))`,
+	}
+)
 
 // TestRangeAggregationLevelFilterReadsTheNormalisedLevelOnAReorderingServer
-// pins that a range aggregation's detected_level filter reads the
-// normalised level, not the level source, unless every server runs a
-// multi-step PREWHERE in WHERE order. ClickHouse moves the filter to
-// PREWHERE either way; over the source, the scan hands on the source
-// rather than the level, and on 26.8 a line without a level gives an empty
-// source, so the reader sizes its blocks for a narrower row and an
-// aggregation whose filter keeps every row peaks at about twice the
-// memory. In WHERE order the filter reads the source, so that it runs in
-// the SELECT that reads otel_logs ahead of a line filter written after
-// it.
+// pins that, unless every server runs a multi-step PREWHERE in WHERE order,
+// a range aggregation's detected_level filter that no line filter follows
+// reads the normalised level, not the level source. ClickHouse moves the
+// filter to PREWHERE either way; over the source, a scan that hands on
+// only the source gives an empty one for a line without a level, so on
+// 26.8 the reader sizes its blocks for a narrower row and an aggregation
+// whose filter keeps every row peaks at about twice the memory. In WHERE
+// order the filter reads the source.
 func TestRangeAggregationLevelFilterReadsTheNormalisedLevelOnAReorderingServer(t *testing.T) {
 	t.Parallel()
-	const source, level = "lower(`_logql_level_source`))", "`_logql_detected_level`"
+	const source, level = "`_logql_level_source`", "`_logql_detected_level`"
 	for _, query := range levelFilterShapes {
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 			sql, _ := rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{})
-			if strings.Contains(sql, source) {
-				t.Errorf("on a reordering server, a filter reads the level source: %s", sql)
-			}
 			if !levelFilterReads(sql, level) {
 				t.Errorf("on a reordering server, the level filter does not read %s: %s", level, sql)
 			}
+			if filtersOn(sql, source) {
+				t.Errorf("on a reordering server, a filter reads the level source: %s", sql)
+			}
 			sql, _ = rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{PrewhereInWhereOrder: true})
-			if !strings.Contains(sql, source) {
-				t.Errorf("in WHERE order, the level filter does not read the level source: %s", sql)
+			if !filtersOn(sql, source) {
+				t.Errorf("in WHERE order, no filter reads the level source: %s", sql)
 			}
 		})
 	}
+}
+
+// TestRangeAggregationLevelFilterRunsAheadOfALineFilterWhereTheTableIsRead
+// pins that a range aggregation's detected_level filter that a line filter
+// follows reads the level source in the SELECT that reads otel_logs, ahead
+// of that line filter, so that a server that keeps WHERE order reads the
+// line only for the rows the level keeps. Without WHERE order that SELECT
+// also computes the normalised level, which the scan then hands on in
+// place of the source alone, so the filter running in PREWHERE leaves the
+// reader's blocks sized for the row the aggregation reads; in WHERE order
+// the level stays in the SELECT above the scan.
+func TestRangeAggregationLevelFilterRunsAheadOfALineFilterWhereTheTableIsRead(t *testing.T) {
+	t.Parallel()
+	const source, level, line = "`_logql_level_source`", "AS `_logql_detected_level`", "position(`Body`"
+	for _, query := range levelLineFilterShapes {
+		t.Run(query, func(t *testing.T) {
+			t.Parallel()
+			for _, inOrder := range []bool{false, true} {
+				sql, _ := rangeAggregationSQLUnder(t, query, chplan.SchemaStrategies{PrewhereInWhereOrder: inOrder})
+				scope := scopeAround(t, sql, "FROM `otel_logs`")
+				_, where, _ := strings.Cut(scope, " WHERE ")
+				at, lineAt := strings.Index(where, source), strings.Index(where, line)
+				if at < 0 || lineAt < 0 || at > lineAt {
+					t.Errorf("WHERE order %v: the SELECT reading otel_logs does not filter on the level source ahead of the line filter: %s", inOrder, scope)
+				}
+				if got := strings.Contains(scope, level); got == inOrder {
+					t.Errorf("WHERE order %v: the SELECT reading otel_logs computes the normalised level = %v, want %v: %s", inOrder, got, !inOrder, scope)
+				}
+			}
+		})
+	}
+}
+
+// filtersOn reports whether a WHERE of sql reads column.
+func filtersOn(sql, column string) bool {
+	for _, part := range strings.Split(sql, " WHERE ")[1:] {
+		if end := strings.Index(part, " FROM "); end >= 0 {
+			part = part[:end]
+		}
+		if strings.Contains(part, column) {
+			return true
+		}
+	}
+	return false
 }
 
 // levelFilterReads reports whether a WHERE of sql opens on a predicate
