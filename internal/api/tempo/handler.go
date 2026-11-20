@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1101,6 +1102,13 @@ const (
 	// the slot empty and fall back to chclient.Sample.Value (the
 	// per-row Duration), preserving the historical shape.
 	searchKeyTraceDurationNs = "__cerberus_traceDurationNs"
+	// searchKeyRootMatched is the reserved Labels key carrying, on the
+	// per-trace row of a search ending in by() or coalesce()
+	// (regroupSampleProjections), whether the trace's matched spans
+	// include a root span: "1" or "0". The row names that root only when
+	// it carries the root's service.name; otherwise the root lookup
+	// names it (observeRoot).
+	searchKeyRootMatched = "__cerberus_rootMatched"
 
 	// searchKeySelIntPrefix / searchKeySelStrPrefix carry user-selected
 	// `| select(...)` attribute values through the canonical Labels map
@@ -1213,6 +1221,12 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Traces, meta engine.Met
 		// per trace first. boundNewestTraces caps the result to
 		// the newest `limit` qualifying traces server-side, below the
 		// projection so the TraceStartNs sort key is still in scope.
+		if perTrace, named, ok := regroupRowsPerTrace(plan, s); ok {
+			return &chplan.Project{
+				Input:       boundNewestTraces(perTrace, searchLimitFromMeta(meta)),
+				Projections: regroupSampleProjections(named),
+			}
+		}
 		return &chplan.Project{
 			Input:       boundNewestTraces(spansetRowsPerTrace(plan), searchLimitFromMeta(meta)),
 			Projections: spansetAggregateSampleProjections(),
@@ -1605,6 +1619,152 @@ func envelopeMergeFn(alias string) chplan.Fn {
 	return chplan.FnAny
 }
 
+// regroupRootMatchedAlias / regroupRootNameAlias / regroupRootServiceAlias
+// name the per-trace columns of a search ending in by() or coalesce() that
+// record whether a root span matched, and that root's name and service.
+const (
+	regroupRootMatchedAlias = "RootMatched"
+	regroupRootNameAlias    = "RootName"
+	regroupRootServiceAlias = "RootService"
+)
+
+// regroupEnvelopeAliases are the envelope columns of a by() or coalesce()
+// aggregate the per-trace aggregate of regroupRowsPerTrace carries over:
+// those regroupSampleProjections and boundNewestTraces read.
+var regroupEnvelopeAliases = []string{"Value", sampleTimeUnixCol, "TraceStartNs", "TraceEndNs"}
+
+// regroupRowsPerTrace returns the per-trace aggregate of a search that ends
+// in by() or coalesce(): plan is that stage's aggregate itself, with no
+// scalar filter above it to read a group's own value. The aggregate groups
+// the stage's input by TraceId directly, which yields the span count, the
+// earliest start and the latest end folding the stage's groups
+// (spansetRowsPerTrace) yields, since each fold composes with the stage's
+// own aggregate (sum of counts, min of mins, max of maxes).
+//
+// From the matched spans the row reads whether a root span matched and, when
+// named is true, that root's name and service; a trace whose root did not
+// match is named by the root lookup. named is false over a structural
+// relation: the relation holds every column read above it for each of its
+// rows, so the names are left to the root lookup, which reads them for the
+// few traces the search returns, and a trace whose root matched keeps its
+// matched spans' extent there (observeRoot).
+//
+// ok is false for any other plan, and for a stage whose envelope column is
+// not the aggregate its fold composes with.
+func regroupRowsPerTrace(plan chplan.Node, s schema.Traces) (agg *chplan.Aggregate, named, ok bool) {
+	stage, isAgg := plan.(*chplan.Aggregate)
+	if !isAgg || len(stage.GroupBy) != 2 {
+		return nil, false, false
+	}
+	if ref, isRef := stage.GroupBy[0].(*chplan.ColumnRef); !isRef || ref.Qualifier != "" || ref.Name != s.TraceIDColumn {
+		return nil, false, false
+	}
+	byAlias := make(map[string]chplan.AggFunc, len(stage.AggFuncs))
+	for _, af := range stage.AggFuncs {
+		byAlias[af.Alias] = af
+	}
+	funcs := make([]chplan.AggFunc, 0, len(regroupEnvelopeAliases)+3)
+	for _, alias := range regroupEnvelopeAliases {
+		af, found := byAlias[alias]
+		if !found || !foldComposes(af.Fn, envelopeMergeFn(alias)) {
+			return nil, false, false
+		}
+		funcs = append(funcs, af)
+	}
+	root := isRootSpan(s)
+	funcs = append(funcs, chplan.AggFunc{Fn: chplan.FnMax, Args: []chplan.Expr{root}, Alias: regroupRootMatchedAlias})
+	named = !readsStructuralRelation(stage.Input)
+	if named {
+		funcs = append(
+			funcs,
+			chplan.AggFunc{Fn: chplan.FnArgMax, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SpanNameColumn}, root}, Alias: regroupRootNameAlias},
+			chplan.AggFunc{Fn: chplan.FnArgMax, Args: []chplan.Expr{serviceNameOf(stage.Input.RowType(), s), root}, Alias: regroupRootServiceAlias},
+		)
+	}
+	return &chplan.Aggregate{
+		Input:          stage.Input,
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}},
+		GroupByAliases: []string{"TraceId"},
+		AggFuncs:       funcs,
+	}, named, true
+}
+
+// readsStructuralRelation reports whether n reads a structural relation.
+func readsStructuralRelation(n chplan.Node) bool {
+	found := false
+	chplan.Walk(n, func(c chplan.Node) bool {
+		if _, ok := c.(*chplan.StructuralJoin); ok {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
+// serviceNameOf is the service name of a row of rows: the schema's dedicated
+// service.name column where rows carry it, and the resource attribute
+// otherwise, such as over a scan closed over the columns its reader reads.
+func serviceNameOf(rows chplan.Schema, s schema.Traces) chplan.Expr {
+	if s.ServiceNameColumn != "" {
+		if _, ok := rows.ByName(s.ServiceNameColumn); ok || rows.Open {
+			return &chplan.ColumnRef{Name: s.ServiceNameColumn}
+		}
+	}
+	return &chplan.MapAccess{Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn}, Key: &chplan.LitString{V: "service.name"}}
+}
+
+// foldComposes reports whether folding per-group results of fn with merge
+// equals computing fn over the groups' rows together.
+func foldComposes(fn, merge chplan.Fn) bool {
+	if merge == chplan.FnSum {
+		return fn == chplan.FnCount
+	}
+	return fn == merge
+}
+
+// isRootSpan is whether a span row is a root span: its ParentSpanId is one of
+// the forms observeRoot reads as no parent.
+func isRootSpan(s schema.Traces) chplan.Expr {
+	list := make([]chplan.Expr, len(rootParentSpanIDs))
+	for i, id := range rootParentSpanIDs {
+		list[i] = &chplan.LitString{V: id}
+	}
+	return &chplan.InList{Left: &chplan.ColumnRef{Name: s.ParentSpanIDColumn}, List: list}
+}
+
+// rootParentSpanIDs are the ParentSpanId values of a root span: empty, or an
+// all-zero identifier.
+var rootParentSpanIDs = []string{"", "0", "0000000000000000"}
+
+// regroupSampleProjections shapes the per-trace rows of regroupRowsPerTrace
+// into the search envelope spansetAggregateSampleProjections builds, with the
+// root-matched flag in place of a representative span's ParentSpanId, and
+// the matched root's name and service when the rows carry them (named).
+func regroupSampleProjections(named bool) []chplan.Projection {
+	toString := func(e chplan.Expr) chplan.Expr {
+		return &chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{e}}
+	}
+	pairs := []chplan.Expr{
+		&chplan.LitString{V: searchKeyTraceID},
+		stripLeadingHexZeros("TraceId"),
+		&chplan.LitString{V: searchKeyRootMatched},
+		toString(&chplan.ColumnRef{Name: regroupRootMatchedAlias}),
+		&chplan.LitString{V: searchKeyTraceDurationNs},
+		toString(&chplan.Binary{Op: chplan.OpSub, Left: &chplan.ColumnRef{Name: "TraceEndNs"}, Right: &chplan.ColumnRef{Name: "TraceStartNs"}}),
+	}
+	var name chplan.Expr = &chplan.LitString{V: ""}
+	if named {
+		pairs = append(pairs, &chplan.LitString{V: "service.name"}, toString(&chplan.ColumnRef{Name: regroupRootServiceAlias}))
+		name = &chplan.ColumnRef{Name: regroupRootNameAlias}
+	}
+	return []chplan.Projection{
+		{Expr: name, Alias: sampleMetricNameCol},
+		{Expr: &chplan.FuncCall{Fn: chplan.FnMap, Args: pairs}, Alias: sampleAttributesCol},
+		{Expr: &chplan.ColumnRef{Name: sampleTimeUnixCol}, Alias: sampleTimeUnixCol},
+		{Expr: &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}, Alias: "Value"},
+	}
+}
+
 // spansetAggregateRoot returns the Aggregate at the root of a spanset-
 // aggregate plan, under any scalar-filter Filter, or nil.
 func spansetAggregateRoot(plan chplan.Node) *chplan.Aggregate {
@@ -1913,6 +2073,7 @@ func toTraceSummaries(samples []chclient.Sample, spss int, meta engine.Meta) ([]
 			RootTraceName:     a.traceName,
 			StartTimeUnixNano: strconv.FormatInt(a.startNS, 10),
 			DurationMs:        int(a.durationNS / 1_000_000),
+			keepMatchedExtent: a.keepMatchedExtent,
 		}
 		if set := a.buildSpanSet(spss); set != nil {
 			// Both fields carry the same set: spanSets is what Grafana's
@@ -1958,12 +2119,18 @@ type summaryAcc struct {
 	// hasRoot is true once we've seen a span with ParentSpanId == "".
 	hasRoot bool
 	// sawParentSlot is true once any of the trace's rows supplied
-	// the reserved `__cerberus_parentSpanID` slot. When false the
+	// the reserved `__cerberus_parentSpanID` slot or the
+	// `__cerberus_rootMatched` flag. When false the
 	// shaper can't distinguish root from child (e.g. legacy fixtures
 	// + stub queriers that never populate the slot), so the
 	// missing-root follow-up lookup is suppressed and the
 	// earliest-span fallback handles the trace alone.
 	sawParentSlot bool
+	// keepMatchedExtent is set when a per-trace row reports that a
+	// root span matched (`__cerberus_rootMatched`): the root lookup
+	// names the root but leaves durationMs at the matched spans'
+	// extent.
+	keepMatchedExtent bool
 	// hasTraceDurationNs is set the first time a row supplies the
 	// `__cerberus_traceDurationNs` reserved-key entry. Once true,
 	// `durationNS` carries the trace-wide span and per-row Sample.
@@ -2115,11 +2282,26 @@ func selectedSpanAttributes(labels map[string]string) []KeyValue {
 // `parentID, hasParentSlot := ...` captures the "did we get the
 // projection" signal independently of the emptiness check.
 func (a *summaryAcc) observeRoot(s chclient.Sample, ns int64) {
+	if flag, ok := s.Labels[searchKeyRootMatched]; ok {
+		// A per-trace row. It names a matched root when it carries the
+		// root's service; otherwise the root lookup names the root, and
+		// a matched root keeps the matched spans' extent, as a matched
+		// root row does.
+		a.sawParentSlot = true
+		svc, named := s.Labels["service.name"]
+		switch {
+		case flag == "1" && named:
+			a.hasRoot, a.rootStartNS, a.serviceName, a.traceName = true, ns, svc, s.MetricName
+		case flag == "1":
+			a.keepMatchedExtent = true
+		}
+		return
+	}
 	parentID, hasParentSlot := s.Labels[searchKeyParentSpanID]
 	if hasParentSlot {
 		a.sawParentSlot = true
 	}
-	isRoot := hasParentSlot && (parentID == "" || parentID == "0" || parentID == "0000000000000000")
+	isRoot := hasParentSlot && slices.Contains(rootParentSpanIDs, parentID)
 	svc := s.Labels["service.name"]
 	switch {
 	case isRoot && (!a.hasRoot || ns < a.rootStartNS):
