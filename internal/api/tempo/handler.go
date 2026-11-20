@@ -308,6 +308,28 @@ func (h *Handler) ResolveMissingRoots(ctx context.Context, summaries []TraceSumm
 	return nil
 }
 
+// ResolveSearchRoots patches the summaries whose trace ids are in missing
+// with their root metadata, as ResolveMissingRoots does, for summaries shaped
+// from run. When the search already looked up its chosen traces' roots
+// (SearchRun), that answer is reused for the missing ones and no lookup is
+// issued; otherwise it is ResolveMissingRoots.
+func (h *Handler) ResolveSearchRoots(ctx context.Context, run SearchRun, summaries []TraceSummary, missing []string) error {
+	if len(missing) == 0 {
+		return nil
+	}
+	if !run.rootsLooked {
+		return h.ResolveMissingRoots(ctx, summaries, missing)
+	}
+	roots := make(map[string]rootMetadata, len(missing))
+	for _, id := range missing {
+		if root, ok := run.roots[id]; ok {
+			roots[id] = root
+		}
+	}
+	applyRootMetadata(summaries, roots)
+	return nil
+}
+
 // Mount registers the Tempo-compatible endpoints under /api/ on mux.
 // /api/echo + /api/status/version satisfy Grafana's datasource health
 // check; /api/search runs a TraceQL query; /api/traces/{id} fetches a
@@ -549,11 +571,12 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// One shared entry point (SearchResult) parses, routes the two-phase
 	// split, and executes — the SAME method the gRPC Search head calls, so the
 	// two transports cannot diverge on eligibility.
-	res, err := h.SearchResult(ctx, q, limit)
+	run, err := h.SearchResult(ctx, q, limit)
 	if err != nil {
 		writeError(w, httpErrStatus(r.Context(), err), "", "", err)
 		return
 	}
+	res := run.Result
 	h.Logger.Debug("cerberus tempo search", "traceql", telemetry.SanitizeForLog(q), "sql", res.SQL, "args", telemetry.SanitizeArgsForLog(res.Args))
 
 	summaries, missingRoots := toTraceSummaries(res.Samples, spss, res.Meta)
@@ -576,12 +599,9 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		// trace has a root. Reference Tempo likewise treats root
 		// metadata as best-effort and answers 200 for a trace whose
 		// root it lacks.
-		roots, lookupErr := h.resolveTraceRoots(ctx, missingRoots)
-		if lookupErr != nil {
+		if lookupErr := h.ResolveSearchRoots(ctx, run, summaries, missingRoots); lookupErr != nil {
 			h.Logger.Warn("cerberus tempo root-span lookup failed",
 				"err", lookupErr, "missing", len(missingRoots))
-		} else {
-			applyRootMetadata(summaries, roots)
 		}
 	}
 	FinishTraceSummaries(summaries, res.Meta)
