@@ -324,7 +324,8 @@ type SettingsRules struct {
 	// filter on a value it computes above the scan's scope, such as the
 	// unwrap source, above the SELECT that reads the table
 	// (filterReadsAboveRowScope). A filter on a value the scan's scope
-	// computes, and the range window's own time bound, get no stamp. Driven
+	// computes, a filter on the level in a stage that computes nothing else,
+	// and the range window's own time bound get no stamp. Driven
 	// by the merge_plan_filters registry feature, which auto picks on the
 	// releases that have the setting off by default
 	// (chopt.FeatureMergePlanFilters).

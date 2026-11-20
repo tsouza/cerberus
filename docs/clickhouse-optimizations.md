@@ -267,8 +267,10 @@ Notes:
   into the ones below it and runs it in the table's `PREWHERE`, so the columns
   only later stages read (the detected level's severity columns) are read only
   for the rows it keeps. A query whose filters read only values the scan's
-  scope computes (a parser's labels, a detected_level matcher that the scope
-  answers), or that has no filter above the scan's scope at all, is not
+  scope computes (a parser's labels), or the detected level in a stage that
+  computes nothing else, whether the scope answers that matcher or, while the
+  WHERE-order fact is unset, a `SELECT` above it does, or that has no filter
+  above the scan's scope at all, is not
   stamped; neither is a log query, whose filters all run in the scan's scope. `auto` picks it on servers `>= 24.7` and `< 24.11`, the
   releases that ship the setting off; from 24.11 it is the server's default.
   A settings profile that

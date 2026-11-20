@@ -127,9 +127,11 @@ func TestRangeAggregationFilterAboveTheScanSparesTheSeverity(t *testing.T) {
 }
 
 // mergePlanFiltersScopeQueries are range aggregations whose per-row stage
-// leaves above the scan's scope only filters on values the scope computes —
-// a detected_level matcher the scope answers, a parsed label's filter on the
-// parser's labels — or no filter at all. On 24.8 the setting spares them
+// leaves above the scan's scope only filters on values the scope computes,
+// such as a parsed label's filter on the parser's labels, or a filter on the
+// detected level in a stage that computes nothing else — a matcher the
+// scope answers while the WHERE-order fact is set, and that a SELECT over
+// the scope answers while it is unset — or no filter at all. On 24.8 the setting spares them
 // about a thousandth of their bytes at most, and can triple their peak
 // memory. The test pins that they carry no setting: the same statement with
 // and without it differs only in where the server runs the filters, so the
@@ -150,7 +152,9 @@ var mergePlanFiltersScopeQueries = []string{
 // floor server gets query_plan_merge_filters on: mergePlanFiltersQuery,
 // whose status filter reads the labels its unwrap computes above the scan's
 // scope, carries it, and each of mergePlanFiltersScopeQueries carries none
-// and answers with samples from the seeded stream.
+// and answers with samples from the seeded stream. Both hold with the
+// WHERE-order fact set, as it is once a fleet pass has read every node of a
+// build that keeps WHERE order, and with it unset, as it is before.
 func TestRangeAggregationScopeFiltersRunWithoutMergeFilters(t *testing.T) {
 	ctx := context.Background()
 	s := startServer(ctx, t, mergePlanFiltersImage)
@@ -167,19 +171,22 @@ func TestRangeAggregationScopeFiltersRunWithoutMergeFilters(t *testing.T) {
 		t.Fatalf("auto on %s leaves out %s; the test needs a build it resolves on", s.version, chopt.FeatureMergePlanFilters)
 	}
 	admin := s.client(t, adminUser, adminPassword, chclient.Config{})
-	mux := mergePlanFiltersMux(t, s, admin, rules)
-
-	if run := queryMergePlanFilters(ctx, t, s, mux); run.mergeFilters != "1" {
-		t.Errorf("%s carries %s=%q; want 1:\n%s", mergePlanFiltersQuery, chopt.SettingQueryPlanMergeFilters, run.mergeFilters, run.statement)
-	}
-	for _, query := range mergePlanFiltersScopeQueries {
-		t.Run(query, func(t *testing.T) {
-			run := queryMergePlanFiltersShape(ctx, t, s, mux, query)
-			if run.mergeFilters != "" {
-				t.Errorf("the statement carries %s=%q; want none:\n%s", chopt.SettingQueryPlanMergeFilters, run.mergeFilters, run.statement)
+	for _, whereOrder := range []bool{true, false} {
+		t.Run("where order "+strconv.FormatBool(whereOrder), func(t *testing.T) {
+			mux := mergePlanFiltersMuxOrdered(t, s, admin, rules, whereOrder)
+			if run := queryMergePlanFilters(ctx, t, s, mux); run.mergeFilters != "1" {
+				t.Errorf("%s carries %s=%q; want 1:\n%s", mergePlanFiltersQuery, chopt.SettingQueryPlanMergeFilters, run.mergeFilters, run.statement)
 			}
-			if run.samples == 0 {
-				t.Errorf("the query answers %s; want samples from the seeded stream", run.answer)
+			for _, query := range mergePlanFiltersScopeQueries {
+				t.Run(query, func(t *testing.T) {
+					run := queryMergePlanFiltersShape(ctx, t, s, mux, query)
+					if run.mergeFilters != "" {
+						t.Errorf("the statement carries %s=%q; want none:\n%s", chopt.SettingQueryPlanMergeFilters, run.mergeFilters, run.statement)
+					}
+					if run.samples == 0 {
+						t.Errorf("the query answers %s; want samples from the seeded stream", run.answer)
+					}
+				})
 			}
 		})
 	}
@@ -193,8 +200,15 @@ const codeSettingConstraintViolation = 452
 // s's build resolves to and rules.
 func mergePlanFiltersMux(t *testing.T, s *server, client *chclient.Client, rules engine.SettingsRules) *http.ServeMux {
 	t.Helper()
+	return mergePlanFiltersMuxOrdered(t, s, client, rules, chopt.PrewhereKeepsWhereOrder(s.version))
+}
+
+// mergePlanFiltersMuxOrdered is mergePlanFiltersMux with the WHERE-order fact
+// set to whereOrder.
+func mergePlanFiltersMuxOrdered(t *testing.T, s *server, client *chclient.Client, rules engine.SettingsRules, whereOrder bool) *http.ServeMux {
+	t.Helper()
 	cell := chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{})
-	cell.SetPrewhereInWhereOrder(chopt.PrewhereKeepsWhereOrder(s.version))
+	cell.SetPrewhereInWhereOrder(whereOrder)
 	h := loki.New(client, schema.DefaultOTelLogs(), nil)
 	h.Strategies = cell
 	h.Engine.SetSettings(rules)

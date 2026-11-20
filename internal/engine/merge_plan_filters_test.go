@@ -28,6 +28,25 @@ func rowStage(oneScope bool) *chplan.Project {
 	return marked
 }
 
+// levelOverParsedScope is a per-row stage whose scan scope defines a
+// parser's labels, whose marked Project defines the level source, and
+// whose next Project normalises it.
+func levelOverParsedScope() chplan.Node {
+	scope := project(&chplan.Scan{Table: "otel_logs"}, "_logql_labels_1", "Body")
+	marked := project(scope, chplan.LogLevelSourceAlias, "SeverityText")
+	marked.OneScopeRows = true
+	return project(marked, chplan.DetectedLevelAlias, chplan.LogLevelSourceAlias)
+}
+
+// levelOverLineFilter is a per-row stage whose scan scope filters on the
+// line and defines the level source, and whose marked Project normalises it.
+func levelOverLineFilter() chplan.Node {
+	scope := project(&chplan.Filter{Input: &chplan.Scan{Table: "otel_logs"}, Predicate: eqString("Body", "status=500")}, chplan.LogLevelSourceAlias, "SeverityText")
+	marked := project(scope, chplan.DetectedLevelAlias, chplan.LogLevelSourceAlias)
+	marked.OneScopeRows = true
+	return marked
+}
+
 // unwrapFilterPlan is #4431's shape 1: the unwrap source is computed over
 // the marked Project, and a Filter above reads it.
 func unwrapFilterPlan(oneScope bool) chplan.Node {
@@ -39,11 +58,21 @@ func unwrapFilterPlan(oneScope bool) chplan.Node {
 // the rule on, which auto resolves on the releases that have
 // query_plan_merge_filters off by default, a plan whose per-row stage leaves
 // a filter on a value computed above the scan's scope — over the marked
-// Project, or by the marked Project itself — gets the setting at 1.
+// Project, or by the marked Project itself — gets the setting at 1. So does a
+// filter on a level value alone where the stage under it also computes a
+// parser's labels.
 func TestApply_MergePlanFilters_StampsAFilterOnAValueAboveTheScanScope(t *testing.T) {
 	for name, plan := range map[string]chplan.Node{
 		"value over the marked project": unwrapFilterPlan(true),
-		"value of the marked project":   &chplan.Filter{Input: rowStage(true), Predicate: eqString("_logql_detected_level", "error")},
+		// A parser's labels stay in the scope and the level source is the
+		// marked Project's, so the normalised level sits over it.
+		"normalised level over a parsed scope": &chplan.Filter{Input: levelOverParsedScope(), Predicate: eqString(chplan.DetectedLevelAlias, "error")},
+		"level source over a parsed scope":     &chplan.Filter{Input: levelOverParsedScope(), Predicate: eqString(chplan.LogLevelSourceAlias, "error")},
+		"value of the marked project": func() chplan.Node {
+			marked := project(&chplan.Scan{Table: "otel_logs"}, "_logql_unwrap_source", "Body")
+			marked.OneScopeRows = true
+			return &chplan.Filter{Input: marked, Predicate: eqString("_logql_unwrap_source", "500")}
+		}(),
 		// A filter on a scan-scope value, which on its own gets no stamp,
 		// sits between the status filter and the marked Project.
 		"value over another filter": &chplan.Filter{
@@ -72,8 +101,9 @@ func TestApply_MergePlanFilters_StampsAFilterOnAValueAboveTheScanScope(t *testin
 
 // TestApply_MergePlanFilters_LeavesOtherPlansAlone: the rule stamps nothing
 // when it is off, on a plan with no LogQL per-row stage, on a per-row stage
-// whose filters read only values the scan's scope defines (#4469), or on a
-// per-row stage with no filter above its scan scope: the range window's own
+// whose filters read only values the scan's scope defines (#4469), or the
+// level in a stage that computes nothing else, or on a per-row stage with no
+// filter above its scan scope: the range window's own
 // time bound is the emitter's, never a plan Filter, so such a plan has none.
 func TestApply_MergePlanFilters_LeavesOtherPlansAlone(t *testing.T) {
 	cases := []struct {
@@ -87,6 +117,19 @@ func TestApply_MergePlanFilters_LeavesOtherPlansAlone(t *testing.T) {
 			name:  "filter on a scan-scope value",
 			rules: SettingsRules{MergePlanFilters: true},
 			plan:  &chplan.Filter{Input: rowStage(true), Predicate: eqString("_logql_level_source", "error")},
+		},
+		{
+			// The detected_level filter a range aggregation leaves over the
+			// scope while the WHERE-order fact is unset.
+			name:  "filter on the normalised level of the marked project",
+			rules: SettingsRules{MergePlanFilters: true},
+			plan:  &chplan.Filter{Input: rowStage(true), Predicate: eqString(chplan.DetectedLevelAlias, "error")},
+		},
+		{
+			// The same matcher over a line filter in the scan's scope.
+			name:  "filter on the normalised level over a line filter",
+			rules: SettingsRules{MergePlanFilters: true},
+			plan:  &chplan.Filter{Input: levelOverLineFilter(), Predicate: eqString(chplan.DetectedLevelAlias, "error")},
 		},
 		{
 			name:  "filter on a value passed through the marked project",

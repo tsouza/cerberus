@@ -53,6 +53,16 @@ type Project struct {
 	OneScopeRows bool
 }
 
+// LogLevelSourceAlias and DetectedLevelAlias are the columns a LogQL range
+// aggregation's per-row stage defines for the synthesized detected_level:
+// the raw level source and its normalised value. internal/logql defines
+// them, and internal/engine reads them to tell a filter on the level from a
+// filter on a value the stage parses or unwraps.
+const (
+	LogLevelSourceAlias = "_logql_level_source"
+	DetectedLevelAlias  = "_logql_detected_level"
+)
+
 func (*Project) planNode() {}
 
 func (p *Project) Children() []Node { return []Node{p.Input} }

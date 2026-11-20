@@ -2381,9 +2381,10 @@ const (
 	// pushes such a filter down into the table's PREWHERE only when it may
 	// merge it with the filters below it, so that the table's other columns
 	// are read only for the rows it keeps. A plan whose filters read only
-	// values the scan's scope computes, or that has no filter above the
-	// scan's scope, gets no stamp: on 24.8 the setting spares such a plan
-	// about a thousandth of its bytes at most and can triple its peak memory
+	// values the scan's scope computes, or the level in a stage that
+	// computes nothing else, or that has no filter above the scan's scope,
+	// gets no stamp: on 24.8 the setting spares such a plan about a thousandth of its
+	// bytes at most and can triple its peak memory
 	// (https://github.com/tsouza/cerberus/issues/4469). ClickHouse 24.7 adds
 	// the setting off, and 24.11 turns it on by default, so auto picks the
 	// feature from 24.7 up to 24.11 (Feature.AutoRange), where it brings the

@@ -420,8 +420,23 @@ func (f planShapeFacts) singleScanTable() (table string, ok bool) {
 // count, and neither does a filter whose input reaches a node other than a
 // Filter or a Project first. A LogQL log query's filters all sit under its
 // marked Project, so none of them counts.
+//
+// A filter whose only such value is a level value, chplan.LogLevelSourceAlias
+// or chplan.DetectedLevelAlias, counts only when the stage under it defines
+// a value besides the level values, such as a parser's labels: merged into
+// the table's PREWHERE, the level filter then runs before the stage reads
+// the line for that value. A stage that computes nothing but the level, a
+// detected_level matcher with or without a line filter, has no such read to
+// spare: on 24.8 the setting spares it about a thousandth of its bytes at
+// most while it can triple its peak memory
+// (https://github.com/tsouza/cerberus/issues/4469). The lowering leaves such
+// a matcher over the scope, on the normalised level, while the WHERE-order
+// fact (chplan.SchemaStrategies.PrewhereInWhereOrder) is unset, which it is
+// until a fleet pass has read every node, and in the scope once it is set,
+// so neither arrangement gets the stamp.
 func filterReadsAboveRowScope(f *chplan.Filter) bool {
-	above := map[string]bool{}
+	above, defined := map[string]bool{}, map[string]bool{}
+	marked := false
 	for n := f.Input; ; {
 		if filter, ok := n.(*chplan.Filter); ok {
 			n = filter.Input
@@ -429,19 +444,31 @@ func filterReadsAboveRowScope(f *chplan.Filter) bool {
 		}
 		p, ok := n.(*chplan.Project)
 		if !ok {
-			return false
+			if !marked {
+				return false
+			}
+			break
 		}
 		for _, projections := range [][]chplan.Projection{p.Projections, p.Replacements} {
 			for _, projection := range projections {
-				if projection.Alias != "" {
+				if projection.Alias == "" {
+					continue
+				}
+				defined[projection.Alias] = true
+				if !marked {
 					above[projection.Alias] = true
 				}
 			}
 		}
-		if p.OneScopeRows {
-			break
-		}
+		marked = marked || p.OneScopeRows
 		n = p.Input
 	}
-	return chplan.ReadsAnyColumn(f.Predicate, above)
+	if !chplan.ReadsAnyColumn(f.Predicate, above) {
+		return false
+	}
+	for _, level := range []string{chplan.LogLevelSourceAlias, chplan.DetectedLevelAlias} {
+		delete(above, level)
+		delete(defined, level)
+	}
+	return chplan.ReadsAnyColumn(f.Predicate, above) || len(defined) > 0
 }
