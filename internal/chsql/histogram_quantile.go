@@ -175,7 +175,11 @@ func (e *emitter) emitHistogramQuantile(h *chplan.HistogramQuantile) error {
 		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
 	sb.SelectAs(histogramQuantileValueFrag(h, helpers), "Value")
-	return e.emitSelect(sb)
+	answer, err := materializeHistogramOutput(sb, h.RowType())
+	if err != nil {
+		return err
+	}
+	return e.emitSelect(answer)
 }
 
 // histogramQuantileValueFrag returns the Frag that renders the per-row

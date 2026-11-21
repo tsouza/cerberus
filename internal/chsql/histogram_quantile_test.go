@@ -2,6 +2,7 @@ package chsql
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -192,5 +193,48 @@ func TestHistogramQuantileValueFrag_EmptyLadderGuardIsNoBranch(t *testing.T) {
 				t.Errorf("%s kernel (cumulative=%v) branches on an empty ladder:\n%s", name, cumulative, sql)
 			}
 		}
+	}
+}
+
+// TestEmitHistogramQuantile_AnswerLeavesThroughOutputBoundary pins that both
+// singular classic kernels hand their answer up through the output boundary
+// (materializeHistogramOutput): the statement selects every output column
+// from the boundary's tuple, and the boundary's singleton ARRAY JOIN reads
+// the kernel's `Value`. Without it ClickHouse runs the kernel after the
+// result's series-order sort, over the sort's output blocks, which raised a
+// range quantile's peak several-fold (#4518).
+func TestEmitHistogramQuantile_AnswerLeavesThroughOutputBoundary(t *testing.T) {
+	t.Parallel()
+	const (
+		outer    = "SELECT `_cerb_histogram_output`.1 AS `AttrsAlias`, `_cerb_histogram_output`.2 AS `Value` FROM (SELECT arrayJoin([(`AttrsAlias`, `Value`)]) AS `_cerb_histogram_output` FROM (SELECT `Attributes` AS `AttrsAlias`, "
+		answered = " AS `Value` FROM (SELECT *, arrayFirstIndex("
+	)
+	for name, native := range map[string]bool{"interpolating": false, "native": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := rankWalkNativePlan()
+			h.UseNativeQuantileAggregate = native
+			sql, _, err := Emit(context.Background(), h)
+			if err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			if !strings.HasPrefix(sql, outer) {
+				t.Errorf("the quantile's answer must leave through the output boundary, want prefix %q\nSQL: %s", outer, sql)
+			}
+			if !native && !strings.Contains(sql, answered) {
+				t.Errorf("the boundary must read the kernel's own Value\nSQL: %s", sql)
+			}
+		})
+	}
+}
+
+// TestMaterializeHistogramOutput_RefusesAnUnnamedColumn pins that the output
+// boundary refuses a row with a column it cannot read by name, rather than
+// emitting a tuple that names an empty column.
+func TestMaterializeHistogramOutput_RefusesAnUnnamedColumn(t *testing.T) {
+	t.Parallel()
+	row := chplan.Schema{Columns: []chplan.Column{{Name: "Attributes"}, {Name: ""}}}
+	if _, err := materializeHistogramOutput(NewQuery().Select(Star()), row); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("materializeHistogramOutput over an unnamed column: err = %v, want ErrUnsupported", err)
 	}
 }

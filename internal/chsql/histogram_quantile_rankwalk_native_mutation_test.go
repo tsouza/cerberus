@@ -111,8 +111,10 @@ func TestEmitHistogramQuantileRankWalkNative_GroupByAliases(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Emit: %v", err)
 			}
-			if !strings.HasPrefix(sql, tc.want) {
-				t.Errorf("emitted SQL does not start with %q\nSQL: %s", tc.want, sql)
+			// The quantile's SELECT sits under its output boundary
+			// (materializeHistogramOutput).
+			if !strings.Contains(sql, "FROM ("+tc.want) {
+				t.Errorf("emitted SQL does not select %q under its output boundary\nSQL: %s", tc.want, sql)
 			}
 			// The aggregate itself: present only when the emitter ran past
 			// its own error guards and built every stage.

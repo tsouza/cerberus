@@ -4,12 +4,14 @@ package chserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,12 +70,20 @@ const (
 // (1.0x) and 102 against 77 MiB (1.3x) (#4518).
 const classicKernelBlockMaxRatio = 2
 
+// classicKernelArrayType marks an array column in an EXPLAIN header.
+const classicKernelArrayType = "Array("
+
 // TestClassicBucketRange_KernelPeakAcrossBlocks serves the per-series range
 // quantile `histogram_quantile(0.9, rate(<bucket>[5m]))` through the
 // production handler on each build, checks every point against the quantile
 // the seed implies, then runs the dispatched statement again with the kernel
 // moved before the series-order sort. The served statement must peak at no
-// more than classicKernelBlockMaxRatio times the second run.
+// more than classicKernelBlockMaxRatio times the second run, and the plan
+// ClickHouse builds for it must sort the quantile's answer, not the bucket
+// arrays the kernel reads: at the server default
+// (query_plan_execute_functions_after_sorting=1) an expression the sort keys
+// do not read moves after the sort unless a row-count change, the quantile's
+// output boundary, holds it beneath (#4518).
 func TestClassicBucketRange_KernelPeakAcrossBlocks(t *testing.T) {
 	for _, image := range classicKernelBlockBuilds {
 		t.Run(image, func(t *testing.T) {
@@ -120,6 +130,13 @@ func TestClassicBucketRange_KernelPeakAcrossBlocks(t *testing.T) {
 			if served.peak > classicKernelBlockMaxRatio*belowSort.peak {
 				t.Fatalf("%s: the served statement peaked at %d bytes against %d with the kernel before the sort; want at most %dx",
 					s.version, served.peak, belowSort.peak, classicKernelBlockMaxRatio)
+			}
+
+			for _, column := range s.classicKernelOuterSortHeader(ctx, t, served) {
+				if strings.Contains(column.Type, classicKernelArrayType) {
+					t.Fatalf("%s: the served statement's series-order sort carries %s %s; want the quantile's answer computed beneath the sort, so the sort carries no bucket array",
+						s.version, column.Name, column.Type)
+				}
 			}
 		})
 	}
@@ -245,4 +262,67 @@ func (s *server) classicKernelBlockRecord(ctx context.Context, t *testing.T, qid
 		t.Fatalf("read query_log for %s: %v", qid, err)
 	}
 	return r
+}
+
+// classicExplainColumn is one column of a step's header in ClickHouse's
+// `EXPLAIN PLAN header = 1, json = 1` output.
+type classicExplainColumn struct {
+	Name string `json:"Name"`
+	Type string `json:"Type"`
+}
+
+// classicExplainStep is one step of that output.
+type classicExplainStep struct {
+	NodeType string                 `json:"Node Type"`
+	Header   []classicExplainColumn `json:"Header"`
+	Plans    []classicExplainStep   `json:"Plans"`
+}
+
+// classicKernelOuterSortHeader returns the header of the outermost Sorting
+// step, the result's series-order sort, in the plan ClickHouse builds for
+// run's statement under run's settings.
+func (s *server) classicKernelOuterSortHeader(ctx context.Context, t *testing.T, run classicKernelBlockRun) []classicExplainColumn {
+	t.Helper()
+	settings := clickhouse.Settings{}
+	for name, value := range run.settings {
+		settings[name] = value
+	}
+	rows, err := s.admin.Conn().Query(clickhouse.Context(ctx, clickhouse.WithSettings(settings)), "EXPLAIN PLAN header = 1, json = 1 "+run.statement)
+	if err != nil {
+		t.Fatalf("%s: explain the served statement: %v", s.version, err)
+	}
+	var out strings.Builder
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatalf("%s: read the served statement's plan: %v", s.version, err)
+		}
+		out.WriteString(line)
+		out.WriteByte('\n')
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("%s: read the served statement's plan: %v", s.version, err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("%s: close the served statement's plan: %v", s.version, err)
+	}
+	var plans []struct {
+		Plan classicExplainStep `json:"Plan"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &plans); err != nil || len(plans) == 0 {
+		t.Fatalf("%s: decode the served statement's plan (%v): %s", s.version, err, out.String())
+	}
+	level := []classicExplainStep{plans[0].Plan}
+	for len(level) > 0 {
+		var next []classicExplainStep
+		for _, step := range level {
+			if step.NodeType == "Sorting" {
+				return step.Header
+			}
+			next = append(next, step.Plans...)
+		}
+		level = next
+	}
+	t.Fatalf("%s: the served statement's plan has no Sorting step: %s", s.version, out.String())
+	return nil
 }
