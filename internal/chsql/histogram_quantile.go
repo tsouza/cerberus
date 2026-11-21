@@ -300,20 +300,18 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile, helpers hqClassicHe
 	)
 
 	// Nested edge-case chain, outermost first:
-	//   if(length(bc) = 0, nan,
-	//      if(observations = 0, nan,
-	//         if(phi < 0, -inf,
-	//            if(phi > 1, inf, idxBranch))))
+	//   if(observations = 0, nan,
+	//      if(phi < 0, -inf,
+	//         if(phi > 1, inf, idxBranch)))
 	//
 	// Prometheus semantics (`bucketQuantile`'s domain guards in quantile.go):
 	// phi < 0 → -Inf, phi > 1 → +Inf are OUT of domain. phi == 0 and phi == 1 are IN domain and
 	// fall through to idxBranch: phi == 0 → target 0 → idx 1 → lower edge
 	// 0.0; phi == 1 → target observations → idx == length(cum) → highest finite
 	// bound. ClickHouse parses the bare `inf` / `-inf` tokens as Float64.
-	core := If(Eq(w.lengthBC(), InlineLit(0)), nan,
-		If(Eq(w.observations(), InlineLit(0)), nan,
-			If(Lt(w.phi(), InlineLit(0)), negInf,
-				If(Gt(w.phi(), InlineLit(1)), posInf, idxBranch))))
+	core := w.emptyLadderNaN(nan,
+		If(Lt(w.phi(), InlineLit(0)), negInf,
+			If(Gt(w.phi(), InlineLit(1)), posInf, idxBranch)))
 
 	if h.PhiExpr == nil {
 		return core
@@ -342,7 +340,6 @@ type hqClassicWriters struct {
 	idx           func() Frag
 	cumAt         func(offsetMinusOne bool) Frag
 	boundAt       func(offsetMinusOne bool) Frag
-	lengthBC      func() Frag
 	boundCount    func() Frag
 	cumCount      func() Frag
 }
@@ -400,9 +397,6 @@ func newHQClassicWriters(h *chplan.HistogramQuantile, helpers hqClassicHelperCol
 		}
 		return Call("arrayMap", Lambda1("x", Call("toFloat64", BareIdent("x"))), Col(bc))
 	}
-	// length(BucketCounts) reads the raw column directly: it is the
-	// "row carries no buckets at all" test, and the cast preserves length.
-	w.lengthBC = func() Frag { return Call("length", Col(bc)) }
 	w.boundCount = func() Frag { return Call("length", Col(eb)) }
 	w.cumCount = func() Frag { return Call("length", w.buckets()) }
 
@@ -568,4 +562,22 @@ func newHQClassicWriters(h *chplan.HistogramQuantile, helpers hqClassicHelperCol
 	}
 
 	return w
+}
+
+// emptyLadderNaN renders `if(observations = 0, nan, value)`: Prometheus's
+// bucketQuantile answers NaN for a histogram with no observations. A row
+// with no buckets at all is one of them: its per-bucket sum is 0, and its
+// cumulative ladder is empty or zero-padded to the bounds' length, so its
+// top rung reads 0 too.
+//
+// The guard reads observations alone, never length(BucketCounts), which
+// answers nothing it does not. A kernel whose outermost branch tested
+// length(BucketCounts) = 0 peaked at about 13 KiB per row of the block
+// ClickHouse evaluated it over, whichever block size that was: 256 MiB
+// over one 15,000-row block on 26.3.17.56, and 800 MiB on 26.3 and 26.8
+// once the range result's series-order sort handed it 45,000-row blocks.
+// Without that test the same statements peaked at 60 and 150 MiB, with the
+// same answers (https://github.com/tsouza/cerberus/issues/4518).
+func (w hqClassicWriters) emptyLadderNaN(nan, value Frag) Frag {
+	return If(Eq(w.observations(), InlineLit(0)), nan, value)
 }

@@ -1,0 +1,23 @@
+An `le` matcher that keeps no +Inf rung leaves a ladder Prometheus will
+not interpolate, and histogram_quantile answers NaN. The restriction
+collapses the row's BucketCounts to an empty array, whose ladder holds
+no observations, so the kernel's observations guard answers the NaN.
+
+-- query.promql --
+histogram_quantile(0.5, http_server_request_duration_bucket{le=~"1|2.5"})
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('http_server_request_duration', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [1, 5, 2, 1, 1], [0.05, 0.1, 1.0, 2.5]);
+-- expected_rows --
+[]

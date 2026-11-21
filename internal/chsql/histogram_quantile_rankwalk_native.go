@@ -66,9 +66,7 @@ func histogramQuantileRankWalkNativeValueFrag(h *chplan.HistogramQuantile, helpe
 	bounds := Call("arrayPushBack", w.bounds(), posInf)
 	counts := If(Neq(w.cumCount(), w.boundCount()), w.cum(), Call("arrayPushBack", w.cum(), w.observations()))
 	value := Call("arrayReduce", aggregate, bounds, counts)
-	core := If(Eq(w.lengthBC(), InlineLit(0)), nan,
-		If(Eq(w.observations(), InlineLit(0)), nan,
-			If(Lt(w.phi(), zero), negInf, If(Gt(w.phi(), one), posInf, value))))
+	core := w.emptyLadderNaN(nan, If(Lt(w.phi(), zero), negInf, If(Gt(w.phi(), one), posInf, value)))
 	if h.PhiExpr != nil {
 		return If(Call("isNaN", w.phi()), nan, core)
 	}
