@@ -159,3 +159,38 @@ func TestEmitHistogramQuantile_GroupByAliasFallback(t *testing.T) {
 		t.Errorf("expected bare `SpanName` group key, SQL=%s", sql)
 	}
 }
+
+// TestHistogramQuantileValueFrag_EmptyLadderGuardIsNoBranch pins the
+// empty-ladder guard of every classic kernel as a factor of the value, never
+// as the condition of a branch around it: ClickHouse filters every array
+// column a row-dependent `if` branch reads down to that branch's rows, which
+// raised a range quantile's peak memory several-fold (#4518). The kernel
+// never tests length(BucketCounts) either, which answered nothing the
+// observations test does not.
+func TestHistogramQuantileValueFrag_EmptyLadderGuardIsNoBranch(t *testing.T) {
+	t.Parallel()
+
+	const factor = " * if(`_cerb_hqc_observations` = 0, nan, 1)"
+	helpers := hqClassicHelperColumns{observations: hqClassicObservationsColumn}
+	for _, cumulative := range []bool{false, true} {
+		h := &chplan.HistogramQuantile{
+			Phi:                    0.5,
+			BucketCountsColumn:     "BucketCounts",
+			ExplicitBoundsColumn:   "ExplicitBounds",
+			BucketCountsCumulative: cumulative,
+		}
+		for name, frag := range map[string]Frag{
+			"interpolating": histogramQuantileValueFrag(h, helpers),
+			"native":        histogramQuantileRankWalkNativeValueFrag(h, helpers),
+		} {
+			sql := renderFragToSQL(frag)
+			if !strings.HasSuffix(sql, factor) {
+				t.Errorf("%s kernel (cumulative=%v) must end in the empty-ladder factor %q:\n%s", name, cumulative, factor, sql)
+			}
+			if strings.Contains(sql, "if(`_cerb_hqc_observations` = 0, nan, if") ||
+				strings.Contains(sql, "length(`BucketCounts`) = 0") {
+				t.Errorf("%s kernel (cumulative=%v) branches on an empty ladder:\n%s", name, cumulative, sql)
+			}
+		}
+	}
+}

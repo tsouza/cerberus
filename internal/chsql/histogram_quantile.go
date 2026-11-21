@@ -299,10 +299,9 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile, helpers hqClassicHe
 		If(firstBucketNonPositive, lowestBound, interp),
 	)
 
-	// Nested edge-case chain, outermost first:
-	//   if(observations = 0, nan,
-	//      if(phi < 0, -inf,
-	//         if(phi > 1, inf, idxBranch)))
+	// Edge-case chain, outermost first:
+	//   if(phi < 0, -inf, if(phi > 1, inf, idxBranch))
+	//     * if(observations = 0, nan, 1)     -- emptyLadderNaN
 	//
 	// Prometheus semantics (`bucketQuantile`'s domain guards in quantile.go):
 	// phi < 0 → -Inf, phi > 1 → +Inf are OUT of domain. phi == 0 and phi == 1 are IN domain and
@@ -564,20 +563,32 @@ func newHQClassicWriters(h *chplan.HistogramQuantile, helpers hqClassicHelperCol
 	return w
 }
 
-// emptyLadderNaN renders `if(observations = 0, nan, value)`: Prometheus's
-// bucketQuantile answers NaN for a histogram with no observations. A row
-// with no buckets at all is one of them: its per-bucket sum is 0, and its
-// cumulative ladder is empty or zero-padded to the bounds' length, so its
-// top rung reads 0 too.
+// emptyLadderNaN answers NaN for a histogram with no observations, as
+// Prometheus's bucketQuantile does, and value otherwise. A row with no
+// buckets at all is one of them: its per-bucket sum is 0, and its cumulative
+// ladder is empty or zero-padded to the bounds' length, so its top rung reads
+// 0 too.
 //
-// The guard reads observations alone, never length(BucketCounts), which
-// answers nothing it does not. A kernel whose outermost branch tested
-// length(BucketCounts) = 0 peaked at about 13 KiB per row of the block
-// ClickHouse evaluated it over, whichever block size that was: 256 MiB
-// over one 15,000-row block on 26.3.17.56, and 800 MiB on 26.3 and 26.8
-// once the range result's series-order sort handed it 45,000-row blocks.
-// Without that test the same statements peaked at 60 and 150 MiB, with the
-// same answers (https://github.com/tsouza/cerberus/issues/4518).
+// It renders `value * if(observations = 0, nan, 1)`, never
+// `if(observations = 0, nan, value)`. Multiplying by 1 returns value
+// unchanged, signed zeros, infinities and NaN included, and multiplying by
+// NaN gives NaN. Every operand value reads is defined on an empty or
+// all-zero ladder: array subscripts past the end read 0, the float
+// divisions give NaN or an infinity, and the cumulative ladder is padded to
+// the bounds' length, so the native aggregate's two arrays stay aligned.
+//
+// The guard is kept out of the branch condition because of what ClickHouse
+// does with a row-dependent `if`: it evaluates the branch for only the rows
+// its mask selects, and filters every array column that branch reads down
+// to those rows first. Measured over a range quantile after the result's
+// series-order sort (https://github.com/tsouza/cerberus/issues/4518):
+//
+//   - an outermost `if(length(BucketCounts) = 0, nan, …)` peaked at 815 MiB
+//     on 26.3.17.56 and 824 MiB on 26.8.36.3, against 173 and 165 MiB
+//     without it;
+//   - `if(observations = 0, nan, …)` alone added 8 MiB on 26.8.36.3 to
+//     `histogram_quantile(0.5, <bucket>)` (370 MiB against 362), which this
+//     form does not.
 func (w hqClassicWriters) emptyLadderNaN(nan, value Frag) Frag {
-	return If(Eq(w.observations(), InlineLit(0)), nan, value)
+	return Mul(value, If(Eq(w.observations(), InlineLit(0)), nan, InlineLit(1)))
 }
