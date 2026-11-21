@@ -85,13 +85,44 @@ detail: seed populates SeverityText and the tenant structured metadata, which up
 [59] string = ""
 [60] string = "job"
 [61] string = "api"
-[62] string = "tenant"
-[63] string = "tenant"
-[64] string = "tenant"
-[65] string = "t7"
-[66] string = "failed"
-[67] string = "error"
-[68] string = "err"
+[62] string = "error"
+[63] string = "err"
+[64] string = "detected_level"
+[65] string = ""
+[66] string = "detected_level"
+[67] string = "level"
+[68] string = ""
+[69] string = "level"
+[70] string = "log.level"
+[71] string = ""
+[72] string = "log.level"
+[73] string = "severity"
+[74] string = ""
+[75] string = "severity"
+[76] string = "severity_text"
+[77] string = ""
+[78] string = "severity_text"
+[79] string = ""
+[80] int64 = 0
+[81] string = ""
+[82] int64 = 4
+[83] string = "trace"
+[84] int64 = 8
+[85] string = "debug"
+[86] int64 = 12
+[87] string = "info"
+[88] int64 = 16
+[89] string = "warn"
+[90] int64 = 20
+[91] string = "error"
+[92] int64 = 24
+[93] string = "fatal"
+[94] string = ""
+[95] string = "tenant"
+[96] string = "tenant"
+[97] string = "tenant"
+[98] string = "t7"
+[99] string = "failed"
 -- args_optimized --
 [0] string = ""
 [1] string = "Map(String,String)"
@@ -155,23 +186,53 @@ detail: seed populates SeverityText and the tenant structured metadata, which up
 [59] string = ""
 [60] string = "job"
 [61] string = "api"
-[62] string = "tenant"
-[63] string = "tenant"
-[64] string = "tenant"
-[65] string = "t7"
-[66] string = "failed"
-[67] string = "error"
-[68] string = "err"
+[62] string = "error"
+[63] string = "err"
+[64] string = "detected_level"
+[65] string = ""
+[66] string = "detected_level"
+[67] string = "level"
+[68] string = ""
+[69] string = "level"
+[70] string = "log.level"
+[71] string = ""
+[72] string = "log.level"
+[73] string = "severity"
+[74] string = ""
+[75] string = "severity"
+[76] string = "severity_text"
+[77] string = ""
+[78] string = "severity_text"
+[79] string = ""
+[80] int64 = 0
+[81] string = ""
+[82] int64 = 4
+[83] string = "trace"
+[84] int64 = 8
+[85] string = "debug"
+[86] int64 = 12
+[87] string = "info"
+[88] int64 = 16
+[89] string = "warn"
+[90] int64 = 20
+[91] string = "error"
+[92] int64 = 24
+[93] string = "fatal"
+[94] string = ""
+[95] string = "tenant"
+[96] string = "tenant"
+[97] string = "tenant"
+[98] string = "t7"
+[99] string = "failed"
 -- chplan --
 Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, FnNow64(9) AS TimeUnix, Value AS Value]
   Aggregate groupBy=[] funcs=[FnSum(Value) AS Value] dropEmptyOnNoGroup
     RangeWindow func=count_over_time range=5m0s step=0s ts=Timestamp value=Value groupBy=[ResourceAttributes]
       Project [FnMapSort(FnMapMerge(ResourceAttributes, FnMapFilter((k, v) -> (v != ""), FnMap("detected_level", _logql_detected_level)))) AS ResourceAttributes, Timestamp, 1 AS Value]
-        Filter predicate=FnArrayHas(FnArray("error", "err"), FnLower(_logql_level_source))
-          Project [ResourceAttributes, Timestamp, _logql_level_source, FnMultiIf((FnLower(_logql_level_source) = ""), "unknown", ((FnLower(_logql_level_source) = "trace") OR (FnLower(_logql_level_source) = "trc")), "trace", ((FnLower(_logql_level_source) = "debug") OR (FnLower(_logql_level_source) = "dbg")), "debug", (((FnLower(_logql_level_source) = "info") OR (FnLower(_logql_level_source) = "inf")) OR (FnLower(_logql_level_source) = "information")), "info", (((FnLower(_logql_level_source) = "warn") OR (FnLower(_logql_level_source) = "wrn")) OR (FnLower(_logql_level_source) = "warning")), "warn", ((FnLower(_logql_level_source) = "error") OR (FnLower(_logql_level_source) = "err")), "error", (FnLower(_logql_level_source) = "critical"), "critical", (FnLower(_logql_level_source) = "fatal"), "fatal", _logql_level_source) AS _logql_detected_level]
-            Project [ResourceAttributes, Timestamp, FnMultiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], FnMultiIf((SeverityText != ""), SeverityText, FnMultiIf((SeverityNumber <= 0), "", (SeverityNumber <= 4), "trace", (SeverityNumber <= 8), "debug", (SeverityNumber <= 12), "info", (SeverityNumber <= 16), "warn", (SeverityNumber <= 20), "error", (SeverityNumber <= 24), "fatal", ""))) AS _logql_level_source]
-              Filter predicate=(((ResourceAttributes["job"] = "api") AND (FnIf(FnMapContainsKey(LogAttributes, "tenant"), LogAttributes["tenant"], ResourceAttributes["tenant"]) != "t7")) AND lineContent(Body, "failed", substr))
-                Scan(otel_logs)
+        Project [ResourceAttributes, Timestamp, FnMultiIf((FnLower(_logql_level_source) = ""), "unknown", ((FnLower(_logql_level_source) = "trace") OR (FnLower(_logql_level_source) = "trc")), "trace", ((FnLower(_logql_level_source) = "debug") OR (FnLower(_logql_level_source) = "dbg")), "debug", (((FnLower(_logql_level_source) = "info") OR (FnLower(_logql_level_source) = "inf")) OR (FnLower(_logql_level_source) = "information")), "info", (((FnLower(_logql_level_source) = "warn") OR (FnLower(_logql_level_source) = "wrn")) OR (FnLower(_logql_level_source) = "warning")), "warn", ((FnLower(_logql_level_source) = "error") OR (FnLower(_logql_level_source) = "err")), "error", (FnLower(_logql_level_source) = "critical"), "critical", (FnLower(_logql_level_source) = "fatal"), "fatal", _logql_level_source) AS _logql_detected_level]
+          Project [ResourceAttributes, Timestamp, FnMultiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], FnMultiIf((SeverityText != ""), SeverityText, FnMultiIf((SeverityNumber <= 0), "", (SeverityNumber <= 4), "trace", (SeverityNumber <= 8), "debug", (SeverityNumber <= 12), "info", (SeverityNumber <= 16), "warn", (SeverityNumber <= 20), "error", (SeverityNumber <= 24), "fatal", ""))) AS _logql_level_source]
+            Filter predicate=((((ResourceAttributes["job"] = "api") AND FnArrayHas(FnArray("error", "err"), FnLower(FnMultiIf((LogAttributes["detected_level"] != ""), LogAttributes["detected_level"], (LogAttributes["level"] != ""), LogAttributes["level"], (LogAttributes["log.level"] != ""), LogAttributes["log.level"], (LogAttributes["severity"] != ""), LogAttributes["severity"], (LogAttributes["severity_text"] != ""), LogAttributes["severity_text"], FnMultiIf((SeverityText != ""), SeverityText, FnMultiIf((SeverityNumber <= 0), "", (SeverityNumber <= 4), "trace", (SeverityNumber <= 8), "debug", (SeverityNumber <= 12), "info", (SeverityNumber <= 16), "warn", (SeverityNumber <= 20), "error", (SeverityNumber <= 24), "fatal", "")))))) AND (FnIf(FnMapContainsKey(LogAttributes, "tenant"), LogAttributes["tenant"], ResourceAttributes["tenant"]) != "t7")) AND lineContent(Body, "failed", substr))
+              Scan(otel_logs)
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
@@ -180,6 +241,6 @@ max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912
 use_query_condition_cache=1
 -- sql --
-SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Value` FROM (SELECT sum(`Value`) AS `Value`, count() AS `_cerb_n` FROM (SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT mapSort(mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`)))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM (SELECT `ResourceAttributes`, `Timestamp`, `_logql_level_source`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level` FROM (SELECT `ResourceAttributes`, `Timestamp`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) != ?) AND (position(`Body`, ?) > 0)))) WHERE has(array(?, ?), lower(`_logql_level_source`)))) WHERE `Timestamp` > now64(9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= now64(9) GROUP BY `ResourceAttributes`)) WHERE `_cerb_n` > 0)
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Value` FROM (SELECT sum(`Value`) AS `Value`, count() AS `_cerb_n` FROM (SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT mapSort(mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`)))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT `ResourceAttributes`, `Timestamp`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level` FROM (SELECT `ResourceAttributes`, `Timestamp`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source` FROM (SELECT * FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND has(array(?, ?), lower(multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))))) AND (if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) != ?) AND (position(`Body`, ?) > 0))))) WHERE `Timestamp` > now64(9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= now64(9) GROUP BY `ResourceAttributes`)) WHERE `_cerb_n` > 0)
 -- sql_optimized --
-SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Value` FROM (SELECT sum(`Value`) AS `Value`, count() AS `_cerb_n` FROM (SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT mapSort(mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`)))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT * FROM (SELECT `ResourceAttributes`, `Timestamp`, `_logql_level_source`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level` FROM (SELECT `ResourceAttributes`, `Timestamp`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `SeverityNumber`, `SeverityText`, `Timestamp` FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND (if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) != ?) AND (position(`Body`, ?) > 0)))) WHERE has(array(?, ?), lower(`_logql_level_source`)))) WHERE `Timestamp` > now64(9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= now64(9) GROUP BY `ResourceAttributes`)) WHERE `_cerb_n` > 0)
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Value` FROM (SELECT sum(`Value`) AS `Value`, count() AS `_cerb_n` FROM (SELECT `ResourceAttributes`, toFloat64(count()) AS `Value` FROM (SELECT mapSort(mapConcat(`ResourceAttributes`, mapFilter((k, v) -> (v != ?), map(?, `_logql_detected_level`)))) AS `ResourceAttributes`, `Timestamp`, ? AS `Value` FROM (SELECT `ResourceAttributes`, `Timestamp`, multiIf((lower(`_logql_level_source`) = ?), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, (((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)) OR (lower(`_logql_level_source`) = ?)), ?, ((lower(`_logql_level_source`) = ?) OR (lower(`_logql_level_source`) = ?)), ?, (lower(`_logql_level_source`) = ?), ?, (lower(`_logql_level_source`) = ?), ?, `_logql_level_source`) AS `_logql_detected_level` FROM (SELECT `ResourceAttributes`, `Timestamp`, multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))) AS `_logql_level_source` FROM (SELECT `Body`, `LogAttributes`, `ResourceAttributes`, `SeverityNumber`, `SeverityText`, `Timestamp` FROM `otel_logs` WHERE (`ResourceAttributes`[?] = ?) AND has(array(?, ?), lower(multiIf((`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], (`LogAttributes`[?] != ?), `LogAttributes`[?], multiIf((`SeverityText` != ?), `SeverityText`, multiIf((`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, (`SeverityNumber` <= ?), ?, ?))))) AND (if(mapContains(`LogAttributes`, ?), `LogAttributes`[?], `ResourceAttributes`[?]) != ?) AND (position(`Body`, ?) > 0))))) WHERE `Timestamp` > now64(9) - toIntervalNanosecond(300000000000) AND `Timestamp` <= now64(9) GROUP BY `ResourceAttributes`)) WHERE `_cerb_n` > 0)
