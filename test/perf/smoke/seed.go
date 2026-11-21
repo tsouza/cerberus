@@ -424,11 +424,24 @@ const detectedLevelLogsSpanModulus = 11
 //
 // Returns the row count seeded.
 func SeedDetectedLevelLogs(ctx context.Context, conn driver.Conn, lines int, start, end time.Time) (rows int64, err error) {
+	insert, err := detectedLevelLogsInsert(lines, start, end)
+	if err != nil {
+		return 0, err
+	}
+	if err := conn.Exec(ctx, insert); err != nil {
+		return 0, fmt.Errorf("seed detected_level logs: %w\n%s", err, insert)
+	}
+	return int64(lines), nil
+}
+
+// detectedLevelLogsInsert renders the INSERT SeedDetectedLevelLogs runs, after
+// rejecting a non-positive line count and an end not after start.
+func detectedLevelLogsInsert(lines int, start, end time.Time) (string, error) {
 	if lines <= 0 {
-		return 0, fmt.Errorf("seed detected_level logs: lines must be positive, got %d", lines)
+		return "", fmt.Errorf("seed detected_level logs: lines must be positive, got %d", lines)
 	}
 	if !end.After(start) {
-		return 0, fmt.Errorf("seed detected_level logs: end must be after start (start=%v end=%v)", start, end)
+		return "", fmt.Errorf("seed detected_level logs: end must be after start (start=%v end=%v)", start, end)
 	}
 	from := start.Add(-detectedLevelLogsLookback)
 	span := end.Sub(from)
@@ -438,7 +451,7 @@ func SeedDetectedLevelLogs(ctx context.Context, conn driver.Conn, lines int, sta
 		severities[i] = "'" + severity + "'"
 	}
 
-	insert := fmt.Sprintf(
+	return fmt.Sprintf(
 		`
 INSERT INTO otel_logs
     (Timestamp, SeverityText, ServiceName, Body, ResourceAttributes, LogAttributes)
@@ -458,11 +471,7 @@ FROM numbers(%d)`,
 		DetectedLevelLogsService, DetectedLevelLogsService,
 		detectedLevelLogsAttributeLevelEvery, strings.Join(severities, ", "), detectedLevelLogsAttributeLevelEvery, len(severities),
 		lines,
-	)
-	if err := conn.Exec(ctx, insert); err != nil {
-		return 0, fmt.Errorf("seed detected_level logs: %w\n%s", err, insert)
-	}
-	return int64(lines), nil
+	), nil
 }
 
 // --- small local helpers (kept out of internal/chsql: these build

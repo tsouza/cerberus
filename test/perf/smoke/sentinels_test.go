@@ -69,6 +69,24 @@ func TestSentinels_FloorsArePartitioned(t *testing.T) {
 	}
 }
 
+// TestServerFloor_StringNamesEveryFloor asserts every floor the harness boots
+// renders a name of its own. The harness labels each tier's boot, settings
+// wiring and failures with it, and a floor whose case String lacks falls
+// through to "base", so a failing tier would be reported as the base one.
+func TestServerFloor_StringNamesEveryFloor(t *testing.T) {
+	seen := make(map[string]ServerFloor, len(Floors))
+	for _, floor := range Floors {
+		name := floor.String()
+		if other, ok := seen[name]; ok {
+			t.Errorf("floors %d and %d both render as %q", other, floor, name)
+		}
+		seen[name] = floor
+	}
+	if got := FloorBase.String(); got != "base" {
+		t.Errorf("FloorBase.String() = %q, want %q", got, "base")
+	}
+}
+
 // TestSentinels_JoinSpillStampIsAsserted pins the one thing that makes the
 // join_spill sentinel falsifiable: it must require the
 // max_bytes_before_external_join stamp, sized at half the live memory cap
