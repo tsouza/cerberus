@@ -178,7 +178,7 @@ func sharedPrometheusQuantilesValues(h *chplan.HistogramQuantile, levels []chpla
 		case level.Phi > 1:
 			value = posInf
 		}
-		values[i] = If(Eq(w.lengthBC(), InlineLit(0)), nan, If(Eq(w.observations(), InlineLit(0)), nan, value))
+		values[i] = w.emptyLadderNaN(nan, value)
 	}
 	return Array(values...)
 }
