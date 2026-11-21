@@ -860,7 +860,8 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureQueryLogUnion:                  {ID: FeatureQueryLogUnion, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresQueryLogUnionCapability: true},
 		FeatureMoveToPrewhere:                 {ID: FeatureMoveToPrewhere, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, AutoRange: VersionRange{From: v(24, 11), Until: v(26, 2)}},
 		FeatureCanonicalMapTypeCast:           {ID: FeatureCanonicalMapTypeCast, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, AutoRange: VersionRange{Until: v(25, 1)}},
-		FeatureSearchDrainOuterFilter:         {ID: FeatureSearchDrainOuterFilter, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, AutoRange: VersionRange{From: v(26, 2), Until: v(26, 4)}},
+		FeatureSearchDrainScalarTraces:        {ID: FeatureSearchDrainScalarTraces, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, AutoRange: VersionRange{From: v(26, 2), Until: v(26, 4)}},
+		FeatureSearchDrainTraceBounds:         {ID: FeatureSearchDrainTraceBounds, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, AutoRange: VersionRange{From: v(26, 2), Until: v(26, 4)}},
 		FeatureMergePlanFilters:               {ID: FeatureMergePlanFilters, MinVersion: v(24, 7), Stability: Stable, AutoSelect: true, AutoRange: VersionRange{Until: v(24, 11)}, SettingOnly: true},
 	}
 	if len(reg) != len(want) {
