@@ -102,9 +102,13 @@ type SchemaStrategiesCell struct {
 	// (SetPrewhereInWhereOrder), the same way prewhereByServer is.
 	prewhereInWhereOrder atomic.Bool
 
-	// searchDrainOuterFilter is stamped on every signal's strategies at Load
-	// (SetSearchDrainOuterFilter), the same way prewhereByServer is.
-	searchDrainOuterFilter atomic.Bool
+	// searchDrainScalarTraces is stamped on every signal's strategies at Load
+	// (SetSearchDrainScalarTraces), the same way prewhereByServer is.
+	searchDrainScalarTraces atomic.Bool
+
+	// searchDrainTraceBounds is stamped on every signal's strategies at Load
+	// (SetSearchDrainTraceBounds), the same way prewhereByServer is.
+	searchDrainTraceBounds atomic.Bool
 }
 
 // NewSchemaStrategiesCell returns a cell holding r.
@@ -115,8 +119,8 @@ func NewSchemaStrategiesCell(r ResolvedSchemaStrategies) *SchemaStrategiesCell {
 }
 
 // Load returns the strategies the cell holds, each signal's carrying the
-// cell's PrewhereByServer, CanonicalMapTypeCast, PrewhereInWhereOrder and
-// SearchDrainOuterFilter.
+// cell's PrewhereByServer, CanonicalMapTypeCast, PrewhereInWhereOrder,
+// SearchDrainScalarTraces and SearchDrainTraceBounds.
 func (c *SchemaStrategiesCell) Load() ResolvedSchemaStrategies {
 	if c == nil {
 		return ResolvedSchemaStrategies{}
@@ -137,10 +141,14 @@ func (c *SchemaStrategiesCell) Load() ResolvedSchemaStrategies {
 	r.Metrics.PrewhereInWhereOrder = inOrder
 	r.Logs.PrewhereInWhereOrder = inOrder
 	r.Traces.PrewhereInWhereOrder = inOrder
-	outerFilter := c.searchDrainOuterFilter.Load()
-	r.Metrics.SearchDrainOuterFilter = outerFilter
-	r.Logs.SearchDrainOuterFilter = outerFilter
-	r.Traces.SearchDrainOuterFilter = outerFilter
+	scalarTraces := c.searchDrainScalarTraces.Load()
+	r.Metrics.SearchDrainScalarTraces = scalarTraces
+	r.Logs.SearchDrainScalarTraces = scalarTraces
+	r.Traces.SearchDrainScalarTraces = scalarTraces
+	traceBounds := c.searchDrainTraceBounds.Load()
+	r.Metrics.SearchDrainTraceBounds = traceBounds
+	r.Logs.SearchDrainTraceBounds = traceBounds
+	r.Traces.SearchDrainTraceBounds = traceBounds
 	return r
 }
 
@@ -168,12 +176,20 @@ func (c *SchemaStrategiesCell) SetPrewhereInWhereOrder(inOrder bool) {
 	c.prewhereInWhereOrder.Store(inOrder)
 }
 
-// SetSearchDrainOuterFilter sets the SearchDrainOuterFilter every signal's
+// SetSearchDrainScalarTraces sets the SearchDrainScalarTraces every signal's
 // strategies load with, whatever strategies the cell holds now or is stored
 // later. cmd/cerberus sets it from the resolved optimizations
-// (chopt.FeatureSearchDrainOuterFilter) before the heads serve.
-func (c *SchemaStrategiesCell) SetSearchDrainOuterFilter(outerFilter bool) {
-	c.searchDrainOuterFilter.Store(outerFilter)
+// (chopt.FeatureSearchDrainScalarTraces) before the heads serve.
+func (c *SchemaStrategiesCell) SetSearchDrainScalarTraces(scalarTraces bool) {
+	c.searchDrainScalarTraces.Store(scalarTraces)
+}
+
+// SetSearchDrainTraceBounds sets the SearchDrainTraceBounds every signal's
+// strategies load with, whatever strategies the cell holds now or is stored
+// later. cmd/cerberus sets it from the resolved optimizations
+// (chopt.FeatureSearchDrainTraceBounds) before the heads serve.
+func (c *SchemaStrategiesCell) SetSearchDrainTraceBounds(traceBounds bool) {
+	c.searchDrainTraceBounds.Store(traceBounds)
 }
 
 // Store replaces the strategies the cell holds. r's AttrStrategies maps are

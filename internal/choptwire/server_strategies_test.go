@@ -82,22 +82,25 @@ func TestSetServerStrategies_PrewhereInWhereOrderFollowsTheSet(t *testing.T) {
 	}
 }
 
-// TestSetServerStrategies_SearchDrainOuterFilterFollowsTheResolvedSet pins
-// that a bounded search drains its chosen traces with a filter over its scan
-// statement exactly when the resolved optimizations include
-// search_drain_outer_filter: auto on 26.2 and 26.3, where testing them in
-// the scan's PREWHERE reads more bytes, and not below 26.2 or from 26.4.
-func TestSetServerStrategies_SearchDrainOuterFilterFollowsTheResolvedSet(t *testing.T) {
+// TestSetServerStrategies_SearchDrainsFollowTheResolvedSet pins that a
+// bounded search tests its chosen traces in the scan's PREWHERE as a scalar
+// exactly when the resolved optimizations include search_drain_scalar_traces
+// (auto on 26.2 and 26.3, where the server skips granules by the trace id
+// skip index for the scalar and not for a GLOBAL IN set), and bounds a
+// search that ranks the rows it drains by its chosen traces' earliest and
+// latest timestamp exactly when they include search_drain_trace_bounds (auto
+// on the same lines).
+func TestSetServerStrategies_SearchDrainsFollowTheResolvedSet(t *testing.T) {
 	for _, tc := range []struct {
-		server chopt.Version
-		want   bool
+		server                    chopt.Version
+		scalarTraces, traceBounds bool
 	}{
-		{chopt.Version{Major: 24, Minor: 8}, false},
-		{chopt.Version{Major: 26, Minor: 1}, false},
-		{chopt.Version{Major: 26, Minor: 2}, true},
-		{chopt.Version{Major: 26, Minor: 3}, true},
-		{chopt.Version{Major: 26, Minor: 4}, false},
-		{chopt.Version{Major: 26, Minor: 8}, false},
+		{chopt.Version{Major: 24, Minor: 8}, false, false},
+		{chopt.Version{Major: 26, Minor: 1}, false, false},
+		{chopt.Version{Major: 26, Minor: 2}, true, true},
+		{chopt.Version{Major: 26, Minor: 3}, true, true},
+		{chopt.Version{Major: 26, Minor: 4}, false, false},
+		{chopt.Version{Major: 26, Minor: 8}, false, false},
 	} {
 		set, _, err := chopt.Resolve(chopt.Config{Optimizations: "auto"}, tc.server)
 		if err != nil {
@@ -106,8 +109,31 @@ func TestSetServerStrategies_SearchDrainOuterFilterFollowsTheResolvedSet(t *test
 		cell := chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{})
 		choptwire.SetServerStrategies(cell, set)
 		got := cell.Load()
-		if got.Metrics.SearchDrainOuterFilter != tc.want || got.Logs.SearchDrainOuterFilter != tc.want || got.Traces.SearchDrainOuterFilter != tc.want {
-			t.Errorf("server %v: loaded strategies %+v; want SearchDrainOuterFilter=%v on every signal", tc.server, got, tc.want)
+		for _, signal := range []chsql.SchemaStrategies{got.Metrics, got.Logs, got.Traces} {
+			if signal.SearchDrainScalarTraces != tc.scalarTraces || signal.SearchDrainTraceBounds != tc.traceBounds {
+				t.Errorf("server %v: loaded strategies %+v; want SearchDrainScalarTraces=%v and SearchDrainTraceBounds=%v on every signal",
+					tc.server, got, tc.scalarTraces, tc.traceBounds)
+			}
+		}
+	}
+
+	// Each strategy follows its own feature: an explicit listing of one
+	// leaves the other off.
+	for _, tc := range []struct {
+		feature                   string
+		scalarTraces, traceBounds bool
+	}{
+		{chopt.FeatureSearchDrainScalarTraces, true, false},
+		{chopt.FeatureSearchDrainTraceBounds, false, true},
+	} {
+		set, _, err := chopt.Resolve(chopt.Config{Optimizations: tc.feature}, chopt.Version{Major: 26, Minor: 8})
+		if err != nil {
+			t.Fatalf("chopt.Resolve %s: %v", tc.feature, err)
+		}
+		cell := chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{})
+		choptwire.SetServerStrategies(cell, set)
+		if got := cell.Load().Traces; got.SearchDrainScalarTraces != tc.scalarTraces || got.SearchDrainTraceBounds != tc.traceBounds {
+			t.Errorf("only %s: traces strategies %+v; want SearchDrainScalarTraces=%v and SearchDrainTraceBounds=%v", tc.feature, got, tc.scalarTraces, tc.traceBounds)
 		}
 	}
 }
