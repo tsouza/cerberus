@@ -405,10 +405,19 @@ func lowerLogRange(lr *syntax.LogRangeExpr, s schema.Logs, lc lowerCtx) (rows *r
 		// and ahead of a later line filter, so that it can run in the
 		// SELECT that reads the table ahead of that line filter. Without
 		// WHERE order that SELECT then computes the normalised level beside
-		// the source ([rowLayers.gatherAtScan]). A level filter that no
-		// line filter follows reads the normalised level there, above the
-		// scan.
-		if lc.PrewhereInWhereOrder || lineFilterFollowsLevelFilter(pipeline) {
+		// the source ([rowLayers.gatherAtScan]). Without WHERE order, a
+		// level filter beside a filter on a stored label reads the source's
+		// expression rather than its column: it reads no value the stage
+		// defines, so it runs in the scan's own filter, and the label
+		// filter, which reads LogAttributes as a whole, folds there with it
+		// ([wholeMapFiltersAhead]). Any other level filter reads the
+		// normalised level, above the scan.
+		switch {
+		case lc.PrewhereInWhereOrder:
+			lc.row.levelSource = source
+		case storedLabelFilterBesideLevelFilter(pipeline):
+			lc.row.levelSource = detectedLevelSourceExpr(s)
+		case lineFilterFollowsLevelFilter(pipeline):
 			lc.row.levelSource = source
 		}
 		if labelsExpr, err = lowerPipelineStages(pipeline, s, lc, rows); err != nil {
@@ -433,6 +442,28 @@ func lineFilterFollowsLevelFilter(pipeline *syntax.PipelineExpr) bool {
 		}
 	}
 	return false
+}
+
+// storedLabelFilterBesideLevelFilter reports whether a label filter stage
+// of pipeline that reads detected_level and one that does not both run
+// ahead of every stage of another kind than a label or line filter, in
+// either order: there every label the second one reads is a stored one.
+func storedLabelFilterBesideLevelFilter(pipeline *syntax.PipelineExpr) bool {
+	level, label := false, false
+	for _, stage := range pipeline.MultiStages {
+		switch st := stage.(type) {
+		case *syntax.LabelFilterExpr:
+			if filtersDetectedLevel(st.LabelFilterer) {
+				level = true
+			} else {
+				label = true
+			}
+		case *syntax.LineFilterExpr:
+		default:
+			return level && label
+		}
+	}
+	return level && label
 }
 
 // filtersDetectedLevel reports whether lf reads detected_level.

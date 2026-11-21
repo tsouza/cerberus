@@ -595,3 +595,36 @@ func scopeAt(t *testing.T, sql string, at int) string {
 	}
 	return scope.String()
 }
+
+// TestRangeAggregationLevelFilterBesideAStoredLabelFilterRunsAtTheScanOnAReorderingServer
+// pins that on a server that orders a multi-step PREWHERE itself, a
+// detected_level filter beside a filter on a stored label — in either
+// order, with or without a line filter, ahead of a parser — runs on the
+// level source's own expression in the WHERE of the SELECT that reads
+// otel_logs, beside the label filter that reads LogAttributes whole.
+// ClickHouse then runs both in PREWHERE and reads the stage's other
+// columns, and the rest of a bucketed map, only for the rows both keep.
+func TestRangeAggregationLevelFilterBesideAStoredLabelFilterRunsAtTheScanOnAReorderingServer(t *testing.T) {
+	t.Parallel()
+	const level, label = "lower(multiIf(", "mapContains(`LogAttributes`, ?)"
+	for _, query := range []string{
+		`sum(count_over_time({job="wide"} | detected_level="fatal" | tenant!="t7" [5m]))`,
+		`sum(count_over_time({job="wide"} | tenant!="t7" | detected_level="fatal" [5m]))`,
+		`sum(count_over_time({job="wide"} | detected_level="error" | route="/api/r7" [5m]))`,
+		`sum by (detected_level) (count_over_time({job="wide"} | detected_level=~"err.*|fatal" | tenant!="t7" [5m]))`,
+		`sum(count_over_time({job="wide"} | detected_level="error" | tenant!="t7" |= "status=500" [5m]))`,
+		`sum(count_over_time({job="wide"} |= "status=500" | detected_level="error" | tenant!="t7" [5m]))`,
+		`sum(count_over_time({job="wide"} | detected_level!="info" | tenant!="t7" |= "status=500" [5m]))`,
+		`sum(count_over_time({job="wide"} | detected_level="error" | tenant!="t7" | logfmt | route="/api/r7" [5m]))`,
+	} {
+		t.Run(query, func(t *testing.T) {
+			t.Parallel()
+			sql, _ := rangeAggregationSQL(t, query)
+			scope := scopeAround(t, sql, "FROM `otel_logs`")
+			where := scope[strings.Index(scope, "FROM `otel_logs`"):]
+			if !strings.Contains(where, level) || !strings.Contains(where, label) {
+				t.Errorf("on a reordering server, the WHERE of the SELECT reading otel_logs does not run both the level filter on its source's expression (%s) and the label filter (%s): %s", level, label, where)
+			}
+		})
+	}
+}

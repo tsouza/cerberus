@@ -558,6 +558,10 @@ The emitter is also CH-native rather than ANSI-ish:
   level source rather than the normalised level when every server runs
   a multi-step PREWHERE in `WHERE` order, or when a line filter follows
   it; otherwise it reads the normalised level. Unless every server runs
+  a multi-step PREWHERE in `WHERE` order, such a filter beside a filter
+  on a stored label, both ahead of every stage other than a label or
+  line filter, reads the source's own expression instead, and joins the
+  scan's filter beside that label filter. Unless every server runs
   a multi-step PREWHERE in `WHERE` order, such a filter on the source
   joins the scan's scope whatever its expansion, and the normalised level
   joins it beside the source. A filter conjunct that
