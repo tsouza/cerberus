@@ -221,7 +221,7 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			chopt.FeatureLagInFrameAdjacency:
 			// A RangeLowerers dispatch strategy (or a modifier on one) —
 			// composed by choptwire.RangeLowerers from the resolved set.
-		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter, chopt.FeatureTSThrowDuplicateSeriesIf, chopt.FeatureExpHistogramTwoLevel, chopt.FeatureHistogramAdaptiveAggregatorOff, chopt.FeatureMoveToPrewhere, chopt.FeatureCanonicalMapTypeCast, chopt.FeatureSearchDrainOuterFilter, chopt.FeatureMergePlanFilters:
+		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter, chopt.FeatureTSThrowDuplicateSeriesIf, chopt.FeatureExpHistogramTwoLevel, chopt.FeatureHistogramAdaptiveAggregatorOff, chopt.FeatureMoveToPrewhere, chopt.FeatureCanonicalMapTypeCast, chopt.FeatureSearchDrainScalarTraces, chopt.FeatureSearchDrainTraceBounds, chopt.FeatureMergePlanFilters:
 			// CH SETTINGS stamped at emit time, not a RangeLowerers dispatch
 			// strategy — no effect on which lowering table a query takes.
 			// FeatureJoinSpill mirrors the other two exactly: it stamps
@@ -279,8 +279,10 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// nor the plan. FeatureCanonicalMapTypeCast likewise decides only
 			// how the emitter renders the canonical series key
 			// (SchemaStrategies.CanonicalMapTypeCast), and
-			// FeatureSearchDrainOuterFilter how it renders a bounded Tempo
-			// search's drain (SchemaStrategies.SearchDrainOuterFilter).
+			// FeatureSearchDrainScalarTraces and FeatureSearchDrainTraceBounds
+			// how it renders a bounded Tempo search's drain
+			// (SchemaStrategies.SearchDrainScalarTraces,
+			// SchemaStrategies.SearchDrainTraceBounds).
 			// FeatureMergePlanFilters
 			// stamps query_plan_merge_filters=1 on a plan whose LogQL per-row
 			// stage leaves a filter on a value computed above the scan's scope,
