@@ -284,6 +284,71 @@ FROM numbers(%d)`,
 	return int64(totalSamples), nil
 }
 
+// --- Classic-bucket layout sentinel seed: classic histogram ---------------
+
+// classicHistogramScrapeInterval / classicHistogramLookback size the
+// classic-bucket layout sentinel's seed: a sample every 15s, a common scrape
+// interval, over exactly one lookback window, so the instant selection at the
+// window's end reads the twenty samples the layout's aggregate carries per
+// series and nothing else.
+//
+// The table holds only that lookback on purpose. With an hour of samples
+// ahead of it, the scan hands the aggregate many filtered blocks and the
+// server's default group_by_two_level_threshold_bytes converts the table to
+// two-level unstamped: on 26.3.17.56 the instant merge over 3000 series
+// peaked at 84-97 MiB with or without the stamp. Holding only the lookback,
+// it peaked at 309 MiB unstamped and 67-75 MiB stamped.
+const (
+	classicHistogramScrapeInterval = 15 * time.Second
+	classicHistogramLookback       = 5 * time.Minute
+)
+
+// SeedClassicHistogram seeds the classic-bucket layout sentinel's fixture
+// directly into the real otel_metrics_histogram table (created by ddl.Apply
+// against ddl.Metrics). It lays down seriesCount `instance` series of metric,
+// each with boundCount finite bounds (1 to boundCount) plus +Inf, sampled
+// every classicHistogramScrapeInterval over the classicHistogramLookback
+// that ends at end. Every bucket of a series counts one more observation per
+// sample, so the series are cumulative counters, as a classic histogram's
+// buckets are.
+//
+// Returns the row count seeded.
+func SeedClassicHistogram(ctx context.Context, conn driver.Conn, metric string, seriesCount, boundCount int, end time.Time) (rows int64, err error) {
+	if seriesCount <= 0 || boundCount <= 0 {
+		return 0, fmt.Errorf("seed classic histogram: seriesCount and boundCount must be positive, got %d and %d", seriesCount, boundCount)
+	}
+	samplesPerSeries := int(classicHistogramLookback / classicHistogramScrapeInterval)
+	seedStart := end.Add(-time.Duration(samplesPerSeries-1) * classicHistogramScrapeInterval)
+	totalSamples := samplesPerSeries * seriesCount
+
+	insert := fmt.Sprintf(
+		`
+INSERT INTO otel_metrics_histogram
+    (MetricName, Attributes, ServiceName, TimeUnix, Count, Sum, BucketCounts, ExplicitBounds, AggregationTemporality)
+SELECT
+    '%s' AS MetricName,
+    map('instance', concat('instance-', toString(number %% %d))) AS Attributes,
+    'cerberus-smoke' AS ServiceName,
+    toDateTime64(%d, 9) + toIntervalSecond(intDiv(number, %d) * %d) AS TimeUnix,
+    toUInt64((intDiv(number, %d) + 1) * %d) AS Count,
+    toFloat64(Count) AS Sum,
+    arrayWithConstant(%d, toUInt64(intDiv(number, %d) + 1)) AS BucketCounts,
+    arrayMap(j -> toFloat64(j), range(1, %d)) AS ExplicitBounds,
+    2 AS AggregationTemporality
+FROM numbers(%d)`,
+		metric, seriesCount,
+		seedStart.Unix(), seriesCount, int(classicHistogramScrapeInterval/time.Second),
+		seriesCount, boundCount+1,
+		boundCount+1, seriesCount,
+		boundCount+1,
+		totalSamples,
+	)
+	if err := conn.Exec(ctx, insert); err != nil {
+		return 0, fmt.Errorf("seed classic histogram: %w\n%s", err, insert)
+	}
+	return int64(totalSamples), nil
+}
+
 // --- Sentinel 3 seed: wide-attribute traces -------------------------------
 
 // wideTraceAttrKeysPerMap is the number of distinct attribute keys seeded

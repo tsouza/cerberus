@@ -79,7 +79,7 @@ TraceLookupFilter lookups=1 predicate=((4000000000 / _cerb_trace_duration) >= 2)
     Aggregate groupBy=[TraceId AS _cerb_lookup_trace_id] funcs=[FnMin(FnToUnixNanos(Timestamp)) AS _cerb_trace_start_ns, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS _cerb_trace_end_ns]
       Scan(otel_traces)
 -- settings --
-enabled_opts=aggregation_in_order,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
+enabled_opts=aggregation_in_order,classic_bucket_layout_two_level,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
 log_comment=cerb:project;agg=1;join
 max_bytes_before_external_group_by=536870912
 max_bytes_before_external_join=536870912

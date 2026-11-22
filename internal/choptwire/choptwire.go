@@ -426,6 +426,7 @@ func SettingsRules(set chopt.EnabledSet, metrics schema.Metrics, traces schema.T
 		JoinSpill:                      set.Has(chopt.FeatureJoinSpill),
 		DistinctSpill:                  set.Has(chopt.FeatureDistinctSpill),
 		ExpHistogramTwoLevel:           set.Has(chopt.FeatureExpHistogramTwoLevel),
+		ClassicBucketLayoutTwoLevel:    set.Has(chopt.FeatureClassicBucketLayoutTwoLevel),
 		HistogramAdaptiveAggregatorOff: set.Has(chopt.FeatureHistogramAdaptiveAggregatorOff),
 		TraceIDBitmapFilter:            set.Has(chopt.FeatureTraceIDBitmapFilter),
 		ResultCache:                    set.Has(chopt.FeatureResultCache),

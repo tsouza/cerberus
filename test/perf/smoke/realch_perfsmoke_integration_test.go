@@ -33,8 +33,10 @@
 // strict-scan real-CH lane uses) for FloorBase, perfSmokeJoinSpillCHImage
 // for FloorJoinSpill, whose mechanism chopt gates behind a 26.4 server, and
 // perfSmokeDistinctSpillCHImage for FloorDistinctSpill, gated behind 26.9,
-// and perfSmokeMergePlanFiltersCHImage for FloorMergePlanFilters, which
-// resolves only below 24.11. Each constant's own comment carries the why.
+// perfSmokeMergePlanFiltersCHImage for FloorMergePlanFilters, which
+// resolves only below 24.11, and perfSmokeClassicBucketLayoutCHImage for
+// FloorClassicBucketLayout, auto-selected only from 26.3 up to 26.8. Each
+// constant's own comment carries the why.
 //
 // # Two boot-resolved axes, and two kinds of lane
 //
@@ -141,6 +143,15 @@ const perfSmokeDistinctSpillCHImage = "clickhouse/clickhouse-server:26.9.25.15-a
 // as just/common.just's CH_PERF_SMOKE_MERGE_FILTERS_IMAGE; the harness
 // asserts the feature resolved in against it before running the tier.
 const perfSmokeMergePlanFiltersCHImage = "clickhouse/clickhouse-server:24.8.14.39-alpine"
+
+// perfSmokeClassicBucketLayoutCHImage backs smoke.FloorClassicBucketLayout: a
+// FIFTH container. chopt.FeatureClassicBucketLayoutTwoLevel's auto range is
+// 26.3 up to 26.8, and every other image here is outside it, so the stamp
+// fires on none of them. The tag is the 26.3 build the stamp was measured
+// on, which test/chserver already pins and pre-pulls and the perf-smoke
+// recipe pulls as just/common.just's CH_MIN_SUPPORTED_IMAGE; the harness
+// asserts the feature resolved in against it before running the tier.
+const perfSmokeClassicBucketLayoutCHImage = "clickhouse/clickhouse-server:26.3.17.56-alpine"
 
 const perfSmokeDB = "default"
 
@@ -425,6 +436,9 @@ func runSentinelOnce(t *testing.T, mux *http.ServeMux, sentinel Sentinel, start,
 	t.Helper()
 	params := sentinel.Params(start, end)
 	switch {
+	case sentinel.Path == "/api/v1/query":
+		// A Prometheus instant query evaluates at the window's end.
+		params.Set("time", formatPromTime(end))
 	case sentinel.Path == "/api/v1/query_range":
 		params.Set("start", formatPromTime(start))
 		params.Set("end", formatPromTime(end))
@@ -522,6 +536,12 @@ func startSentinelLane(ctx context.Context, t *testing.T, floor ServerFloor, sta
 		// Logs only: the tier's sentinels read the seeded log lines.
 		signals = []ddl.Signal{ddl.Logs}
 	}
+	if floor == FloorClassicBucketLayout {
+		image = perfSmokeClassicBucketLayoutCHImage
+		// Metrics only: the tier's sentinel reads the seeded classic
+		// histogram.
+		signals = []ddl.Signal{ddl.Metrics}
+	}
 
 	client := startPerfSmokeCH(ctx, t, image)
 	conn := client.Conn()
@@ -582,6 +602,14 @@ func startSentinelLane(ctx context.Context, t *testing.T, floor ServerFloor, sta
 		t.Logf("seeded detected_level logs: %d rows", logRows)
 
 		tables = []string{"otel_logs"}
+	case FloorClassicBucketLayout:
+		histRows, err := SeedClassicHistogram(ctx, conn, ClassicBucketLayoutMetric, ClassicBucketLayoutSeriesCount, ClassicBucketLayoutBoundCount, end)
+		if err != nil {
+			t.Fatalf("seed classic histogram: %v", err)
+		}
+		t.Logf("seeded classic histogram: %d rows, %d series", histRows, ClassicBucketLayoutSeriesCount)
+
+		tables = []string{"otel_metrics_histogram"}
 	}
 
 	// OPTIMIZE ... FINAL before measuring: controls background-merge-state
@@ -592,6 +620,12 @@ func startSentinelLane(ctx context.Context, t *testing.T, floor ServerFloor, sta
 	}
 
 	metricsSchema := schema.DefaultOTelMetrics()
+	// The classic-bucket layout tier reads its metrics as cmd/cerberus does
+	// once it has probed the Flags column on the deployed tables: a `_bucket`
+	// selection then carries the stale-marker layout its sentinel measures.
+	// The other tiers keep the schema their committed bounds were calibrated
+	// against.
+	metricsSchema.FlagsColumnProbed = floor == FloorClassicBucketLayout
 	tracesSchema := schema.DefaultOTelTraces()
 	metricsHandler := prom.New(client, metricsSchema, nil)
 	tracesHandler := tempo.New(client, tracesSchema, "v-perf-smoke", nil)
@@ -619,6 +653,11 @@ func startSentinelLane(ctx context.Context, t *testing.T, floor ServerFloor, sta
 		t.Fatalf("%s: chopt.FeatureMergePlanFilters did NOT resolve enabled against %s — the tier's sentinels "+
 			"would pass vacuously against a server the engine never stamps %s on",
 			floor, image, chopt.SettingQueryPlanMergeFilters)
+	}
+	if floor == FloorClassicBucketLayout && !rules.ClassicBucketLayoutTwoLevel {
+		t.Fatalf("%s: chopt.FeatureClassicBucketLayoutTwoLevel did NOT resolve enabled against %s — the tier's "+
+			"sentinel would pass vacuously against a server the engine never stamps %s on",
+			floor, image, settingGroupByTwoLevelThresholdBytes)
 	}
 	metricsHandler.Engine.SetSettings(rules)
 	tracesHandler.Engine.SetSettings(rules)

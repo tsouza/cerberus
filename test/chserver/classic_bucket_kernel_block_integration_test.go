@@ -21,8 +21,8 @@ import (
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
 
-// classicBuild263 is the 26.3 build the classic-quantile kernel measurement
-// ran on (#4518).
+// classicBuild263 is the 26.3 build the classic-quantile kernel (#4518) and
+// the classic-bucket layout (#4519) measurements ran on.
 const classicBuild263 = "clickhouse/clickhouse-server:26.3.17.56-alpine"
 
 // classicKernelBlockBuilds are the builds the kernel measurement covers.
@@ -100,31 +100,11 @@ func TestClassicBucketRange_KernelPeakAcrossBlocks(t *testing.T) {
 			assertClassicKernelBlockAnswer(t, s, code, body)
 			served := s.classicKernelBlockRecord(ctx, t, qid)
 
-			replayID := qid + "-below-sort"
-			settings := clickhouse.Settings{}
-			for name, value := range served.settings {
-				settings[name] = value
-			}
-			settings[classicKernelSortSetting] = classicKernelBelowSort
-			rows, err := s.admin.Conn().Query(clickhouse.Context(ctx, clickhouse.WithQueryID(replayID), clickhouse.WithSettings(settings)), served.statement)
-			if err != nil {
-				t.Fatalf("%s: run the statement with the kernel before the sort: %v", s.version, err)
-			}
-			replayed := 0
-			for rows.Next() {
-				replayed++
-			}
-			if err := rows.Err(); err != nil {
-				t.Fatalf("%s: run the statement with the kernel before the sort: %v", s.version, err)
-			}
-			if err := rows.Close(); err != nil {
-				t.Fatalf("%s: close the statement with the kernel before the sort: %v", s.version, err)
-			}
+			replayed, belowSort := s.classicReplay(ctx, t, served, qid+"-below-sort", classicKernelSortSetting, classicKernelBelowSort)
 			if replayed != classicKernelBlockSeries*classicKernelBlockPoints {
 				t.Fatalf("%s: the statement with the kernel before the sort returned %d rows; want %d",
 					s.version, replayed, classicKernelBlockSeries*classicKernelBlockPoints)
 			}
-			belowSort := s.classicKernelBlockRecord(ctx, t, replayID)
 
 			t.Logf("%s: peak %d bytes served, %d with the kernel before the sort", s.version, served.peak, belowSort.peak)
 			if served.peak > classicKernelBlockMaxRatio*belowSort.peak {
@@ -262,6 +242,33 @@ func (s *server) classicKernelBlockRecord(ctx context.Context, t *testing.T, qid
 		t.Fatalf("read query_log for %s: %v", qid, err)
 	}
 	return r
+}
+
+// classicReplay reruns run's statement under its own settings with setting
+// overridden to value, as the query replayID, and returns the rows it
+// answered and what system.query_log recorded for it.
+func (s *server) classicReplay(ctx context.Context, t *testing.T, run classicKernelBlockRun, replayID, setting string, value any) (int, classicKernelBlockRun) {
+	t.Helper()
+	settings := clickhouse.Settings{}
+	for name, v := range run.settings {
+		settings[name] = v
+	}
+	settings[setting] = value
+	rows, err := s.admin.Conn().Query(clickhouse.Context(ctx, clickhouse.WithQueryID(replayID), clickhouse.WithSettings(settings)), run.statement)
+	if err != nil {
+		t.Fatalf("%s: replay with %s=%v: %v", s.version, setting, value, err)
+	}
+	replayed := 0
+	for rows.Next() {
+		replayed++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("%s: replay with %s=%v: %v", s.version, setting, value, err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("%s: close the replay with %s=%v: %v", s.version, setting, value, err)
+	}
+	return replayed, s.classicKernelBlockRecord(ctx, t, replayID)
 }
 
 // classicExplainColumn is one column of a step's header in ClickHouse's

@@ -98,6 +98,7 @@ chOptimizations: >-
   trace_id_external_table,ts_tag_groups,ts_throw_duplicate_series_if,
   exp_histogram_two_level,query_log_union,move_to_prewhere,
   canonical_map_type_cast,histogram_adaptive_aggregator_off,merge_plan_filters,
+  classic_bucket_layout_two_level,
   search_drain_scalar_traces,search_drain_trace_bounds
 
 schema:

@@ -167,3 +167,42 @@ func TestInspectPlanShape_SeesPluralQuantileGroupKeys(t *testing.T) {
 		})
 	}
 }
+
+// TestInspectPlanShape_ClassicBucketLayout pins the classicBucketLayout fact:
+// it needs both halves of the layout's aggregate, the union of bounds and the
+// rows carried as tuples, and it is found inside an embedded plan too.
+func TestInspectPlanShape_ClassicBucketLayout(t *testing.T) {
+	layout := classicBucketLayoutPlan().(*chplan.Aggregate)
+	unionOnly := *layout
+	unionOnly.AggFuncs = layout.AggFuncs[:1]
+	rowsOnly := *layout
+	rowsOnly.AggFuncs = layout.AggFuncs[1:]
+	columnRows := *layout
+	columnRows.AggFuncs = []chplan.AggFunc{
+		layout.AggFuncs[0],
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: "BucketCounts"}}, Alias: "rows"},
+	}
+	tests := []struct {
+		name string
+		plan chplan.Node
+		want bool
+	}{
+		{"layout aggregate", layout, true},
+		{"layout under a project", &chplan.Project{Input: layout}, true},
+		{"layout inside an embedded plan", &chplan.Filter{
+			Input:     filterScan("otel_metrics_sum"),
+			Predicate: &chplan.ScalarSubquery{Input: layout},
+		}, true},
+		{"union without rows", &unionOnly, false},
+		{"rows without union", &rowsOnly, false},
+		{"union beside a column groupArray", &columnRows, false},
+		{"plain aggregate", aggOverScan("otel_metrics_sum", "MetricName"), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shapeOf(tc.plan).classicBucketLayout; got != tc.want {
+				t.Errorf("classicBucketLayout = %v; want %v", got, tc.want)
+			}
+		})
+	}
+}

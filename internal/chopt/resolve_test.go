@@ -857,6 +857,7 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureTSThrowDuplicateSeriesIf:       {ID: FeatureTSThrowDuplicateSeriesIf, MinVersion: v(26, 2), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
 		FeatureExpHistogramTwoLevel:           {ID: FeatureExpHistogramTwoLevel, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, RequiresExperimentalTSGrid: false},
 		FeatureHistogramAdaptiveAggregatorOff: {ID: FeatureHistogramAdaptiveAggregatorOff, MinVersion: v(26, 8), Stability: Stable, AutoSelect: true},
+		FeatureClassicBucketLayoutTwoLevel:    {ID: FeatureClassicBucketLayoutTwoLevel, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, AutoRange: VersionRange{From: v(26, 3), Until: v(26, 8)}},
 		FeatureQueryLogUnion:                  {ID: FeatureQueryLogUnion, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresQueryLogUnionCapability: true},
 		FeatureMoveToPrewhere:                 {ID: FeatureMoveToPrewhere, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, AutoRange: VersionRange{From: v(24, 11), Until: v(26, 2)}},
 		FeatureCanonicalMapTypeCast:           {ID: FeatureCanonicalMapTypeCast, MinVersion: AlwaysAvailable, Stability: Stable, AutoSelect: true, AutoRange: VersionRange{Until: v(25, 1)}},

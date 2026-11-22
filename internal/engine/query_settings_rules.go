@@ -209,6 +209,15 @@ type SettingsRules struct {
 	// expHistogramTwoLevelThresholdBytes for why).
 	ExpHistogramTwoLevel bool
 
+	// ClassicBucketLayoutTwoLevel, when true, stamps
+	// group_by_two_level_threshold_bytes=1 on a plan carrying the
+	// classic-bucket stale-marker layout's per-series aggregate, so the
+	// stages that fan its rows out read the aggregate's output in buckets
+	// spread over every stream instead of in one block on one thread. Driven
+	// by the classic_bucket_layout_two_level registry feature. Applied via
+	// applyClassicBucketLayoutTwoLevelBound, beside ExpHistogramTwoLevel.
+	ClassicBucketLayoutTwoLevel bool
+
 	// HistogramAdaptiveAggregatorOff, when true, stamps
 	// enable_adaptive_aggregator=0 on a plan whose sample reductions are all
 	// exponential-histogram counter windows or sit above one (see
@@ -417,6 +426,9 @@ func (r SettingsRules) enabledOpts() []string {
 	}
 	if r.ExpHistogramTwoLevel {
 		opts = append(opts, "exp_histogram_two_level")
+	}
+	if r.ClassicBucketLayoutTwoLevel {
+		opts = append(opts, "classic_bucket_layout_two_level")
 	}
 	if r.HistogramAdaptiveAggregatorOff {
 		opts = append(opts, "histogram_adaptive_aggregator_off")
@@ -958,6 +970,29 @@ const expHistogramTwoLevelThresholdBytes = 1
 // found, because the answer gates a memory bound.
 func applyExpHistogramTwoLevelBound(ctx context.Context, f planShapeFacts, expHistogramTwoLevelEnabled bool) context.Context {
 	if !expHistogramTwoLevelEnabled || !f.expHistogramWindowGrouping {
+		return ctx
+	}
+	return chclient.WithQuerySetting(ctx, settingGroupByTwoLevelThresholdBytes, expHistogramTwoLevelThresholdBytes)
+}
+
+// applyClassicBucketLayoutTwoLevelBound stamps
+// group_by_two_level_threshold_bytes=expHistogramTwoLevelThresholdBytes on a
+// plan carrying the classic-bucket stale-marker layout's per-series aggregate
+// (f.classicBucketLayout), when the classic_bucket_layout_two_level feature
+// resolved in (classicBucketLayoutTwoLevelEnabled).
+//
+// The layout groups a `_bucket` selection's rows by series and carries every
+// row through the aggregate as one groupArray of tuples, which the stages
+// above expand again and fan out into one sample per bucket. A single-level
+// aggregation hands its whole result up as one block, so on a server whose
+// aggregator does not split that block, one thread runs the fan-out of every
+// series. Two-level aggregation hands the result up in its buckets, which the
+// pipeline spreads over its streams. The setting applies to every aggregation
+// of the statement; the plan-shape gate keeps it off every statement without
+// the layout. It is RESULT-EQUIVALENT, like every rule reachable from
+// applySharedQuerySettings.
+func applyClassicBucketLayoutTwoLevelBound(ctx context.Context, f planShapeFacts, classicBucketLayoutTwoLevelEnabled bool) context.Context {
+	if !classicBucketLayoutTwoLevelEnabled || !f.classicBucketLayout {
 		return ctx
 	}
 	return chclient.WithQuerySetting(ctx, settingGroupByTwoLevelThresholdBytes, expHistogramTwoLevelThresholdBytes)

@@ -20,6 +20,20 @@ const (
 	// sentinel's gauge metric (cerberus issue #3050, closing #3046's
 	// PERF-SENTINEL-WAIVER).
 	SortedSlabOverTimeGaugeMetric = "cerberus_smoke_sorted_slab_gauge"
+	// ClassicBucketLayoutMetric is the classic-bucket stale-marker layout
+	// sentinel's classic-histogram metric; the sentinel selects its
+	// `_bucket` series.
+	ClassicBucketLayoutMetric = "cerberus_smoke_request_duration"
+)
+
+// ClassicBucketLayoutSeriesCount / ClassicBucketLayoutBoundCount size the
+// classic-bucket layout sentinel's seed: series of that many finite bounds
+// each. On ClickHouse 26.3.17.56 the sentinel's instant merge over this seed
+// peaked at 73 MiB stamped and 309 MiB with the stamp withheld, so the
+// committed ceiling (1.5x the stamped peak) fails the unstamped merge.
+const (
+	ClassicBucketLayoutSeriesCount = 3000
+	ClassicBucketLayoutBoundCount  = 15
 )
 
 // sentinelWindow / sentinelStep size every sentinel's query_range grid: 1h at
@@ -99,11 +113,18 @@ const (
 	// 24.11, where auto never resolves the feature. See
 	// realch_perfsmoke_integration_test.go's perfSmokeMergePlanFiltersCHImage.
 	FloorMergePlanFilters
+
+	// FloorClassicBucketLayout is chopt.FeatureClassicBucketLayoutTwoLevel's
+	// auto range, 26.3 up to 26.8: the releases on which auto stamps the
+	// classic-bucket stale-marker layout's two-level aggregation. Every other
+	// tier's image is outside it. See realch_perfsmoke_integration_test.go's
+	// perfSmokeClassicBucketLayoutCHImage.
+	FloorClassicBucketLayout
 )
 
 // Floors is every tier the harness boots, in boot order. A sentinel whose
 // Floor is not listed here never runs.
-var Floors = []ServerFloor{FloorBase, FloorJoinSpill, FloorDistinctSpill, FloorMergePlanFilters}
+var Floors = []ServerFloor{FloorBase, FloorJoinSpill, FloorDistinctSpill, FloorMergePlanFilters, FloorClassicBucketLayout}
 
 // String renders the floor for test output and failure messages.
 func (f ServerFloor) String() string {
@@ -114,6 +135,8 @@ func (f ServerFloor) String() string {
 		return "distinct_spill (>= 26.9)"
 	case FloorMergePlanFilters:
 		return "merge_plan_filters (>= 24.7, < 24.11)"
+	case FloorClassicBucketLayout:
+		return "classic_bucket_layout_two_level (>= 26.3, < 26.8)"
 	}
 	return "base"
 }
@@ -161,14 +184,15 @@ const distinctSpillTraceQL = `{ kind = server } > { kind = client } | count_over
 // ClickHouse records is the point.
 const settingGroupByTwoLevelThresholdBytes = "group_by_two_level_threshold_bytes"
 
-// wantExpHistogramTwoLevelThresholdBytes is the exact value ClickHouse
-// records for that setting under the stamp: "1", the smallest value that
-// ARMS the byte threshold. It is written as a literal rather than derived
-// from internal/engine's expHistogramTwoLevelThresholdBytes so the assertion
-// pins the value #3247 measured, not whatever that const currently holds --
+// wantTwoLevelThresholdBytes is the exact value ClickHouse records for that
+// setting under either two-level stamp (the exponential-histogram window's,
+// #3247, and the classic-bucket stale-marker layout's, #4519): "1", the
+// smallest value that ARMS the byte threshold. It is written as a literal
+// rather than derived from internal/engine's expHistogramTwoLevelThresholdBytes
+// so the assertion pins the value those issues measured, not whatever that const currently holds --
 // "0" in particular would DISABLE the threshold and make the mechanism inert
 // while a derived expectation stayed green.
-const wantExpHistogramTwoLevelThresholdBytes = "1"
+const wantTwoLevelThresholdBytes = "1"
 
 // settingEnableAnalyzer is the ClickHouse setting internal/engine's
 // applyNativeHistogramAnalyzerFix stamps to 0 on a native-histogram plan —
@@ -357,7 +381,7 @@ var Sentinels = []Sentinel{
 			// analyzer stamp is a fixed 0.
 			return map[string]string{
 				settingEnableAnalyzer:                wantNativeHistogramEnableAnalyzer,
-				settingGroupByTwoLevelThresholdBytes: wantExpHistogramTwoLevelThresholdBytes,
+				settingGroupByTwoLevelThresholdBytes: wantTwoLevelThresholdBytes,
 			}
 		},
 	},
@@ -600,6 +624,38 @@ var Sentinels = []Sentinel{
 		Step:      mergePlanFiltersStep,
 		RequiredQuerySettings: func(int64) map[string]string {
 			return map[string]string{chopt.SettingQueryPlanMergeFilters: "1"}
+		},
+	},
+	{
+		// Classic-bucket stale-marker layout, chopt-gated:
+		// applyClassicBucketLayoutTwoLevelBound stamps
+		// group_by_two_level_threshold_bytes=1 on a plan carrying the
+		// layout's per-series aggregate, but ONLY once
+		// SettingsRules.ClassicBucketLayoutTwoLevel is true, which auto
+		// resolves on servers from 26.3 up to 26.8. Hence Floor:
+		// FloorClassicBucketLayout.
+		//
+		// The sentinel is the instant merge: an instant query evaluates at the
+		// window's end, so it reads one lookback of samples per series, and
+		// the layout's single block is what dominates its peak.
+		//
+		// A `_bucket` merge carries the layout when the metrics schema's Flags
+		// column was probed, which the tier's lane does as cmd/cerberus does
+		// on a table carrying the column. Single-level, the layout's aggregate
+		// hands every series' rows up as one block; two-level, in buckets. The
+		// committed bound holds the stamped peak, and RequiredQuerySettings
+		// makes the stamp's absence fail.
+		Name:      "classic_bucket_layout_two_level",
+		Mechanism: "applyClassicBucketLayoutTwoLevelBound (internal/engine/query_settings_rules.go) via SettingsRules.ClassicBucketLayoutTwoLevel / chopt.FeatureClassicBucketLayoutTwoLevel",
+		Floor:     FloorClassicBucketLayout,
+		Path:      "/api/v1/query",
+		Params: func(start, end time.Time) url.Values {
+			return url.Values{"query": {"sum by (le) (" + ClassicBucketLayoutMetric + "_bucket)"}}
+		},
+		Window: sentinelWindow,
+		Step:   0,
+		RequiredQuerySettings: func(int64) map[string]string {
+			return map[string]string{settingGroupByTwoLevelThresholdBytes: wantTwoLevelThresholdBytes}
 		},
 	},
 }

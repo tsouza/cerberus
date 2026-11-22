@@ -2326,6 +2326,35 @@ const (
 	// predicate and the shapes left outside it.
 	FeatureHistogramAdaptiveAggregatorOff = "histogram_adaptive_aggregator_off"
 
+	// FeatureClassicBucketLayoutTwoLevel stamps
+	// group_by_two_level_threshold_bytes=1 on a plan carrying the
+	// classic-bucket stale-marker layout: the per-series aggregate that takes
+	// a `_bucket` selection's union of bounds and carries the series' rows
+	// through itself as one groupArray of tuples, which the stages above
+	// expand again and fan out into one sample per bucket.
+	//
+	// Single-level, the aggregate hands its whole merged result up as one
+	// block, and one thread expands and fans out every series. Two-level, it
+	// emits its result in buckets spread over the streams. Statement replays
+	// on 26.3.17.56, median of 9, main's statement unstamped -> stamped
+	// (v1.24.0 in brackets): instant `<bucket>{method="POST"}` 369 -> 307 ms
+	// (364) and 68 -> 27 MiB (63); range, same selector, 2486 -> 1460 ms
+	// (2260) and 844 -> 273 MiB (780); instant `sum by (le) (<bucket>)` 961 ->
+	// 449 ms (525) and 280 -> 54 MiB (286); instant `count(<bucket>)` 938 ->
+	// 437 ms (577) and 280 -> 51 MiB (283).
+	//
+	// It is RESULT-EQUIVALENT: two-level aggregation is an execution
+	// strategy, and the rows it emits are the rows the single-level table
+	// would have emitted.
+	//
+	// MinVersion is AlwaysAvailable, for the reason
+	// FeatureExpHistogramTwoLevel gives. AutoRange is
+	// classicBucketLayoutTwoLevelAutoRange: auto picks the feature on the
+	// release lines where it was measured faster, and an explicit listing
+	// enables it on any server. Stability is Stable. See internal/engine's
+	// applyClassicBucketLayoutTwoLevelBound for the plan-shape gate.
+	FeatureClassicBucketLayoutTwoLevel = "classic_bucket_layout_two_level"
+
 	// FeatureQueryLogUnion points the query-actuals reconciler (internal/engine's
 	// QueryLogActualsReconciler, active only with
 	// CERBERUS_QUERY_ACTUALS_ENABLED=true) at system.all_query_log instead of
@@ -2442,6 +2471,15 @@ const (
 // a bounded search through a scalar (FeatureSearchDrainScalarTraces,
 // FeatureSearchDrainTraceBounds).
 var searchDrainScalarAutoRange = VersionRange{From: Version{Major: 26, Minor: 2}, Until: Version{Major: 26, Minor: 4}}
+
+// classicBucketLayoutTwoLevelAutoRange is the release lines on which a
+// classic-bucket selection's stale-marker layout runs faster aggregated
+// two-level (FeatureClassicBucketLayoutTwoLevel). Every line from 26.3 to
+// 26.7 measured faster stamped on the three instant shapes; 26.8.36.3
+// measured the instant selection 264 -> 317 ms slower, so the range ends
+// there.
+// Below 26.3, #4398 measured the unstamped layout no slower on 24.8.
+var classicBucketLayoutTwoLevelAutoRange = VersionRange{From: Version{Major: 26, Minor: 3}, Until: Version{Major: 26, Minor: 8}}
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
 // server-version gate at all (a purely client-side optimization such as
@@ -3078,6 +3116,17 @@ var registry = []Feature{
 			"windows or sit above one, so the bucket arrays aggregate per thread instead of through the adaptive " +
 			"aggregator's backlogs (result-equivalent, server >= 26.8, measured 289 -> 143 MiB on the instant plural " +
 			"native quantile over rate() -- #3986)",
+	},
+	{
+		ID:         FeatureClassicBucketLayoutTwoLevel,
+		MinVersion: AlwaysAvailable,
+		Stability:  Stable,
+		AutoSelect: true,
+		AutoRange:  classicBucketLayoutTwoLevelAutoRange,
+		Doc: "stamp group_by_two_level_threshold_bytes=1 on a plan carrying a classic-bucket selection's stale-marker " +
+			"layout, so the stages fanning its rows out into buckets read the per-series aggregate in buckets across " +
+			"every stream instead of in one block (result-equivalent; auto picks it on server " +
+			classicBucketLayoutTwoLevelAutoRange.String() + ", measured 961 -> 449 ms and 280 -> 54 MiB on the instant sum by (le) on 26.3 -- #4519)",
 	},
 	{
 		ID:                              FeatureQueryLogUnion,

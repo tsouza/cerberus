@@ -52,6 +52,10 @@ type planShapeFacts struct {
 	// RangeBucketFanout — see applyExpHistogramTwoLevelBound for why neither
 	// conjunct alone is the predicate.
 	expHistogramWindowGrouping bool
+	// classicBucketLayout: the per-series aggregate of the classic-bucket
+	// stale-marker layout (classicBucketLayoutAggregate) somewhere in the
+	// plan — see applyClassicBucketLayoutTwoLevelBound.
+	classicBucketLayout bool
 	// histogramSampleWindow: an exponential-histogram counter window
 	// (histogramSampleWindowAggregate) somewhere in the plan.
 	histogramSampleWindow bool
@@ -249,6 +253,9 @@ func (f *planShapeFacts) recordNode(n chplan.Node, spine bool) {
 			f.spineAggregate = v
 			f.spineAggregates++
 		}
+		if classicBucketLayoutAggregate(v) {
+			f.classicBucketLayout = true
+		}
 	case *chplan.Scan:
 		if v.TimeShiftMillis != 0 {
 			f.timeShifted = true
@@ -270,6 +277,34 @@ func (f *planShapeFacts) recordNode(n chplan.Node, spine bool) {
 			f.filterAboveRowScope = true
 		}
 	}
+}
+
+// classicBucketLayoutAggregate reports whether a is the per-series aggregate
+// of internal/promql's classic-bucket stale-marker layout
+// (staleMarkerBucketLayout): it takes each series' union of bucket bounds
+// through groupUniqArrayArray and carries the series' rows through itself as
+// one groupArray of row tuples, which the stages above it expand again.
+//
+// groupUniqArrayArray over a column is what identifies it: the layout is the
+// only lowering that aggregates an array column into its distinct elements.
+// The groupArray of a tuple is the other half, and requiring both keeps a
+// future union aggregate that carries no rows out of the predicate.
+func classicBucketLayoutAggregate(a *chplan.Aggregate) bool {
+	var union, rows bool
+	for _, agg := range a.AggFuncs {
+		if len(agg.Args) != 1 {
+			continue
+		}
+		switch agg.Fn {
+		case chplan.FnGroupUniqArrayArray:
+			union = true
+		case chplan.FnGroupArray:
+			if call, ok := agg.Args[0].(*chplan.FuncCall); ok && call.Fn == chplan.FnTuple {
+				rows = true
+			}
+		}
+	}
+	return union && rows
 }
 
 // histogramSampleWindowNode reports whether n is an exponential-histogram
