@@ -41,6 +41,38 @@ func TestSettingsRules_HistogramAdaptiveAggregatorOffFollowsTheResolvedSet(t *te
 	}
 }
 
+// TestSettingsRules_ClassicBucketLayoutTwoLevelFollowsTheResolvedSet pins
+// that SettingsRules carries the classic_bucket_layout_two_level verdict:
+// auto turns it on from 26.3 up to 26.8, the lines on which the two-level
+// stale-marker aggregate measured faster, and leaves it off outside that
+// range; an explicit listing turns it on on any server, and a listing
+// without it leaves it off.
+func TestSettingsRules_ClassicBucketLayoutTwoLevelFollowsTheResolvedSet(t *testing.T) {
+	for _, tc := range []struct {
+		selection string
+		server    chopt.Version
+		want      bool
+	}{
+		{chopt.SelectionAuto, chopt.Version{Major: 24, Minor: 8}, false},
+		{chopt.SelectionAuto, chopt.Version{Major: 26, Minor: 2}, false},
+		{chopt.SelectionAuto, chopt.Version{Major: 26, Minor: 3, Patch: 17, Build: 56}, true},
+		{chopt.SelectionAuto, chopt.Version{Major: 26, Minor: 7, Patch: 38, Build: 18}, true},
+		{chopt.SelectionAuto, chopt.Version{Major: 26, Minor: 8, Patch: 36, Build: 3}, false},
+		{chopt.FeatureClassicBucketLayoutTwoLevel, chopt.Version{Major: 26, Minor: 8}, true},
+		{chopt.FeatureExpHistogramTwoLevel, chopt.Version{Major: 26, Minor: 3}, false},
+	} {
+		set, _, err := chopt.Resolve(chopt.Config{Optimizations: tc.selection}, tc.server)
+		if err != nil {
+			t.Fatalf("chopt.Resolve(%q) on %v: %v", tc.selection, tc.server, err)
+		}
+		rules := choptwire.SettingsRules(set, schema.DefaultOTelMetrics(), schema.DefaultOTelTraces(), schema.DefaultOTelLogs())
+		if rules.ClassicBucketLayoutTwoLevel != tc.want {
+			t.Errorf("selection %q on %v: ClassicBucketLayoutTwoLevel = %v; want %v",
+				tc.selection, tc.server, rules.ClassicBucketLayoutTwoLevel, tc.want)
+		}
+	}
+}
+
 // TestSettingsRules_NativeHistogramAnalyzerStampFollowsTheResolvedSet pins
 // the release lines on which a native-histogram plan carries enable_analyzer=0:
 // below 26.8 the stamp still pays off and is applied; from 26.8 the analyzer

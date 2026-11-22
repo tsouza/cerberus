@@ -221,7 +221,7 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			chopt.FeatureLagInFrameAdjacency:
 			// A RangeLowerers dispatch strategy (or a modifier on one) —
 			// composed by choptwire.RangeLowerers from the resolved set.
-		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter, chopt.FeatureTSThrowDuplicateSeriesIf, chopt.FeatureExpHistogramTwoLevel, chopt.FeatureHistogramAdaptiveAggregatorOff, chopt.FeatureMoveToPrewhere, chopt.FeatureCanonicalMapTypeCast, chopt.FeatureSearchDrainScalarTraces, chopt.FeatureSearchDrainTraceBounds, chopt.FeatureMergePlanFilters:
+		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter, chopt.FeatureTSThrowDuplicateSeriesIf, chopt.FeatureExpHistogramTwoLevel, chopt.FeatureClassicBucketLayoutTwoLevel, chopt.FeatureHistogramAdaptiveAggregatorOff, chopt.FeatureMoveToPrewhere, chopt.FeatureCanonicalMapTypeCast, chopt.FeatureSearchDrainScalarTraces, chopt.FeatureSearchDrainTraceBounds, chopt.FeatureMergePlanFilters:
 			// CH SETTINGS stamped at emit time, not a RangeLowerers dispatch
 			// strategy — no effect on which lowering table a query takes.
 			// FeatureJoinSpill mirrors the other two exactly: it stamps
@@ -272,7 +272,12 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// (cerberus issue #3986) is that shape again: it stamps
 			// enable_adaptive_aggregator=0 on a plan already built, read off a
 			// histogram sample-window plan-shape fact, and never picks a
-			// RangeLowerers strategy. FeatureMoveToPrewhere decides only
+			// RangeLowerers strategy. FeatureClassicBucketLayoutTwoLevel
+			// (cerberus issue #4519) is that shape again: its
+			// applyClassicBucketLayoutTwoLevelBound stamps
+			// group_by_two_level_threshold_bytes on a plan already built,
+			// read off the classic-bucket stale-marker layout's aggregate.
+			// FeatureMoveToPrewhere decides only
 			// where internal/chsql's emitter writes a filtered scan's conjuncts
 			// (SchemaStrategies.PrewhereByServer), after the plan the solver
 			// classifies is built, so it reaches neither promql.RangeLowerers
