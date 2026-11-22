@@ -122,7 +122,7 @@ func compositionContributors() []settingsContributor {
 			return applyExpHistogramTwoLevelBound(ctx, shapeOf(plan), rules.ExpHistogramTwoLevel)
 		}},
 		{"classic_bucket_layout_two_level", func(ctx context.Context, plan chplan.Node, _ int64, rules SettingsRules) context.Context {
-			return applyClassicBucketLayoutTwoLevelBound(ctx, shapeOf(plan), rules.ClassicBucketLayoutTwoLevel)
+			return applyClassicBucketLayoutTwoLevelBound(ctx, shapeOf(plan), rules.ClassicBucketLayoutTwoLevel, rules.ExpHistogramTwoLevel)
 		}},
 		{"histogram_adaptive_aggregator_off", func(ctx context.Context, plan chplan.Node, _ int64, rules SettingsRules) context.Context {
 			return applyHistogramAdaptiveAggregatorOff(ctx, shapeOf(plan), rules.HistogramAdaptiveAggregatorOff)

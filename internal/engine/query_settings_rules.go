@@ -210,10 +210,11 @@ type SettingsRules struct {
 	ExpHistogramTwoLevel bool
 
 	// ClassicBucketLayoutTwoLevel, when true, stamps
-	// group_by_two_level_threshold_bytes=1 on a plan carrying the
-	// classic-bucket stale-marker layout's per-series aggregate, so the
-	// stages that fan its rows out read the aggregate's output in buckets
-	// spread over every stream instead of in one block on one thread. Driven
+	// group_by_two_level_threshold_bytes=classicBucketLayoutTwoLevelThresholdBytes
+	// on a plan carrying the classic-bucket stale-marker layout's per-series
+	// aggregate, so once that aggregate outgrows the threshold the stages that
+	// fan its rows out read its output in buckets spread over every stream
+	// instead of in one block on one thread. Driven
 	// by the classic_bucket_layout_two_level registry feature. Applied via
 	// applyClassicBucketLayoutTwoLevelBound, beside ExpHistogramTwoLevel.
 	ClassicBucketLayoutTwoLevel bool
@@ -975,11 +976,37 @@ func applyExpHistogramTwoLevelBound(ctx context.Context, f planShapeFacts, expHi
 	return chclient.WithQuerySetting(ctx, settingGroupByTwoLevelThresholdBytes, expHistogramTwoLevelThresholdBytes)
 }
 
+// classicBucketLayoutTwoLevelThresholdBytes is the
+// group_by_two_level_threshold_bytes applyClassicBucketLayoutTwoLevelBound
+// stamps on a plan carrying the classic-bucket stale-marker layout: 8 MiB.
+//
+// The layout's aggregate converts to two-level once its state passes the
+// threshold. Converting costs a fixed amount of memory and CPU however few
+// series the aggregate holds, so a small classic metric aggregated two-level
+// at once pays for buckets it does not need. Above the threshold the
+// aggregate holds enough series that spreading its output over the streams
+// pays for itself. Replaying the served statements on ClickHouse 26.3.17.56:
+//
+//   - instant `sum by (le)` over 9 series of 4 samples (36 rows) peaked at
+//     40.8 MiB with a 1-byte threshold and 5.4 MiB at 8 MiB, the same as
+//     with the threshold unset;
+//   - over 3000 series of 15 bounds and 20 samples, the instant `sum by (le)`
+//     peaked at 66.0 MiB with 1 byte, 65.8 MiB at 8 MiB and 308 MiB unset;
+//     the instant `{method="POST"}` selection 31.1, 30.9 and 155.1 MiB; the
+//     range selection 110.6, 113.1 and 155.2 MiB. That selection's knee lies
+//     between 16 and 32 MiB, where it peaked at 28.6 and 155.1 MiB.
+//
+// The 3000-series statements ran as fast at 8 MiB as at 1 byte. It is a
+// constant of its own, not expHistogramTwoLevelThresholdBytes: the
+// exponential-histogram window converts at once because its fan-out has no
+// small case worth sparing.
+const classicBucketLayoutTwoLevelThresholdBytes = 8 << 20
+
 // applyClassicBucketLayoutTwoLevelBound stamps
-// group_by_two_level_threshold_bytes=expHistogramTwoLevelThresholdBytes on a
-// plan carrying the classic-bucket stale-marker layout's per-series aggregate
-// (f.classicBucketLayout), when the classic_bucket_layout_two_level feature
-// resolved in (classicBucketLayoutTwoLevelEnabled).
+// group_by_two_level_threshold_bytes=classicBucketLayoutTwoLevelThresholdBytes
+// on a plan carrying the classic-bucket stale-marker layout's per-series
+// aggregate (f.classicBucketLayout), when the classic_bucket_layout_two_level
+// feature resolved in (classicBucketLayoutTwoLevelEnabled).
 //
 // The layout groups a `_bucket` selection's rows by series and carries every
 // row through the aggregate as one groupArray of tuples, which the stages
@@ -987,15 +1014,27 @@ func applyExpHistogramTwoLevelBound(ctx context.Context, f planShapeFacts, expHi
 // aggregation hands its whole result up as one block, so on a server whose
 // aggregator does not split that block, one thread runs the fan-out of every
 // series. Two-level aggregation hands the result up in its buckets, which the
-// pipeline spreads over its streams. The setting applies to every aggregation
-// of the statement; the plan-shape gate keeps it off every statement without
-// the layout. It is RESULT-EQUIVALENT, like every rule reachable from
-// applySharedQuerySettings.
-func applyClassicBucketLayoutTwoLevelBound(ctx context.Context, f planShapeFacts, classicBucketLayoutTwoLevelEnabled bool) context.Context {
+// pipeline spreads over its streams, once the aggregate's state passes
+// classicBucketLayoutTwoLevelThresholdBytes. The setting applies to every
+// aggregation of the statement; the plan-shape gate keeps it off every
+// statement without the layout. It is RESULT-EQUIVALENT, like every rule
+// reachable from applySharedQuerySettings.
+//
+// On a plan that also carries a windowed exponential-histogram grouping
+// stamped by applyExpHistogramTwoLevelBound (expHistogramTwoLevelEnabled),
+// the rule stamps nothing: the setting is one per statement, and that
+// window's 1-byte threshold, which converts every aggregation of the
+// statement at once, wins over the layout's.
+func applyClassicBucketLayoutTwoLevelBound(
+	ctx context.Context, f planShapeFacts, classicBucketLayoutTwoLevelEnabled, expHistogramTwoLevelEnabled bool,
+) context.Context {
 	if !classicBucketLayoutTwoLevelEnabled || !f.classicBucketLayout {
 		return ctx
 	}
-	return chclient.WithQuerySetting(ctx, settingGroupByTwoLevelThresholdBytes, expHistogramTwoLevelThresholdBytes)
+	if expHistogramTwoLevelEnabled && f.expHistogramWindowGrouping {
+		return ctx
+	}
+	return chclient.WithQuerySetting(ctx, settingGroupByTwoLevelThresholdBytes, classicBucketLayoutTwoLevelThresholdBytes)
 }
 
 // settingEnableAdaptiveAggregator is the ClickHouse 26.8+ setting that turns

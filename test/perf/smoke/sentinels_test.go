@@ -14,7 +14,7 @@ import (
 // broken request in the real-ClickHouse integration lane, where a driver
 // error is much more expensive to root-cause than this unit check.
 func TestSentinels_Roster(t *testing.T) {
-	const wantCount = 10
+	const wantCount = 11
 	if len(Sentinels) != wantCount {
 		t.Fatalf("len(Sentinels) = %d, want %d", len(Sentinels), wantCount)
 	}
@@ -120,33 +120,35 @@ func TestSentinels_JoinSpillStampIsAsserted(t *testing.T) {
 }
 
 // TestSentinels_ClassicBucketLayoutStampIsAsserted pins what makes the
-// classic-bucket layout sentinel falsifiable: its query selects the classic
+// classic-bucket layout sentinels falsifiable: each query selects its classic
 // metric's `_bucket` series, which is what lowers to the stale-marker layout,
-// and it requires the two-level stamp. Peak memory alone would stay inside
-// the committed bound's headroom on a smaller seed whether the stamp fired or
-// not.
+// and each requires the two-level stamp at the layout's threshold. Peak
+// memory alone would stay inside the committed bound's headroom on a smaller
+// seed whether the stamp fired or not; the small metric's bound is what fails
+// a threshold that converts its aggregate at once.
 func TestSentinels_ClassicBucketLayoutStampIsAsserted(t *testing.T) {
 	layout := SentinelsForFloor(FloorClassicBucketLayout)
-	if len(layout) != 1 {
-		t.Fatalf("SentinelsForFloor(FloorClassicBucketLayout) returned %d sentinels, want 1", len(layout))
+	wantMetrics := []string{ClassicBucketLayoutMetric, ClassicBucketLayoutSmallMetric}
+	if len(layout) != len(wantMetrics) {
+		t.Fatalf("SentinelsForFloor(FloorClassicBucketLayout) returned %d sentinels, want %d", len(layout), len(wantMetrics))
 	}
-	s := layout[0]
+	for i, s := range layout {
+		query := s.Params(time.Unix(0, 0), time.Unix(0, 0).Add(sentinelWindow)).Get("query")
+		if !strings.Contains(query, wantMetrics[i]+"_bucket") {
+			t.Errorf("classic-bucket layout sentinel %s query %q selects no `_bucket` series of %s, so it "+
+				"lowers to no stale-marker layout and the stamp could not fire", s.Name, query, wantMetrics[i])
+		}
 
-	query := s.Params(time.Unix(0, 0), time.Unix(0, 0).Add(sentinelWindow)).Get("query")
-	if !strings.Contains(query, ClassicBucketLayoutMetric+"_bucket") {
-		t.Errorf("classic-bucket layout sentinel query %q selects no `_bucket` series of %s, so it "+
-			"lowers to no stale-marker layout and the stamp could not fire", query, ClassicBucketLayoutMetric)
-	}
-
-	const cap1GiB int64 = 1 << 30
-	got := s.RequiredSettings(cap1GiB)
-	want := map[string]string{settingGroupByTwoLevelThresholdBytes: wantTwoLevelThresholdBytes}
-	if len(got) != len(want) {
-		t.Fatalf("classic-bucket layout sentinel RequiredSettings = %v, want %v", got, want)
-	}
-	for k, v := range want {
-		if got[k] != v {
-			t.Errorf("classic-bucket layout sentinel RequiredSettings[%q] = %q, want %q", k, got[k], v)
+		const cap1GiB int64 = 1 << 30
+		got := s.RequiredSettings(cap1GiB)
+		want := map[string]string{settingGroupByTwoLevelThresholdBytes: wantClassicLayoutTwoLevelThresholdBytes}
+		if len(got) != len(want) {
+			t.Fatalf("classic-bucket layout sentinel %s RequiredSettings = %v, want %v", s.Name, got, want)
+		}
+		for k, v := range want {
+			if got[k] != v {
+				t.Errorf("classic-bucket layout sentinel %s RequiredSettings[%q] = %q, want %q", s.Name, k, got[k], v)
+			}
 		}
 	}
 }

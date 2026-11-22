@@ -491,7 +491,7 @@ func applySharedQuerySettings(ctx context.Context, f planShapeFacts, memCap int6
 	// classic_bucket_layout_two_level feature resolved in: the same two-level
 	// stamp, so the stages fanning the layout's rows out read its aggregate in
 	// buckets across every stream rather than in one block on one thread.
-	ctx = applyClassicBucketLayoutTwoLevelBound(ctx, f, rules.ClassicBucketLayoutTwoLevel)
+	ctx = applyClassicBucketLayoutTwoLevelBound(ctx, f, rules.ClassicBucketLayoutTwoLevel, rules.ExpHistogramTwoLevel)
 	// Exponential-histogram counter-window plans only (rate() / increase() /
 	// irate() over exp-histogram samples, with no other sample reduction
 	// beside the window), on ClickHouse 26.8+ where the setting exists: keep

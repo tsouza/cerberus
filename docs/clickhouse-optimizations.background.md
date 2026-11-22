@@ -1398,13 +1398,13 @@ rebuilt with `mapConcat` and so is not a prefix of the sorting key.
 
 A single-level aggregate hands its whole merged result up as one block. The
 expansion and the fan-out above it (the `le` strings, the cumulative counts)
-then run on one thread for every series. On 26.3 that made the instant
-selection and the aggregations over it 30-50% slower than v1.24.0, whose
-window ran in parallel across the partitions. A two-level aggregate emits its
-result in 256 buckets spread over the streams, so the fan-out runs in
-parallel again. `group_by_two_level_threshold_bytes=1` converts the table to
-two-level at once, as `exp_histogram_two_level` does for the windowed
-exponential-histogram grouping.
+then run on one thread for every series. In statement replays on 26.3 that
+made the instant `sum by (le)` and `count` over the selection 83% and 63%
+slower than v1.24.0 (961 against 525 ms, 938 against 577 ms) and the range
+selection 10% slower (2486 against 2260 ms), whereas v1.24.0's window ran in
+parallel across the partitions; the instant selection itself ran as fast as
+v1.24.0 (369 against 364 ms). A two-level aggregate emits its result in 256
+buckets spread over the streams, so the fan-out runs in parallel again.
 
 Whether the unstamped aggregate stays single-level depends on how the scan
 feeds it. The server converts on its own once the state passes the default
@@ -1416,6 +1416,37 @@ the table holding only the lookback, the same merge peaked at 309 MiB
 unstamped and 67-75 MiB stamped. The stamp makes the outcome independent of
 the table's layout, which is also why the perf-smoke sentinel seeds only one
 lookback.
+
+### The threshold
+
+The feature stamps `group_by_two_level_threshold_bytes` at 8 MiB. It first
+stamped 1 byte, which converts the table to two-level at once, as
+`exp_histogram_two_level` does for the windowed exponential-histogram
+grouping. Converting has a fixed cost however few series the aggregate holds,
+and small classic metrics paid it
+([#4532](https://github.com/tsouza/cerberus/issues/4532)). On 26.3.17.56,
+served over a 9-series metric of 36 rows, median of 7 alternated runs, peak
+MiB / ms of CPU:
+
+| query                             | v1.24.0  | 1 byte     | 8 MiB     |
+| --------------------------------- | -------- | ---------- | --------- |
+| instant `sum by (le) (<bucket>)`  | 2.2 / 77 | 39.4 / 150 | 5.4 / 100 |
+| instant `count(<bucket>)`         | 2.3 / 73 | 13.5 / 110 | 5.5 / 92  |
+| instant `<bucket>`                | 2.0 / 71 | 14.1 / 110 | 5.3 / 86  |
+
+At 8 MiB the small aggregate stays single-level and peaks as it does with the
+setting unset. The rest of the gap to v1.24.0, about 3 MiB, is #4398's
+layout: the per-series aggregate that replaced v1.24.0's window function
+peaked at 4.1 MiB on those 36 rows by itself, of which the `groupArray` of
+tuples took about 2.4 MiB and `groupUniqArrayArray` about 1.1 MiB.
+
+8 MiB keeps the large-metric gains. Replaying the served statements on
+26.3.17.56 over 3000 series of 15 bounds, peak MiB at 1 byte / 8 MiB / unset:
+the instant `sum by (le) (<bucket>)` 66.0 / 65.8 / 308, the instant
+`<bucket>{method="POST"}` 31.1 / 30.9 / 155.1, the range selection 110.6 /
+113.1 / 155.2. The selection's knee lies between 16 and 32 MiB, where it
+peaked at 28.6 and 155.1 MiB, so 8 MiB sits a factor of two to four below it.
+The statements ran as fast at 8 MiB as at 1 byte.
 
 ### Measurements
 
@@ -1438,12 +1469,28 @@ statement; ms and MiB, median of 9 on 26.3, of 5 on 26.4 to 26.7 and of 7 on
 | 26.8.36.3  | instant `sum by (le) (<bucket>)`  | not run    | 510 / 239  | 485 / 133  |
 | 26.8.36.3  | instant `count(<bucket>)`         | not run    | 491 / 243  | 437 / 137  |
 
-From 26.3 to 26.7 every instant shape ran faster stamped and used less
-memory. On 26.8.36.3 the stamp still cuts memory, but the instant selection
-ran 20% slower than unstamped, so the auto range ends at 26.8: its bar is
-main's own figures there, which #4398 measured. Below 26.3, #4398
-measured the unstamped layout no slower than before on 24.8, so the range
-starts at 26.3.
+On 26.3 every shape replayed ran faster stamped and used less memory. On 26.4
+to 26.7 the replays covered the instant `sum by (le)` alone, which ran faster
+stamped on each line. On 26.8.36.3 the stamp still cuts memory, but the
+instant selection ran 20% slower than unstamped, so the auto range ends at
+26.8: its bar is main's own figures there, which #4398 measured. Below 26.3,
+the unstamped layout measured no slower than before on 24.8 (#4398), so the
+range starts at 26.3.
+
+The three instant shapes served on 26.4 to 26.8 over the same seed at the
+8 MiB threshold, unstamped against stamped, ms of ClickHouse time / peak MiB,
+median of 5 alternated runs at a host load of 8 to 12:
+
+| server     | `<bucket>{method="POST"}` | `sum by (le) (<bucket>)` | `count(<bucket>)`       |
+| ---------- | ------------------------- | ------------------------ | ----------------------- |
+| 26.4.5.143 | 693 / 171 -> 807 / 30     | 1170 / 340 -> 1177 / 59  | 1143 / 340 -> 1045 / 59 |
+| 26.5.7.64  | 616 / 171 -> 639 / 29     | 1232 / 340 -> 1346 / 59  | 1270 / 340 -> 1320 / 59 |
+| 26.6.8.7   | 1302 / 171 -> 1190 / 27   | 1776 / 339 -> 1691 / 59  | 1628 / 339 -> 1547 / 59 |
+| 26.7.38.18 | 1168 / 184 -> 794 / 31    | 1271 / 366 -> 1915 / 62  | 1588 / 366 -> 1760 / 62 |
+| 26.8.36.3  | 951 / 158 -> 1251 / 30    | 1770 / 314 -> 1629 / 60  | 1716 / 314 -> 1849 / 62 |
+
+The stamp cut the peak five- to six-fold on every line. The time moved from
+32% faster to 51% slower with no direction common to the lines.
 
 ### What was not done
 
