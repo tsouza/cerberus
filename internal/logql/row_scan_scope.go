@@ -2,6 +2,7 @@ package logql
 
 import (
 	"slices"
+	"strconv"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -88,7 +89,11 @@ const maxScanScopeExpansion = 3
 //     when it reads only values in the scope and a moved filter reads its
 //     source; otherwise the level stays in its place;
 //   - a moved layer that reads another value goes back to its place
-//     unless a moved filter reads it.
+//     unless a moved filter reads it;
+//   - a read through a constant key of a table map column that a layer or
+//     a filter conjunct left above makes is defined in the scope, and the
+//     read above reads that column ([rowLayers.liftKeys]), unless the stage
+//     reads the map as a whole.
 //
 // Read in the scope that reads the table, a map key read resolves to its
 // subcolumn and a filter on the table's columns can run in PREWHERE;
@@ -195,9 +200,129 @@ func (g *scanGather) leftAbove(e chplan.Expr) bool {
 	return false
 }
 
-// rebuild stacks what g moved over the scan, then what it left above.
+// rebuild stacks what g moved over the scan, then what it left above,
+// once [rowLayers.liftKeys] has moved the map key reads left above into
+// the scan's scope.
 func (r *rowLayers) rebuild(g scanGather) chplan.Node {
+	g.layers = append(r.liftKeys(g.reads, g.above), g.layers...)
 	return rebuildAtScan(g.base, g.layers, g.filtered, g.above, &r.atScan)
+}
+
+// scanKeyAliasPrefix starts the alias of each map key read
+// [rowLayers.liftKeys] moves into the scan's scope; the keys are numbered
+// in the order the stack first reads them.
+const scanKeyAliasPrefix = "_logql_scan_key_"
+
+// liftKeys defines in the scan's scope each read through a constant key
+// of a table map column that a layer or a filter conjunct of above makes,
+// and rewrites that read to the column it defines; it returns the layers
+// that define them, one per map column and key, in the order above first
+// reads them. A map column the stage reads as a whole is left as it is,
+// since the scan reads it whole anyway.
+//
+// Above the scan's scope, a key read reads the map from a subquery, so the
+// whole map is read from the table and handed up through every layer below
+// the read; in the scan's scope it reads the key's subcolumn. A filter left
+// above, such as an unwrap post-filter on `__error__`, which reads the
+// conversion-error mark and falls back to the structured metadata, still
+// runs where the table is read when ClickHouse pushes it into PREWHERE. A
+// whole map read there is read for every row, including those the filter
+// drops, while the key subcolumn is all the filter needs.
+func (r *rowLayers) liftKeys(reads stageMaps, above []scanRest) []*chplan.Project {
+	aliases := map[[2]string]string{}
+	var lifted []*chplan.Project
+	lift := func(e chplan.Expr) chplan.Expr {
+		return rewriteMapKeyReads(e, func(m *chplan.MapAccess) chplan.Expr {
+			ref, isColumn := m.Map.(*chplan.ColumnRef)
+			key, constant := m.Key.(*chplan.LitString)
+			if !isColumn || !constant || !slices.Contains(reads.maps, ref.Name) || slices.Contains(reads.whole, ref.Name) {
+				return nil
+			}
+			id := [2]string{ref.Name, key.V}
+			alias, ok := aliases[id]
+			if !ok {
+				alias = scanKeyAliasPrefix + strconv.Itoa(len(lifted))
+				aliases[id] = alias
+				layer := &chplan.Project{Projections: []chplan.Projection{{
+					Expr:  &chplan.MapAccess{Map: &chplan.ColumnRef{Name: ref.Name}, Key: &chplan.LitString{V: key.V}},
+					Alias: alias,
+				}}}
+				lifted = append(lifted, layer)
+				r.layers = append(r.layers, layer)
+			}
+			return &chplan.ColumnRef{Name: alias}
+		})
+	}
+	for i := range above {
+		if layer := above[i].layer; layer != nil {
+			layer.Projections[0].Expr = lift(layer.Projections[0].Expr)
+			continue
+		}
+		for j, conjunct := range above[i].conjuncts {
+			above[i].conjuncts[j] = lift(conjunct)
+		}
+	}
+	return lifted
+}
+
+// rewriteMapKeyReads returns e with each [chplan.MapAccess] that replace
+// returns an expression for replaced by it, copying only the expressions
+// on the way to a replaced read; replace returns nil to keep a read. It
+// descends into the expressions a map key read can sit in, and leaves any
+// other expression as it is, so a read it does not reach keeps reading
+// the map. A lambda that binds a parameter named like the map column a
+// read names keeps that read.
+func rewriteMapKeyReads(e chplan.Expr, replace func(*chplan.MapAccess) chplan.Expr) chplan.Expr {
+	rewrite := func(sub chplan.Expr) chplan.Expr { return rewriteMapKeyReads(sub, replace) }
+	switch v := e.(type) {
+	case *chplan.MapAccess:
+		if out := replace(v); out != nil {
+			return out
+		}
+		if m, k := rewrite(v.Map), rewrite(v.Key); m != v.Map || k != v.Key {
+			return &chplan.MapAccess{Map: m, Key: k}
+		}
+	case *chplan.Binary:
+		if l, rr := rewrite(v.Left), rewrite(v.Right); l != v.Left || rr != v.Right {
+			return &chplan.Binary{Op: v.Op, Left: l, Right: rr}
+		}
+	case *chplan.FuncCall:
+		if args, changed := rewriteExprs(v.Args, rewrite); changed {
+			return &chplan.FuncCall{Fn: v.Fn, Args: args}
+		}
+	case *chplan.InList:
+		left := rewrite(v.Left)
+		if list, changed := rewriteExprs(v.List, rewrite); changed || left != v.Left {
+			return &chplan.InList{Left: left, List: list, Negated: v.Negated}
+		}
+	case *chplan.Lambda:
+		guarded := func(m *chplan.MapAccess) chplan.Expr {
+			if ref, ok := m.Map.(*chplan.ColumnRef); ok && slices.Contains(v.Params, ref.Name) {
+				return nil
+			}
+			return replace(m)
+		}
+		if body := rewriteMapKeyReads(v.Body, guarded); body != v.Body {
+			return &chplan.Lambda{Params: v.Params, Body: body}
+		}
+	}
+	return e
+}
+
+// rewriteExprs applies rewrite to each of exprs and reports whether any
+// changed; the slice it returns is a copy only when one did.
+func rewriteExprs(exprs []chplan.Expr, rewrite func(chplan.Expr) chplan.Expr) ([]chplan.Expr, bool) {
+	var out []chplan.Expr
+	for i, e := range exprs {
+		r := rewrite(e)
+		if r != e && out == nil {
+			out = slices.Clone(exprs)
+		}
+		if out != nil {
+			out[i] = r
+		}
+	}
+	return out, out != nil
 }
 
 // gather walks items, the stack over base, and returns what it moves into
