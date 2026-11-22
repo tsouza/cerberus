@@ -585,7 +585,9 @@ func newHQClassicWriters(h *chplan.HistogramQuantile, helpers hqClassicHelperCol
 // unchanged and multiplying by NaN gives NaN. Every operand value reads is
 // defined on an empty or all-zero ladder: array subscripts past the end read
 // 0, the float divisions give NaN or an infinity, and the ladder is padded to
-// the bounds' length, so the native aggregate's two arrays stay aligned. The
+// the bounds' length; the rank-walk kernel sizes the native aggregate's
+// counts by that padded ladder, so its two arrays stay aligned on such a row
+// too (histogramQuantileRankWalkNativeValueFrag). The
 // guard stays out of any branch condition because of what ClickHouse does
 // with a row-dependent `if`: it evaluates the branch for only the rows its
 // mask selects, and filters every array column that branch reads down to

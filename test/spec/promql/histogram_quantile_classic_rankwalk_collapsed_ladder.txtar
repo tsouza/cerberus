@@ -1,0 +1,100 @@
+# A classic histogram_quantile whose float le pipeline collapses the ladder,
+# under promql.NativeQuantileRankWalkLowerer (the
+# `experimental_quantile_prom_histogram` marker section). The selector drops
+# the +Inf rung, so the cumulative ladder collapses to empty BucketCounts
+# while ExplicitBounds keeps its two finite bounds. The rank-walk kernel
+# still hands quantilePrometheusHistogram one count per bound and one for the
+# appended +Inf, and the empty-ladder guard answers Prometheus's NaN.
+
+-- query.promql --
+histogram_quantile(0.5, topk(2, rate(reqs{le!="+Inf"}[5m])))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- experimental_quantile_prom_histogram --
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('reqs', map('job','a','le','1'), toDateTime64('2025-12-31 23:59:00', 9), 0.0),
+    ('reqs', map('job','a','le','2'), toDateTime64('2025-12-31 23:59:00', 9), 0.0),
+    ('reqs', map('job','a','le','+Inf'), toDateTime64('2025-12-31 23:59:00', 9), 0.0),
+    ('up', map('job','a'), toDateTime64('2025-12-31 23:59:00', 9), 1.0),
+    ('reqs', map('job','a','le','1'), toDateTime64('2025-12-31 23:59:30', 9), 1.0),
+    ('reqs', map('job','a','le','2'), toDateTime64('2025-12-31 23:59:30', 9), 1.5),
+    ('reqs', map('job','a','le','+Inf'), toDateTime64('2025-12-31 23:59:30', 9), 2.0),
+    ('up', map('job','a'), toDateTime64('2025-12-31 23:59:30', 9), 1.0),
+    ('reqs', map('job','a','le','1'), toDateTime64('2026-01-01 00:00:00', 9), 2.0),
+    ('reqs', map('job','a','le','2'), toDateTime64('2026-01-01 00:00:00', 9), 3.0),
+    ('reqs', map('job','a','le','+Inf'), toDateTime64('2026-01-01 00:00:00', 9), 4.0),
+    ('up', map('job','a'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('reqs', map('job','a','le','1'), toDateTime64('2026-01-01 00:00:30', 9), 3.0),
+    ('reqs', map('job','a','le','2'), toDateTime64('2026-01-01 00:00:30', 9), 4.5),
+    ('reqs', map('job','a','le','+Inf'), toDateTime64('2026-01-01 00:00:30', 9), 6.0),
+    ('up', map('job','a'), toDateTime64('2026-01-01 00:00:30', 9), 1.0),
+    ('reqs', map('job','a','le','1'), toDateTime64('2026-01-01 00:01:00', 9), 4.0),
+    ('reqs', map('job','a','le','2'), toDateTime64('2026-01-01 00:01:00', 9), 6.0),
+    ('reqs', map('job','a','le','+Inf'), toDateTime64('2026-01-01 00:01:00', 9), 8.0),
+    ('up', map('job','a'), toDateTime64('2026-01-01 00:01:00', 9), 1.0),
+    ('reqs', map('job','a','le','1'), toDateTime64('2026-01-01 00:01:30', 9), 5.0),
+    ('reqs', map('job','a','le','2'), toDateTime64('2026-01-01 00:01:30', 9), 7.5),
+    ('reqs', map('job','a','le','+Inf'), toDateTime64('2026-01-01 00:01:30', 9), 10.0),
+    ('up', map('job','a'), toDateTime64('2026-01-01 00:01:30', 9), 1.0),
+    ('reqs', map('job','a','le','1'), toDateTime64('2026-01-01 00:02:00', 9), 6.0),
+    ('reqs', map('job','a','le','2'), toDateTime64('2026-01-01 00:02:00', 9), 9.0),
+    ('reqs', map('job','a','le','+Inf'), toDateTime64('2026-01-01 00:02:00', 9), 12.0),
+    ('up', map('job','a'), toDateTime64('2026-01-01 00:02:00', 9), 1.0),
+    ('reqs', map('job','a','le','1'), toDateTime64('2026-01-01 00:02:30', 9), 7.0),
+    ('reqs', map('job','a','le','2'), toDateTime64('2026-01-01 00:02:30', 9), 10.5),
+    ('reqs', map('job','a','le','+Inf'), toDateTime64('2026-01-01 00:02:30', 9), 14.0),
+    ('up', map('job','a'), toDateTime64('2026-01-01 00:02:30', 9), 1.0),
+    ('reqs', map('job','a','le','1'), toDateTime64('2026-01-01 00:03:00', 9), 8.0),
+    ('reqs', map('job','a','le','2'), toDateTime64('2026-01-01 00:03:00', 9), 12.0),
+    ('reqs', map('job','a','le','+Inf'), toDateTime64('2026-01-01 00:03:00', 9), 16.0),
+    ('up', map('job','a'), toDateTime64('2026-01-01 00:03:00', 9), 1.0),
+    ('reqs', map('job','a','le','1'), toDateTime64('2026-01-01 00:03:30', 9), 9.0),
+    ('reqs', map('job','a','le','2'), toDateTime64('2026-01-01 00:03:30', 9), 13.5),
+    ('reqs', map('job','a','le','+Inf'), toDateTime64('2026-01-01 00:03:30', 9), 18.0),
+    ('up', map('job','a'), toDateTime64('2026-01-01 00:03:30', 9), 1.0),
+    ('reqs', map('job','a','le','1'), toDateTime64('2026-01-01 00:04:00', 9), 10.0),
+    ('reqs', map('job','a','le','2'), toDateTime64('2026-01-01 00:04:00', 9), 15.0),
+    ('reqs', map('job','a','le','+Inf'), toDateTime64('2026-01-01 00:04:00', 9), 20.0),
+    ('up', map('job','a'), toDateTime64('2026-01-01 00:04:00', 9), 1.0),
+    ('reqs', map('job','a','le','1'), toDateTime64('2026-01-01 00:04:30', 9), 11.0),
+    ('reqs', map('job','a','le','2'), toDateTime64('2026-01-01 00:04:30', 9), 16.5),
+    ('reqs', map('job','a','le','+Inf'), toDateTime64('2026-01-01 00:04:30', 9), 22.0),
+    ('up', map('job','a'), toDateTime64('2026-01-01 00:04:30', 9), 1.0),
+    ('reqs', map('job','a','le','1'), toDateTime64('2026-01-01 00:05:00', 9), 12.0),
+    ('reqs', map('job','a','le','2'), toDateTime64('2026-01-01 00:05:00', 9), 18.0),
+    ('reqs', map('job','a','le','+Inf'), toDateTime64('2026-01-01 00:05:00', 9), 24.0),
+    ('up', map('job','a'), toDateTime64('2026-01-01 00:05:00', 9), 1.0);
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('http_server_request_duration', map('service','api'), toDateTime64('2025-12-31 23:59:00', 9), [0, 0, 0], [0.1, 0.5]),
+    ('http_server_request_duration', map('service','api'), toDateTime64('2025-12-31 23:59:30', 9), [1, 2, 3], [0.1, 0.5]),
+    ('http_server_request_duration', map('service','api'), toDateTime64('2026-01-01 00:00:00', 9), [2, 4, 6], [0.1, 0.5]),
+    ('http_server_request_duration', map('service','api'), toDateTime64('2026-01-01 00:00:30', 9), [3, 6, 9], [0.1, 0.5]),
+    ('http_server_request_duration', map('service','api'), toDateTime64('2026-01-01 00:01:00', 9), [4, 8, 12], [0.1, 0.5]),
+    ('http_server_request_duration', map('service','api'), toDateTime64('2026-01-01 00:01:30', 9), [5, 10, 15], [0.1, 0.5]),
+    ('http_server_request_duration', map('service','api'), toDateTime64('2026-01-01 00:02:00', 9), [6, 12, 18], [0.1, 0.5]),
+    ('http_server_request_duration', map('service','api'), toDateTime64('2026-01-01 00:02:30', 9), [7, 14, 21], [0.1, 0.5]),
+    ('http_server_request_duration', map('service','api'), toDateTime64('2026-01-01 00:03:00', 9), [8, 16, 24], [0.1, 0.5]),
+    ('http_server_request_duration', map('service','api'), toDateTime64('2026-01-01 00:03:30', 9), [9, 18, 27], [0.1, 0.5]),
+    ('http_server_request_duration', map('service','api'), toDateTime64('2026-01-01 00:04:00', 9), [10, 20, 30], [0.1, 0.5]),
+    ('http_server_request_duration', map('service','api'), toDateTime64('2026-01-01 00:04:30', 9), [11, 22, 33], [0.1, 0.5]),
+    ('http_server_request_duration', map('service','api'), toDateTime64('2026-01-01 00:05:00', 9), [12, 24, 36], [0.1, 0.5]);
+-- expected_rows --
+[
+  ["", {"job": "a"}, "2026-01-01T00:00:01Z", "NaN"]
+]
