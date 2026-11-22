@@ -100,9 +100,12 @@ func classicBucketLeValueExpr(attrs chplan.Expr) chplan.Expr {
 // overflow bucket, and separately refuses one with fewer than two
 // buckets — both return NaN. This mirrors both guards: whenever either
 // fails, BucketCounts collapses to an empty array, whose ladder holds no
-// observations, so the existing `observations = 0 -> nan` guard in the
-// chsql emitter (hqClassicWriters.emptyLadderNaN) fires. No emitter change
-// is needed — the guard lives entirely in the shape this Project constructs.
+// observations, so the chsql emitter's empty-ladder guard
+// (hqClassicWriters.emptyLadderNaN) answers NaN. Over per-bucket counts that
+// guard is `if(length(BucketCounts) = 0, nan, if(observations = 0, nan,
+// value))`; over a ladder the shaping made cumulative it is the factor
+// `value * if(observations = 0, nan, 1)`. Either way no emitter change is
+// needed — the guard lives entirely in the shape this Project constructs.
 func classicBucketLeRestriction(input chplan.Node, leMatchers []*labels.Matcher, s schema.Metrics) chplan.Node {
 	if len(leMatchers) == 0 {
 		return input
