@@ -239,24 +239,38 @@ func TestEmitHistogramQuantilesNative_BindsEachLevelsStopOnce(t *testing.T) {
 func TestEmitHistogramQuantiles_SharedAggregateCarriesEveryLevel(t *testing.T) {
 	t.Parallel()
 
-	sql := emitQuantilesSQL(t, classicQuantilesPlan(
-		chplan.HistogramQuantileLevel{Phi: 0.5, Label: "0.5"},
-		chplan.HistogramQuantileLevel{Phi: math.NaN(), Label: "NaN"},
-		chplan.HistogramQuantileLevel{Phi: -0.5, Label: "-0.5"},
-		chplan.HistogramQuantileLevel{Phi: 1.5, Label: "1.5"},
-		chplan.HistogramQuantileLevel{Phi: 0.9, Label: "0.9"},
-		chplan.HistogramQuantileLevel{Phi: 0, Label: "0"},
-		chplan.HistogramQuantileLevel{Phi: 1, Label: "1"},
-	))
+	for _, cumulative := range []bool{false, true} {
+		plan := classicQuantilesPlan(
+			chplan.HistogramQuantileLevel{Phi: 0.5, Label: "0.5"},
+			chplan.HistogramQuantileLevel{Phi: math.NaN(), Label: "NaN"},
+			chplan.HistogramQuantileLevel{Phi: -0.5, Label: "-0.5"},
+			chplan.HistogramQuantileLevel{Phi: 1.5, Label: "1.5"},
+			chplan.HistogramQuantileLevel{Phi: 0.9, Label: "0.9"},
+			chplan.HistogramQuantileLevel{Phi: 0, Label: "0"},
+			chplan.HistogramQuantileLevel{Phi: 1, Label: "1"},
+		)
+		plan.Histogram.BucketCountsCumulative = cumulative
+		assertSharedAggregateLevels(t, emitQuantilesSQL(t, plan), cumulative)
+	}
+}
+
+// assertSharedAggregateLevels checks TestEmitHistogramQuantiles_SharedAggregateCarriesEveryLevel's
+// statement, whose level values carry the empty-ladder guard of the ladder
+// the plan reads (hqClassicWriters.emptyLadderNaN).
+func assertSharedAggregateLevels(t *testing.T, sql string, cumulative bool) {
+	t.Helper()
 
 	const wantAggregate = "arrayReduce(concat('quantilesPrometheusHistogram(', toString(0.5), ',', toString(0), ',', " +
 		"toString(0), ',', toString(1), ',', toString(0.9), ',', toString(0), ',', toString(1), ')'), "
 	if !strings.Contains(sql, wantAggregate) {
-		t.Errorf("aggregate parameters: want %s\nSQL: %s", wantAggregate, sql)
+		t.Errorf("cumulative=%v: aggregate parameters: want %s\nSQL: %s", cumulative, wantAggregate, sql)
 	}
 
 	level := func(value string) string {
-		return value + " * if(`_cerb_hqc_observations` = 0, nan, 1)"
+		if cumulative {
+			return value + " * if(`_cerb_hqc_observations` = 0, nan, 1)"
+		}
+		return "if(length(`BucketCounts`) = 0, nan, if(`_cerb_hqc_observations` = 0, nan, " + value + "))"
 	}
 	wantValues := "[" + strings.Join([]string{
 		level("`_cerb_hq_levels_raw`[1]"),
@@ -268,7 +282,7 @@ func TestEmitHistogramQuantiles_SharedAggregateCarriesEveryLevel(t *testing.T) {
 		level("`_cerb_hq_levels_raw`[7]"),
 	}, ", ") + "] AS `_cerb_hq_levels`"
 	if !strings.Contains(sql, wantValues) {
-		t.Errorf("level values: want %s\nSQL: %s", wantValues, sql)
+		t.Errorf("cumulative=%v: level values: want %s\nSQL: %s", cumulative, wantValues, sql)
 	}
 }
 

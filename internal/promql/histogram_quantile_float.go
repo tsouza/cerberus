@@ -326,8 +326,9 @@ func hqFloatFiniteBoundsExpr() chplan.Expr {
 // hqFloatMinRungs rungs must exist. Both fail the same way the array-domain
 // `le` restriction fails them — by collapsing BucketCounts to an empty
 // array, whose ladder holds no observations, which the emitter's own
-// `observations = 0 -> nan` branch turns into Prometheus's NaN. That keeps the guard in the shape of the
-// plan and out of the emitter.
+// `observations = 0 -> nan` guard (hqClassicWriters.emptyLadderNaN) turns
+// into Prometheus's NaN. That keeps the guard in the shape of the plan and
+// out of the emitter.
 //
 // Passing the guards, the ladder gets Prometheus's
 // ensureMonotonicAndIgnoreSmallDeltas repair, which the cumulative input

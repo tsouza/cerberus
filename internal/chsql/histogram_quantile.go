@@ -175,11 +175,7 @@ func (e *emitter) emitHistogramQuantile(h *chplan.HistogramQuantile) error {
 		sb.SelectAs(func(b *Builder) { _ = b.Expr(expr) }, alias)
 	}
 	sb.SelectAs(histogramQuantileValueFrag(h, helpers), "Value")
-	answer, err := materializeHistogramOutput(sb, h.RowType())
-	if err != nil {
-		return err
-	}
-	return e.emitSelect(answer)
+	return e.emitSelect(sb)
 }
 
 // histogramQuantileValueFrag returns the Frag that renders the per-row
@@ -303,9 +299,9 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile, helpers hqClassicHe
 		If(firstBucketNonPositive, lowestBound, interp),
 	)
 
-	// Edge-case chain, outermost first:
+	// Edge-case chain, outermost first, with emptyLadderNaN's guard around
+	// it:
 	//   if(phi < 0, -inf, if(phi > 1, inf, idxBranch))
-	//     * if(observations = 0, nan, 1)     -- emptyLadderNaN
 	//
 	// Prometheus semantics (`bucketQuantile`'s domain guards in quantile.go):
 	// phi < 0 → -Inf, phi > 1 → +Inf are OUT of domain. phi == 0 and phi == 1 are IN domain and
@@ -343,8 +339,13 @@ type hqClassicWriters struct {
 	idx           func() Frag
 	cumAt         func(offsetMinusOne bool) Frag
 	boundAt       func(offsetMinusOne bool) Frag
+	lengthBC      func() Frag
 	boundCount    func() Frag
 	cumCount      func() Frag
+
+	// cumulative mirrors h.BucketCountsCumulative: the ladder the writers
+	// read is the input itself, not arrayCumSum of per-bucket counts.
+	cumulative bool
 }
 
 // newHQClassicWriters builds the writer set for one emission stage.
@@ -357,7 +358,7 @@ type hqClassicWriters struct {
 func newHQClassicWriters(h *chplan.HistogramQuantile, helpers hqClassicHelperColumns) hqClassicWriters {
 	bc := h.BucketCountsColumn
 	eb := h.ExplicitBoundsColumn
-	var w hqClassicWriters
+	w := hqClassicWriters{cumulative: h.BucketCountsCumulative}
 
 	// BucketCounts is Array(UInt64) in the OTel-CH schema; arraySum /
 	// arrayCumSum on it return UInt64. The downstream linear-interpolation
@@ -400,6 +401,9 @@ func newHQClassicWriters(h *chplan.HistogramQuantile, helpers hqClassicHelperCol
 		}
 		return Call("arrayMap", Lambda1("x", Call("toFloat64", BareIdent("x"))), Col(bc))
 	}
+	// length(BucketCounts) reads the raw column directly: it is the
+	// "row carries no buckets at all" test, and the cast preserves length.
+	w.lengthBC = func() Frag { return Call("length", Col(bc)) }
 	w.boundCount = func() Frag { return Call("length", Col(eb)) }
 	w.cumCount = func() Frag { return Call("length", w.buckets()) }
 
@@ -573,26 +577,34 @@ func newHQClassicWriters(h *chplan.HistogramQuantile, helpers hqClassicHelperCol
 // ladder is empty or zero-padded to the bounds' length, so its top rung reads
 // 0 too.
 //
-// It renders `value * if(observations = 0, nan, 1)`, never
-// `if(observations = 0, nan, value)`. Multiplying by 1 returns value
-// unchanged, signed zeros, infinities and NaN included, and multiplying by
-// NaN gives NaN. Every operand value reads is defined on an empty or
-// all-zero ladder: array subscripts past the end read 0, the float
-// divisions give NaN or an infinity, and the cumulative ladder is padded to
-// the bounds' length, so the native aggregate's two arrays stay aligned.
+// The guard takes one of two forms, by the ladder the kernel reads. Both
+// answer the same values, signed zeros, infinities and NaN included.
 //
-// The guard is kept out of the branch condition because of what ClickHouse
-// does with a row-dependent `if`: it evaluates the branch for only the rows
-// its mask selects, and filters every array column that branch reads down
-// to those rows first. Measured over a range quantile after the result's
-// series-order sort (https://github.com/tsouza/cerberus/issues/4518):
+// Over a cumulative ladder (h.BucketCountsCumulative) it renders
+// `value * if(observations = 0, nan, 1)`. Multiplying by 1 returns value
+// unchanged and multiplying by NaN gives NaN. Every operand value reads is
+// defined on an empty or all-zero ladder: array subscripts past the end read
+// 0, the float divisions give NaN or an infinity, and the ladder is padded to
+// the bounds' length, so the native aggregate's two arrays stay aligned. The
+// guard stays out of any branch condition because of what ClickHouse does
+// with a row-dependent `if`: it evaluates the branch for only the rows its
+// mask selects, and filters every array column that branch reads down to
+// those rows first. Over the per-series range quantile of a rate, whose
+// ladder is cumulative, the branch form
+// `if(length(BucketCounts) = 0, nan, if(observations = 0, nan, value))`
+// peaked at 815 MiB on 26.3.17.56 and 824 MiB on 26.8.36.3, against 173 and
+// 165 MiB as a factor (https://github.com/tsouza/cerberus/issues/4518).
 //
-//   - an outermost `if(length(BucketCounts) = 0, nan, …)` peaked at 815 MiB
-//     on 26.3.17.56 and 824 MiB on 26.8.36.3, against 173 and 165 MiB
-//     without it;
-//   - `if(observations = 0, nan, …)` alone added 8 MiB on 26.8.36.3 to
-//     `histogram_quantile(0.5, <bucket>)` (370 MiB against 362), which this
-//     form does not.
+// Over per-bucket counts it renders that branch form,
+// `if(length(BucketCounts) = 0, nan, if(observations = 0, nan, value))`.
+// There the factor bounds nothing: the range quantile over a bare bucket
+// selector peaked at 365.5 MiB with the branches against 367.9 MiB with the
+// factor on 26.3.17.56, and 360.6 against 362.3 MiB on 26.8.36.3, and the
+// branch form is the statement these shapes have always run
+// (https://github.com/tsouza/cerberus/issues/4529).
 func (w hqClassicWriters) emptyLadderNaN(nan, value Frag) Frag {
-	return Mul(value, If(Eq(w.observations(), InlineLit(0)), nan, InlineLit(1)))
+	if w.cumulative {
+		return Mul(value, If(Eq(w.observations(), InlineLit(0)), nan, InlineLit(1)))
+	}
+	return If(Eq(w.lengthBC(), InlineLit(0)), nan, If(Eq(w.observations(), InlineLit(0)), nan, value))
 }

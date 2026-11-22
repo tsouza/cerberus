@@ -50,11 +50,7 @@ func (e *emitter) emitHistogramQuantileRankWalkNative(h *chplan.HistogramQuantil
 		query.SelectAs(func(b *Builder) { _ = b.Expr(group) }, alias)
 	}
 	query.SelectAs(histogramQuantileRankWalkNativeValueFrag(h, helpers), "Value")
-	answer, err := materializeHistogramOutput(query, h.RowType())
-	if err != nil {
-		return err
-	}
-	return e.emitSelect(answer)
+	return e.emitSelect(query)
 }
 
 // Duplicate finite bounds and cumulative monotonicity are handled by the same
