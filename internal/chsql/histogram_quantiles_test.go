@@ -256,7 +256,7 @@ func TestEmitHistogramQuantiles_SharedAggregateCarriesEveryLevel(t *testing.T) {
 	}
 
 	level := func(value string) string {
-		return "if(length(`BucketCounts`) = 0, nan, if(`_cerb_hqc_observations` = 0, nan, " + value + "))"
+		return value + " * if(`_cerb_hqc_observations` = 0, nan, 1)"
 	}
 	wantValues := "[" + strings.Join([]string{
 		level("`_cerb_hq_levels_raw`[1]"),
