@@ -1,9 +1,9 @@
 package logql
 
 import (
+	"context"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
@@ -11,12 +11,13 @@ import (
 )
 
 // TestRangeAggregationReadsStructuredMetadataKeysAtScan pins that a range
-// aggregation whose unwrap post-filter falls back to the structured
-// metadata reads that key in the scan's scope: no layer or filter above
-// the scope reads the structured-metadata map, so the map is never handed
-// up whole, and the filter reads the key's column defined in the scope.
-// Read above the scope, the key read reads the whole map from the table
-// for every row, including the rows the filter drops in PREWHERE.
+// aggregation whose unwrap post-filter, or whose `by (...)` grouping key,
+// falls back to the structured metadata reads that key in the scan's
+// scope: nothing above the scope, the range window's own projection
+// included, reads the structured-metadata map, so the map is never handed
+// up whole, and the reads above read the key columns defined in the
+// scope. Read above the scope, a key read reads the whole map from the
+// table for every row, including the rows the filter drops in PREWHERE.
 func TestRangeAggregationReadsStructuredMetadataKeysAtScan(t *testing.T) {
 	t.Parallel()
 
@@ -25,6 +26,7 @@ func TestRangeAggregationReadsStructuredMetadataKeysAtScan(t *testing.T) {
 		`sum_over_time({job="api"} | logfmt | unwrap duration(latency) | __error__ = "" [5m])`,
 		`sum_over_time({job="api"} | logfmt | unwrap duration(latency) | __error__ != "" [5m])`,
 		`sum by (method) (sum_over_time({job="api"} | logfmt | unwrap bytes(size) | __error__ = "" [5m]))`,
+		`sum by (method) (sum_over_time({job="api"} | logfmt | unwrap duration(latency) | __error__ != "" [5m]))`,
 	} {
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
@@ -32,10 +34,9 @@ func TestRangeAggregationReadsStructuredMetadataKeysAtScan(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseExpr: %v", err)
 			}
-			ra := rangeAggregationIn(t, expr)
-			plan, err := lowerRangeAggregation(ra, s, lowerCtx{Start: time.Unix(0, 0), End: time.Unix(600, 0), Step: time.Minute})
+			plan, err := Lower(context.Background(), expr, s)
 			if err != nil {
-				t.Fatalf("lowerRangeAggregation: %v", err)
+				t.Fatalf("Lower: %v", err)
 			}
 			above, scope := splitAtScanScope(t, plan)
 			whole := map[string]bool{s.AttributesColumn: true}
@@ -65,12 +66,12 @@ func TestRangeAggregationReadsStructuredMetadataKeysAtScan(t *testing.T) {
 				names[alias] = true
 			}
 			for _, n := range above {
-				if f, ok := n.(*chplan.Filter); ok && chplan.ReadsAnyColumn(f.Predicate, names) {
-					readsLifted = true
+				for _, e := range nodeExprs(n) {
+					readsLifted = readsLifted || chplan.ReadsAnyColumn(e, names)
 				}
 			}
 			if !readsLifted {
-				t.Errorf("no filter above the scan's scope reads the key columns %v the scope defines", lifted)
+				t.Errorf("nothing above the scan's scope reads the key columns %v the scope defines", lifted)
 			}
 		})
 	}
@@ -79,7 +80,7 @@ func TestRangeAggregationReadsStructuredMetadataKeysAtScan(t *testing.T) {
 // TestLiftKeysLeavesMapsReadWhole pins that [rowLayers.liftKeys] leaves a
 // key read alone when the stage reads its map as a whole, since the scan
 // reads that map whole anyway, and lifts each other map's key once however
-// many times the stack reads it.
+// many times the stack and the consumer read it.
 func TestLiftKeysLeavesMapsReadWhole(t *testing.T) {
 	t.Parallel()
 
@@ -96,14 +97,16 @@ func TestLiftKeysLeavesMapsReadWhole(t *testing.T) {
 	conjunct := &chplan.Binary{Op: chplan.OpAnd, Left: eq(key("A", "k"), "x"), Right: eq(key("A", "j"), "y")}
 	above := []scanRest{{at: 0, layer: layer}, {at: 1, conjuncts: []chplan.Expr{conjunct}}}
 
+	consumer := []chplan.Projection{{Expr: &chplan.FuncCall{Fn: chplan.FnConcat, Args: []chplan.Expr{key("A", "c"), key("A", "k")}}, Alias: "out"}}
+
 	r := &rowLayers{}
-	lifted := r.liftKeys(stageMaps{maps: []string{"A", "W"}, whole: []string{"W"}}, above)
+	lifted := r.liftKeys(stageMaps{maps: []string{"A", "W"}, whole: []string{"W"}}, above, consumer)
 
 	var got []string
 	for _, p := range lifted {
 		got = append(got, p.Projections[0].Alias+"="+p.Projections[0].Expr.(*chplan.MapAccess).Key.(*chplan.LitString).V)
 	}
-	if want := []string{"_logql_scan_key_0=k", "_logql_scan_key_1=j"}; !slices.Equal(got, want) {
+	if want := []string{"_logql_scan_key_0=k", "_logql_scan_key_1=j", "_logql_scan_key_2=c"}; !slices.Equal(got, want) {
 		t.Fatalf("lifted = %v, want %v", got, want)
 	}
 	wantValue := &chplan.FuncCall{Fn: chplan.FnConcat, Args: []chplan.Expr{&chplan.ColumnRef{Name: "_logql_scan_key_0"}, key("W", "k")}}
@@ -118,34 +121,32 @@ func TestLiftKeysLeavesMapsReadWhole(t *testing.T) {
 	if !above[1].conjuncts[0].Equal(wantConjunct) {
 		t.Errorf("conjunct = %v, want %v", above[1].conjuncts[0], wantConjunct)
 	}
+	wantConsumer := &chplan.FuncCall{Fn: chplan.FnConcat, Args: []chplan.Expr{&chplan.ColumnRef{Name: "_logql_scan_key_2"}, &chplan.ColumnRef{Name: "_logql_scan_key_0"}}}
+	if !consumer[0].Expr.Equal(wantConsumer) {
+		t.Errorf("consumer = %v, want %v", consumer[0].Expr, wantConsumer)
+	}
 	if !conjunct.Left.Equal(eq(key("A", "k"), "x")) {
 		t.Errorf("liftKeys changed the conjunct it was handed in place: %v", conjunct)
 	}
 }
 
-// rangeAggregationIn returns the range aggregation expr is or wraps.
-func rangeAggregationIn(t *testing.T, expr syntax.Expr) *syntax.RangeAggregationExpr {
-	t.Helper()
-	switch v := expr.(type) {
-	case *syntax.RangeAggregationExpr:
-		return v
-	case *syntax.VectorAggregationExpr:
-		return rangeAggregationIn(t, v.Left)
-	}
-	t.Fatalf("%T is not a range aggregation", expr)
-	return nil
-}
-
-// splitAtScanScope walks plan down to the Project marked
-// [chplan.Project.OneScopeRows] and returns the nodes above it and the
+// splitAtScanScope finds plan's range window and walks its input down to
+// the Project marked [chplan.Project.OneScopeRows]; it returns the nodes
+// above that Project, from the range window's input down, and the
 // Projects of the scope under it, down to the stream scan.
 func splitAtScanScope(t *testing.T, plan chplan.Node) (above []chplan.Node, scope []*chplan.Project) {
 	t.Helper()
-	n := plan
-	if rw, ok := n.(*chplan.RangeWindow); ok {
-		n = rw.Input
+	var rw *chplan.RangeWindow
+	chplan.Walk(plan, func(n chplan.Node) bool {
+		if v, ok := n.(*chplan.RangeWindow); ok && rw == nil {
+			rw = v
+		}
+		return rw == nil
+	})
+	if rw == nil {
+		t.Fatalf("%T holds no range window", plan)
 	}
-	for ; n != nil; n = inputOf(n) {
+	for n := rw.Input; n != nil; n = inputOf(n) {
 		if p, ok := n.(*chplan.Project); ok && p.OneScopeRows {
 			for m := p.Input; m != nil; m = inputOf(m) {
 				if q, ok := m.(*chplan.Project); ok {

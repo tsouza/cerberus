@@ -51,7 +51,7 @@ const maxScanScopeExpansion = 3
 // seal marks the Project that reads the moved part
 // [chplan.Project.OneScopeRows], which the emitter renders as one SELECT
 // over the table. maps names the table's map columns, and consumer the
-// expressions the Project sealed over the stack reads.
+// projections of the Project sealed over the stack.
 //
 // Walking the stack from the bottom:
 //
@@ -126,7 +126,7 @@ const maxScanScopeExpansion = 3
 // Moving a value below the layers it does not read changes nothing it
 // computes: every layer is a pure per-row value, and an AND of predicates
 // over the same row keeps the same rows wherever each of them runs.
-func (r *rowLayers) gatherAtScan(maps []string, inWhereOrder bool, consumer ...chplan.Expr) {
+func (r *rowLayers) gatherAtScan(maps []string, inWhereOrder bool, consumer ...chplan.Projection) {
 	var items []chplan.Node
 	base := r.node
 	for r.stackNode(base) {
@@ -135,10 +135,10 @@ func (r *rowLayers) gatherAtScan(maps []string, inWhereOrder bool, consumer ...c
 	}
 	slices.Reverse(items)
 
-	reads := stageMapReads(maps, consumer, items)
+	reads := stageMapReads(maps, projectionExprs(consumer), items)
 	values := r.values(maps)
 	if !inWhereOrder {
-		r.node = r.rebuild(r.gather(base, items, reads, -1, nil, wholeMapFiltersAhead(items, values, reads), nil, filtersLevelSource(items)))
+		r.node = r.rebuild(r.gather(base, items, reads, -1, nil, wholeMapFiltersAhead(items, values, reads), nil, filtersLevelSource(items)), consumer)
 		return
 	}
 	g := r.gather(base, items, reads, -1, nil, nil, nil, false)
@@ -151,7 +151,7 @@ func (r *rowLayers) gatherAtScan(maps []string, inWhereOrder bool, consumer ...c
 	if admitted := g.overtaken(items, values); admitted != nil {
 		g = r.gather(base, items, reads, g.keyedThrough, g.first, nil, admitted, false)
 	}
-	r.node = r.rebuild(g)
+	r.node = r.rebuild(g, consumer)
 }
 
 // overtaken returns the filter conjuncts of items that g leaves above the
@@ -201,10 +201,10 @@ func (g *scanGather) leftAbove(e chplan.Expr) bool {
 }
 
 // rebuild stacks what g moved over the scan, then what it left above,
-// once [rowLayers.liftKeys] has moved the map key reads left above into
-// the scan's scope.
-func (r *rowLayers) rebuild(g scanGather) chplan.Node {
-	g.layers = append(r.liftKeys(g.reads, g.above), g.layers...)
+// once [rowLayers.liftKeys] has moved the map key reads left above, and
+// those of consumer, into the scan's scope.
+func (r *rowLayers) rebuild(g scanGather, consumer []chplan.Projection) chplan.Node {
+	g.layers = append(r.liftKeys(g.reads, g.above, consumer), g.layers...)
 	return rebuildAtScan(g.base, g.layers, g.filtered, g.above, &r.atScan)
 }
 
@@ -214,21 +214,23 @@ func (r *rowLayers) rebuild(g scanGather) chplan.Node {
 const scanKeyAliasPrefix = "_logql_scan_key_"
 
 // liftKeys defines in the scan's scope each read through a constant key
-// of a table map column that a layer or a filter conjunct of above makes,
-// and rewrites that read to the column it defines; it returns the layers
-// that define them, one per map column and key, in the order above first
-// reads them. A map column the stage reads as a whole is left as it is,
-// since the scan reads it whole anyway.
+// of a table map column that a layer or a filter conjunct of above, or a
+// projection of consumer, makes, and rewrites that read to the column it
+// defines; it returns the layers that define them, one per map column and
+// key, in the order the stack, then consumer, first reads them. A map
+// column the stage or consumer reads as a whole is left as it is, since
+// the scan reads it whole anyway.
 //
 // Above the scan's scope, a key read reads the map from a subquery, so the
 // whole map is read from the table and handed up through every layer below
-// the read; in the scan's scope it reads the key's subcolumn. A filter left
-// above, such as an unwrap post-filter on `__error__`, which reads the
-// conversion-error mark and falls back to the structured metadata, still
-// runs where the table is read when ClickHouse pushes it into PREWHERE. A
-// whole map read there is read for every row, including those the filter
-// drops, while the key subcolumn is all the filter needs.
-func (r *rowLayers) liftKeys(reads stageMaps, above []scanRest) []*chplan.Project {
+// the read; in the scan's scope it reads the key's subcolumn. Two such
+// reads are a `by (...)` grouping key the consumer falls back to the
+// structured metadata for, and an unwrap post-filter on `__error__`, which
+// reads the conversion-error mark and so stays above. ClickHouse still
+// pushes that filter into PREWHERE, where a whole map read is read for
+// every row, including those the filter drops, while the key subcolumn is
+// all the filter needs.
+func (r *rowLayers) liftKeys(reads stageMaps, above []scanRest, consumer []chplan.Projection) []*chplan.Project {
 	aliases := map[[2]string]string{}
 	var lifted []*chplan.Project
 	lift := func(e chplan.Expr) chplan.Expr {
@@ -261,6 +263,9 @@ func (r *rowLayers) liftKeys(reads stageMaps, above []scanRest) []*chplan.Projec
 		for j, conjunct := range above[i].conjuncts {
 			above[i].conjuncts[j] = lift(conjunct)
 		}
+	}
+	for i := range consumer {
+		consumer[i].Expr = lift(consumer[i].Expr)
 	}
 	return lifted
 }
