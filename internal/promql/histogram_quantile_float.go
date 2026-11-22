@@ -594,6 +594,26 @@ func groupingMayKeepBucketBound(agg *parser.AggregateExpr) bool {
 	return mayCarryBucketBound(agg.Expr)
 }
 
+// emptyVectorFold is the plan of a function whose argument provably carries
+// none of the samples it reads, which therefore answers the empty vector. The
+// caller still lowers the argument, so the argument's own lowering errors
+// surface, and then drops that plan: a constant-false Filter over it would
+// still have ClickHouse build the argument's whole pipeline for a statement
+// that reads nothing (https://github.com/tsouza/cerberus/issues/4536). The
+// fold is a constant-false Filter over `vector(0)` lowered in the same
+// context, so it has the argument's row shape and [planProvablyEmpty] still
+// recognises it.
+func emptyVectorFold(s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	zero, err := lower(&parser.Call{
+		Func: parser.Functions["vector"],
+		Args: parser.Expressions{&parser.NumberLiteral{Val: 0}},
+	}, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &chplan.Filter{Input: zero, Predicate: &chplan.LitBool{V: false}}, nil
+}
+
 // planProvablyEmpty reports whether inner's lowering already folded it to
 // zero rows: a constant-false Filter reached through nodes that can only
 // map or drop rows (a native-histogram argument under a function that

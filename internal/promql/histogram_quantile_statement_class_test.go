@@ -80,10 +80,7 @@ func TestHistogramQuantileStatementClass(t *testing.T) {
 				if quantiles != 1 {
 					t.Fatalf("the plan carries %d classic quantiles; want 1", quantiles)
 				}
-				sql, _, err := chsql.Emit(context.Background(), plan)
-				if err != nil {
-					t.Fatalf("Emit: %v", err)
-				}
+				sql := hqClassSQL(t, plan)
 				if strings.Contains(sql, hqClassOutputBoundary) {
 					t.Errorf("the statement hands the answer up through a singleton ARRAY JOIN (%s)\nSQL: %s", hqClassOutputBoundary, sql)
 				}
@@ -116,7 +113,16 @@ func hqClassLower(t *testing.T, query string, mode hqClassMode) chplan.Node {
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", query, err)
 	}
-	var plan chplan.Node
+	return hqClassLowerExpr(t, expr, mode)
+}
+
+// hqClassLowerExpr lowers expr as [hqClassLower] lowers a query.
+func hqClassLowerExpr(t *testing.T, expr parser.Expr, mode hqClassMode) chplan.Node {
+	t.Helper()
+	var (
+		plan chplan.Node
+		err  error
+	)
 	switch mode {
 	case hqClassInstant:
 		plan, err = LowerAt(context.Background(), expr, schema.DefaultOTelMetrics(), hqClassEnd, hqClassEnd)
@@ -127,7 +133,17 @@ func hqClassLower(t *testing.T, query string, mode hqClassMode) chplan.Node {
 			LowerOpts{Lowerers: RangeLowerers{Rate: NativeRateLowerer{Fallback: FanoutRateLowerer{}}}})
 	}
 	if err != nil {
-		t.Fatalf("lower(%q): %v", query, err)
+		t.Fatalf("lower(%q): %v", expr, err)
 	}
 	return plan
+}
+
+// hqClassSQL emits plan.
+func hqClassSQL(t *testing.T, plan chplan.Node) string {
+	t.Helper()
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	return sql
 }
