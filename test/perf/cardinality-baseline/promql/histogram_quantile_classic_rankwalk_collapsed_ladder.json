@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/histogram_quantile_classic_rankwalk_collapsed_ladder",
+  "fan_factor": 1,
+  "scan_rows": 26,
+  "peak_intermediate": 26,
+  "has_cross_join": false,
+  "has_array_join": true,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}
