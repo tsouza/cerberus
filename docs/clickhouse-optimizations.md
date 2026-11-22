@@ -268,8 +268,12 @@ Notes:
 - **`search_drain_scalar_traces`** renders a bounded Tempo search's drain
   over a filtered scan with the chosen traces bound once as a scalar,
   `WITH (SELECT groupArray(TraceId) FROM (<top-N>)) AS _cerberus_search_traces`,
-  and `has(_cerberus_search_traces, TraceId)` appended to the scan's `PREWHERE`
-  after the span filter, instead of `TraceId GLOBAL IN (<top-N>)` there. `auto`
+  and `TraceId IN (SELECT arrayJoin(_cerberus_search_traces)) AND
+  indexHint(has(_cerberus_search_traces, TraceId))` appended to the scan's
+  `PREWHERE` after the span filter, instead of `TraceId GLOBAL IN (<top-N>)`
+  there. The `IN` looks each row's trace id up in a set built once from the
+  scalar; `has()` inside `indexHint` skips granules by the trace id skip index
+  and is not evaluated per row. `auto`
   picks it on servers `>= 26.2` and `< 26.4`; elsewhere the drain tests the
   chosen traces as a `GLOBAL IN` set. A search `search_drain_trace_bounds`
   drains is drained that way instead.
@@ -279,8 +283,9 @@ Notes:
   latest `Timestamp` of their matching spans bound once as a scalar, `WITH
   (SELECT (groupArray(TraceId), min(start), max(end)) FROM (<top-N>)) AS
   _cerberus_search_traces`, and `Timestamp >= _cerberus_search_traces.2 AND
-  Timestamp <= _cerberus_search_traces.3 AND has(_cerberus_search_traces.1,
-  TraceId)` appended to the scan's `PREWHERE` after the span filter. `auto`
+  Timestamp <= _cerberus_search_traces.3` followed by the same set test and
+  `indexHint` over `_cerberus_search_traces.1` appended to the scan's
+  `PREWHERE` after the span filter. `auto`
   picks it on servers `>= 26.2` and `< 26.4`; elsewhere the drain tests the
   chosen traces as a `GLOBAL IN` set. A plain span search, whose drain reads a
   wider window than its ranking, is drained as `search_drain_scalar_traces`

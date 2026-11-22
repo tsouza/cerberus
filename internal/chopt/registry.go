@@ -2407,18 +2407,18 @@ const (
 	// FeatureSearchDrainScalarTraces drains a bounded search's chosen traces
 	// (chplan.SearchTraceLimit) from its Filter(Scan) input by binding them
 	// once as a scalar, WITH (SELECT groupArray(TraceId) FROM (<top-N>)) AS
-	// <alias>, and testing has(<alias>, TraceId) in that statement's PREWHERE
-	// after the span filter, instead of appending TraceId GLOBAL IN (<top-N>)
-	// there (chsql.SchemaStrategies.SearchDrainScalarTraces). On 26.2 and 26.3
+	// <alias>, and testing TraceId IN (SELECT arrayJoin(<alias>)) AND
+	// indexHint(has(<alias>, TraceId)) in that statement's PREWHERE after the
+	// span filter, instead of appending TraceId GLOBAL IN (<top-N>) there
+	// (chsql.SchemaStrategies.SearchDrainScalarTraces). The IN tests each row
+	// against a set built once from the scalar; has() over the constant ids,
+	// inside indexHint, is read only by the index analysis. On 26.2 and 26.3
 	// the server does not skip granules by the TraceId skip index for a
-	// PREWHERE set, and does for a constant, which the scalar is, so there
-	// the scalar reads fewer bytes. Elsewhere it reads no fewer, and has()
-	// scans the chosen ids for every row the span filter keeps where the set
-	// looks each one up, so auto picks the feature on 26.2 and 26.3 only
-	// (searchDrainScalarAutoRange, Feature.AutoRange). A search
-	// FeatureSearchDrainTraceBounds drains is drained that way instead. Every
-	// server runs both statements, so an explicit listing enables it
-	// anywhere. Result-equivalent.
+	// PREWHERE set, and does for a constant, so there the scalar reads fewer
+	// bytes. Elsewhere it reads what the set reads, so auto picks the feature
+	// on 26.2 and 26.3 only (searchDrainScalarAutoRange, Feature.AutoRange). A search FeatureSearchDrainTraceBounds drains is
+	// drained that way instead. Every server runs both statements, so an
+	// explicit listing enables it anywhere. Result-equivalent.
 	FeatureSearchDrainScalarTraces = "search_drain_scalar_traces"
 
 	// FeatureSearchDrainTraceBounds drains a bounded search whose ranking
@@ -2429,8 +2429,9 @@ const (
 	// (groupArray(TraceId), min(start), max(end)) FROM (<top-N, with each
 	// trace's min(Timestamp) as start and max(Timestamp) as end>)) AS <alias>,
 	// and appending Timestamp >= <alias>.2 AND Timestamp <= <alias>.3 AND
-	// has(<alias>.1, TraceId) to that statement's PREWHERE after the span
-	// filter (chsql.SchemaStrategies.SearchDrainTraceBounds). Every row of a
+	// TraceId IN (SELECT arrayJoin(<alias>.1)) AND indexHint(has(<alias>.1,
+	// TraceId)) to that statement's PREWHERE after the span filter
+	// (chsql.SchemaStrategies.SearchDrainTraceBounds). Every row of a
 	// chosen trace the ranking read lies between those timestamps, and the
 	// ranking picks the traces that start last, so the bounds drop the rows
 	// of the traces that started earlier, and of those after the chosen ones

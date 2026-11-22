@@ -654,20 +654,64 @@ statement with the chosen ids as a literal list reads, in one statement and one
 round trip: on the probe's data, with the condition cache off, `{ kind = server
 } | by(name)` read 18,816,903 bytes, against 21,988,586 for the outer filter
 and 23,722,059 for the `PREWHERE` set. From 26.4 the server skips granules
-for the set as well, and the scalar ids read the same bytes as the set; but
-`has()` scans the chosen ids for every row the span filter keeps, where the
-set looks each one up. On 26.8 a plain `{ kind = server }` search over 100,000
-traces took 117 ms under the scalar against 86 ms under the set, at the same
-72,832,267 bytes. On 24.8 the scalar ids read more than the set (28,468,699
-against 22,826,263 bytes for `{ kind = server }` on the probe's data). So
+for the set as well, and the scalar ids read the same bytes as the set. So
 `search_drain_scalar_traces` is auto on 26.2 and 26.3 only.
 
-`TraceId IN <scalar>` instead of `has(<scalar>, TraceId)` looks each id up
-in a set built from the constant, and reads fewer bytes still on 26.3 to 26.8
-(59,373,707 against 72,832,267 for that search). But it takes longer than
-`has()` on the probe's data (69 ms against 59 ms on 26.3), and 24.8 rejects it:
-`Function 'in' is supported only if second argument is constant or table
-expression`.
+### How a row is tested against the scalar
+
+The first scalar drains tested each row with `has(<scalar>, TraceId)`. `has()`
+over a constant array compares the row's trace id with every chosen id in
+turn, so its cost per row grows with the limit, and at Tempo's largest limit
+(1,000) it dominated the search. On 26.3.17.56, over the probe-shaped seed of
+200,000 traces of 5 spans in 30 minutes, `{ kind = client }` at limit 1,000
+spent 15.4 s of CPU against 0.87 s for the `GLOBAL IN` set, and 2.6 s against
+0.75 s at limit 200; at limit 20 the two were close (0.83 s against 0.70 s).
+The bounds drain tests fewer rows, since the timestamp bounds run first, and
+`{ kind = client } | by(name)` stayed within 6% of the set at every limit
+([#4531](https://github.com/tsouza/cerberus/issues/4531)).
+
+Both drains now test a row with `TraceId IN (SELECT arrayJoin(<scalar ids>))`:
+a set the server builds once from the scalar, which it looks each row up in,
+followed by `indexHint(has(<scalar ids>, TraceId))`. `indexHint` hands its
+argument to the index analysis, which keeps skipping granules by the trace id
+skip index for the constant ids, and evaluates to 1 for every row, so `has()`
+never runs per row. Without the `indexHint` the set alone reads what the
+`PREWHERE` set reads on 26.3 (84.2 MB against 77.9 MB for `{ kind = client }`
+at limit 1,000). The set reads its ids from the scalar, not from the ranking,
+so the ranking still runs once; a `GLOBAL IN (<top-N>)` beside the scalar runs
+it twice and read 115.1 MB on the same search.
+
+On 26.3.17.56, whole search (both statements), median of 5 alternated runs, ms
+of wall time / ms of CPU / MB read; "per-row has()" is the drain before the
+fix for #4531, "set from scalar" the drain above:
+
+| search, limit                         | `GLOBAL IN` set   | per-row `has()`      | set from scalar   |
+| ------------------------------------- | ----------------- | -------------------- | ----------------- |
+| `{ kind = client }`, 20               | 363 / 697 / 114.4 | 406 / 826 / 96.9     | 385 / 636 / 96.9  |
+| `{ kind = client }`, 200              | 461 / 745 / 123.3 | 997 / 2614 / 109.4   | 326 / 685 / 109.4 |
+| `{ kind = client }`, 1000             | 535 / 867 / 144.0 | 6305 / 15388 / 137.7 | 416 / 819 / 137.7 |
+| `{ kind = client } \| by(name)`, 20   | 450 / 647 / 110.8 | 346 / 602 / 89.0     | 248 / 592 / 89.0  |
+| `{ kind = client } \| by(name)`, 200  | 621 / 724 / 119.7 | 560 / 686 / 97.8     | 442 / 678 / 97.8  |
+| `{ kind = client } \| by(name)`, 1000 | 305 / 754 / 140.4 | 545 / 795 / 118.5    | 425 / 757 / 118.5 |
+
+Every drain answered the same traces on each line. The set from the scalar
+reads the bytes the per-row `has()` read on 26.3, and on every server it reads
+one byte more than before, the `system.one` row its `SELECT arrayJoin(...)`
+reads. On 24.8 it reads the `GLOBAL IN` set's bytes plus that byte, where the
+per-row `has()` read more than the set (28,468,699 against 22,826,263 bytes for
+`{ kind = server }` on the probe's data). Explicitly listed on 26.8.36.3, the
+set from the scalar ran `{ kind = client }` at limit 1,000 in 226 ms and 607 ms
+of CPU, against 3,483 ms and 13,902 ms under the per-row `has()` and 191 ms and
+581 ms under the auto `GLOBAL IN` set. `test/chserver`'s
+`TestSearchTraceLimitScalarDrainCPUAtMaxLimit` holds the scalar drains on
+26.3.17.56 to at most twice the set's CPU at limit 1,000; the per-row `has()`
+spent 29 times it there.
+
+`TraceId IN <scalar>`, the scalar itself as the `IN` operand, is not that set.
+24.8 rejects it (`Function 'in' is supported only if second argument is
+constant or table expression`), and with 1,000 chosen ids over 4M rows on 26.3
+it took 62-79 s against 21-29 s for `has()` and 0.17-0.3 s for a `GLOBAL IN`
+subquery.
 
 ### The timestamp bounds
 
@@ -708,8 +752,9 @@ lists either feature explicitly.
 ### Measurements
 
 Limited-search bytes of `TestSearchTraceLimitDrainPlacementAutoReadsNoMore`'s
-searches, condition cache on and warm: `PREWHERE` set / scalar ids / scalar
-with the timestamp bounds. A and B run on the probe's seed: A is `{ kind =
+searches, condition cache on and warm, with each row tested against the scalar
+through the set built from it: `PREWHERE` set / scalar ids / scalar with the
+timestamp bounds. A and B run on the probe's seed: A is `{ kind =
 server } | by(name)`, B `{ kind = server }`, a plain span search the bounds do
 not apply to (set / scalar ids). C, D and E run on the scattered seed: C is `{
 status = error } | by(resource.service.name)` over every trace, D the same over
@@ -718,10 +763,10 @@ scalar ids):
 
 | server     | A                                    | B                       | C                                    | D                                    | E                       |
 | ---------- | ------------------------------------ | ----------------------- | ------------------------------------ | ------------------------------------ | ----------------------- |
-| 24.8.14.39 | 21,530,625 / 27,173,061 / 19,768,995 | 22,826,263 / 28,468,699 | 75,292,906 / 81,827,678 / 58,687,800 | 72,187,433 / 80,098,009 / 56,402,554 | 77,921,532 / 84,456,304 |
-| 26.3.17.56 | 23,064,645 / 18,159,489 / 16,712,355 | 24,048,667 / 19,143,511 | 71,351,022 / 65,750,138 / 51,200,361 | 69,837,339 / 63,057,259 / 48,755,928 | 73,346,116 / 67,745,232 |
-| 26.4.5.143 | 18,159,489 / 18,159,489 / 16,712,355 | 19,143,511 / 19,143,511 | 65,750,138 / 65,750,138 / 51,200,361 | 63,057,259 / 63,057,259 / 48,755,928 | 67,745,232 / 67,745,232 |
-| 26.8.36.3  | 17,689,315 / 17,689,315 / 16,404,383 | 18,673,337 / 18,673,337 | 65,750,138 / 65,750,138 / 51,200,361 | 63,057,259 / 63,057,259 / 48,755,928 | 67,745,232 / 67,745,232 |
+| 24.8.14.39 | 21,530,625 / 21,530,626 / 19,768,996 | 22,826,263 / 22,826,264 | 75,292,906 / 75,292,907 / 57,508,153 | 72,187,433 / 72,187,434 / 54,706,811 | 77,921,532 / 77,921,533 |
+| 26.3.17.56 | 23,064,645 / 18,159,490 / 16,712,356 | 24,048,667 / 19,143,512 | 71,351,022 / 65,750,139 / 51,200,362 | 69,837,339 / 63,057,260 / 48,755,929 | 73,346,116 / 67,745,233 |
+| 26.4.5.143 | 18,159,489 / 18,159,490 / 16,712,356 | 19,143,511 / 19,143,512 | 65,750,138 / 65,750,139 / 51,200,362 | 63,057,259 / 63,057,260 / 48,755,929 | 67,745,232 / 67,745,233 |
+| 26.8.36.3  | 17,851,517 / 17,689,316 / 16,242,182 | 18,673,337 / 18,673,338 | 65,750,138 / 65,750,139 / 51,200,362 | 63,057,259 / 63,057,260 / 48,755,929 | 67,745,232 / 67,745,233 |
 
 Every drain answers the same rows on every line.
 
