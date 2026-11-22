@@ -1,0 +1,11 @@
+{
+  "fixture": "traceql/structural_union_descendant_dup_key_order",
+  "fan_factor": null,
+  "scan_rows": 4,
+  "peak_intermediate": 4,
+  "has_cross_join": false,
+  "has_array_join": false,
+  "has_recursive_cte": true,
+  "max_recursion_depth": 2,
+  "uncountable_levels": 1
+}

@@ -4,6 +4,91 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.25.0] — 2026-11-22
+
+### Added
+
+- **traceql:** read per-trace values over a bounded trace-duration lookback (#4108)
+
+### Fixed
+
+- v1.25.0 final release audit fixes (#4535)
+- **logql:** read map keys of filters left above the scan in its scope (#4526)
+- v1.25.0 release audit fixes (#4501)
+- **logql:** keep a filter ahead of a later one that overtakes it at the scan on 24.8 (#4484)
+- **chopt:** stamp query_plan_merge_filters only where a filter reads a value above the scan (#4482)
+- **logql:** run a stored-label filter with a later line filter where the table is read (#4464)
+- **chopt:** stamp query_plan_merge_filters where 24.8 leaves a LogQL filter above the scan (#4462)
+- **logql:** read a parsed label by its own key in a pipeline's labels column (#4458)
+- **logql:** read a range aggregation's detected_level regex matcher from the level source (#4449)
+- **chsql:** cast a parsed Map only where an operator that spills reads it (#4441)
+- **logql:** run a range aggregation's level filter ahead of its line filter on 24.8 (#4429)
+- **chsql:** cast mapConcat and mapApply results to their parsed Map type below 25.1 (#4427)
+- **logql:** keep a log query's filters in the order its pipeline writes them (#4415)
+- **traceql:** evaluate metrics after coalesce() or by() over their spans (#4375)
+- **logql:** evaluate range-aggregation filters in the scope that reads the table (#4383)
+- **traceql:** evaluate a NOT over a span-free comparison (#4389)
+- **ci:** run a coverage shard past the argument budget as several go test runs (#4410)
+- **promql:** bound the memory of an instant classic-bucket selection (#4398)
+- **traceql:** read a selected materialized attribute where its rows carry it (#4384)
+- **promql:** fold histogram_quantile over a plain-named selector unread (#4394)
+- **logql:** match only the empty lines with an empty pattern line filter (#4378)
+- **tempo:** withhold the DISTINCT spill threshold from instrumentation-scope tag names (#4379)
+- **traceql:** answer a pipeline led by a scalar filter, by() or select() (#4363)
+- **promql:** answer histogram_quantile over classic buckets outside the idioms (#4338)
+- **promql:** drop the classic bucket-merge ceiling, raise the per-series one (#4307)
+- **promql:** answer instant histogram_quantile over a shaping bucket aggregation (#4318)
+- **traceql:** give a trace-scoped intrinsic its value per span outside a spanset filter (#4321)
+- **traceql:** return every matching span of each trace a windowed search chooses (#4320)
+- **traceql:** reject Tempo's Validate-only shapes at parse with 400 (#4296)
+- **compat:** draw a selector from every stream that meets its requirements (#4281)
+- **chsql:** pass an unaliased JSON-strategy column through a Project raw (#4285)
+- **promql:** read the classic-histogram window once, answer its over-cap stage with a 422 (#4189)
+- **traceql:** reject the spanset shapes Tempo's grammar rejects at parse (#4180)
+- **traceql:** read the RangeWindow's span in metrics recursive spans scans (#4187)
+- **chclient:** hold unattributed canary verdicts behind a per-request HTTP balancer (#4182)
+- **logql:** end a pattern at its first invalid UTF-8 sequence, as Loki does (#4177)
+- **parser:** rewrite helpers sharing upstream statement sequences; abstract the copy scan (#4169)
+- **promql:** answer histogram_quantile over avg/max/min/last_over_time buckets (#4157)
+- **ci:** check out the workflow's own commit in the merge-queue requeue jobs (#4176)
+- **chclient:** remember capability canary verdicts per server across fleet probes (#4149)
+- **parser:** rewrite LogQL and TraceQL helpers from grammar and observed behaviour (#4138)
+- **promql:** bound the instant classic-histogram window stage (#4129)
+- **traceql:** evaluate metrics after a spanset-aggregate filter over its spans (#4114)
+- **chclient:** hold a load-balanced fleet at its oldest replica's build (#4110)
+- **ci:** match agpl-clean's go subcommands through one named pattern (#4109)
+
+### Performance
+
+- **chsql:** emit the classic quantile without an output boundary (#4530)
+- **engine:** aggregate the classic-bucket stale-marker layout two-level on 26.3 to 26.7 (#4527)
+- **chsql:** guard the classic quantile's empty ladder on observations alone (#4521)
+- **chsql:** drain a bounded search through a scalar of its chosen traces (#4517)
+- **logql:** run a level filter beside a stored-label filter at the scan (#4510)
+- **logql:** run a level filter ahead of a later line filter without the WHERE-order fact (#4491)
+- **tempo:** fold a search ending in by() or coalesce() into one per-trace aggregate (#4485)
+- **logql:** filter on the normalised level unless WHERE order holds (#4480)
+- **chsql:** test a search drain's chosen traces in the scan's PREWHERE (#4468)
+- **traceql:** bound a search ending in a bare by() to the newest traces (#4460)
+- **logql:** compute a log query's detected level above the limit again (#4437)
+- **traceql:** group only the limited traces' spans in a search ending in coalesce() (#4435)
+- **logql:** define each parser stage's labels map once per side of a log query's limit (#4301)
+- **logql:** compute each per-row value of a range aggregation once (#4166)
+- **tempo:** withhold the DISTINCT spill threshold only from harmed tag shapes (#4144)
+
+### CI
+
+- **e2e:** queue-coalesce main-push runs like coverage (#4305)
+- **strict-scan:** run the classic-histogram ceiling tests in their own ch-server-safety shard (#4185)
+- requeue a merge-queue entry dequeued for an interrupted check (#4147)
+- **lint:** install golangci-lint once per job so the untagged pass cannot race it (#4145)
+
+### Documentation
+
+- **adopters:** add Formance (#4278)
+- **semantic:** state contract text and the semantic-mutate comment as current (#4127)
+- replace the personal contact address with project addresses (#4106)
+
 ## [v1.24.0] — 2026-11-14
 
 ### BREAKING
