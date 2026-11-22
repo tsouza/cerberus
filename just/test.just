@@ -619,6 +619,11 @@ perf-smoke-integration:
     @# chopt.FeatureMergePlanFilters resolves only below 24.11. The tag is
     @# CH_PERF_SMOKE_MERGE_FILTERS_IMAGE, a build test/chserver already pins.
     @just _pull-retry {{CH_PERF_SMOKE_MERGE_FILTERS_IMAGE}}
+    @# The classic_bucket_layout_two_level tier (smoke.FloorClassicBucketLayout)
+    @# boots a FIFTH: chopt.FeatureClassicBucketLayoutTwoLevel auto-selects only
+    @# from 26.3 up to 26.8. The tag is CH_MIN_SUPPORTED_IMAGE, the 26.3 build
+    @# the stamp was measured on.
+    @just _pull-retry {{CH_MIN_SUPPORTED_IMAGE}}
     go test -timeout 20m -tags=integration -count=1 -run TestPerfSmoke ./test/perf/smoke/...
 
 # Run the ts_grid_* native range-window lowerer activation lane (#2487): wires
@@ -1441,6 +1446,7 @@ update-perf-smoke-baseline:
     @just _pull-retry {{CH_PERF_SMOKE_JOIN_SPILL_IMAGE}}
     @just _pull-retry {{CH_DISTINCT_SPILL_IMAGE}}
     @just _pull-retry {{CH_PERF_SMOKE_MERGE_FILTERS_IMAGE}}
+    @just _pull-retry {{CH_MIN_SUPPORTED_IMAGE}}
     UPDATE_PERF_SMOKE_BASELINE=1 go test -timeout 20m -tags=integration -count=1 -run TestPerfSmokeRealCH ./test/perf/smoke/...
     @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/perf-smoke-baseline.json
 
@@ -1455,6 +1461,7 @@ add-perf-smoke-baseline:
     @just _pull-retry {{CH_PERF_SMOKE_JOIN_SPILL_IMAGE}}
     @just _pull-retry {{CH_DISTINCT_SPILL_IMAGE}}
     @just _pull-retry {{CH_PERF_SMOKE_MERGE_FILTERS_IMAGE}}
+    @just _pull-retry {{CH_MIN_SUPPORTED_IMAGE}}
     UPDATE_PERF_SMOKE_BASELINE=missing go test -timeout 20m -tags=integration -count=1 -run TestPerfSmokeRealCH ./test/perf/smoke/...
     @node .github/scripts/lib/regen-diff.mjs --label baseline test/perf/perf-smoke-baseline.json
 

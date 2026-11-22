@@ -487,6 +487,11 @@ func applySharedQuerySettings(ctx context.Context, f planShapeFacts, memCap int6
 	// per-series groupArray see 256 small blocks instead of one whole-state
 	// block (cerberus issue #3247).
 	ctx = applyExpHistogramTwoLevelBound(ctx, f, rules.ExpHistogramTwoLevel)
+	// Classic-bucket stale-marker layout plans only, and only when the
+	// classic_bucket_layout_two_level feature resolved in: the same two-level
+	// stamp, so the stages fanning the layout's rows out read its aggregate in
+	// buckets across every stream rather than in one block on one thread.
+	ctx = applyClassicBucketLayoutTwoLevelBound(ctx, f, rules.ClassicBucketLayoutTwoLevel)
 	// Exponential-histogram counter-window plans only (rate() / increase() /
 	// irate() over exp-histogram samples, with no other sample reduction
 	// beside the window), on ClickHouse 26.8+ where the setting exists: keep

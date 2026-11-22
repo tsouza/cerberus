@@ -14,7 +14,7 @@ import (
 // broken request in the real-ClickHouse integration lane, where a driver
 // error is much more expensive to root-cause than this unit check.
 func TestSentinels_Roster(t *testing.T) {
-	const wantCount = 9
+	const wantCount = 10
 	if len(Sentinels) != wantCount {
 		t.Fatalf("len(Sentinels) = %d, want %d", len(Sentinels), wantCount)
 	}
@@ -115,6 +115,38 @@ func TestSentinels_JoinSpillStampIsAsserted(t *testing.T) {
 	for k, v := range want {
 		if got[k] != v {
 			t.Errorf("join_spill sentinel RequiredSettings[%q] = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+// TestSentinels_ClassicBucketLayoutStampIsAsserted pins what makes the
+// classic-bucket layout sentinel falsifiable: its query selects the classic
+// metric's `_bucket` series, which is what lowers to the stale-marker layout,
+// and it requires the two-level stamp. Peak memory alone would stay inside
+// the committed bound's headroom on a smaller seed whether the stamp fired or
+// not.
+func TestSentinels_ClassicBucketLayoutStampIsAsserted(t *testing.T) {
+	layout := SentinelsForFloor(FloorClassicBucketLayout)
+	if len(layout) != 1 {
+		t.Fatalf("SentinelsForFloor(FloorClassicBucketLayout) returned %d sentinels, want 1", len(layout))
+	}
+	s := layout[0]
+
+	query := s.Params(time.Unix(0, 0), time.Unix(0, 0).Add(sentinelWindow)).Get("query")
+	if !strings.Contains(query, ClassicBucketLayoutMetric+"_bucket") {
+		t.Errorf("classic-bucket layout sentinel query %q selects no `_bucket` series of %s, so it "+
+			"lowers to no stale-marker layout and the stamp could not fire", query, ClassicBucketLayoutMetric)
+	}
+
+	const cap1GiB int64 = 1 << 30
+	got := s.RequiredSettings(cap1GiB)
+	want := map[string]string{settingGroupByTwoLevelThresholdBytes: wantTwoLevelThresholdBytes}
+	if len(got) != len(want) {
+		t.Fatalf("classic-bucket layout sentinel RequiredSettings = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("classic-bucket layout sentinel RequiredSettings[%q] = %q, want %q", k, got[k], v)
 		}
 	}
 }
@@ -453,7 +485,7 @@ func TestSentinels_NativeHistogramStampsAreAsserted(t *testing.T) {
 	got := s.RequiredSettings(cap1GiB)
 	want := map[string]string{
 		settingEnableAnalyzer:                wantNativeHistogramEnableAnalyzer,
-		settingGroupByTwoLevelThresholdBytes: wantExpHistogramTwoLevelThresholdBytes,
+		settingGroupByTwoLevelThresholdBytes: wantTwoLevelThresholdBytes,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("exp-histogram sentinel RequiredSettings = %v, want %v", got, want)

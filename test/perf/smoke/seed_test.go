@@ -137,3 +137,13 @@ func TestSeedDetectedLevelLogs_RejectsAnEndNotAfterStart(t *testing.T) {
 		t.Fatal("expected an error for an end before start")
 	}
 }
+
+func TestSeedClassicHistogram_RejectsNonPositiveSeriesOrBoundCount(t *testing.T) {
+	end := time.Unix(3600, 0)
+	if _, err := SeedClassicHistogram(context.Background(), nil, ClassicBucketLayoutMetric, 0, ClassicBucketLayoutBoundCount, end); err == nil {
+		t.Fatal("expected an error for a non-positive seriesCount")
+	}
+	if _, err := SeedClassicHistogram(context.Background(), nil, ClassicBucketLayoutMetric, 1, 0, end); err == nil {
+		t.Fatal("expected an error for a non-positive boundCount")
+	}
+}

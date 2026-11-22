@@ -17,9 +17,12 @@ CH_TEST_IMAGE_PRIOR := "clickhouse/clickhouse-server:24.8-alpine"
 
 # CH_MIN_SUPPORTED_IMAGE is the build of the minimum supported ClickHouse line
 # (versions.yaml min_clickhouse) the real-server suites run as their oldest
-# supported server: test/regexjit's compiler-less build and test/querylog's
-# build without system.all_query_log. It is one of CH_SERVER_SAFETY_IMAGES and
-# CH_QUERY_LOG_IMAGES below.
+# supported server: test/regexjit's compiler-less build, test/querylog's
+# build without system.all_query_log, and the perf-smoke corpus's
+# classic_bucket_layout_two_level tier (test/perf/smoke's
+# perfSmokeClassicBucketLayoutCHImage), inside
+# chopt.FeatureClassicBucketLayoutTwoLevel's 26.3 to 26.8 auto range. It is one
+# of CH_SERVER_SAFETY_IMAGES and CH_QUERY_LOG_IMAGES below.
 CH_MIN_SUPPORTED_IMAGE := "clickhouse/clickhouse-server:26.3.17.56-alpine"
 
 # The ClickHouse upgrade-compatibility tests (`clickhouse-upgrade-test`) roll the

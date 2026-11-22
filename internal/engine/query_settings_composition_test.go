@@ -43,6 +43,7 @@ var compositionRuleFlags = []settingsRuleFlag{
 	{"JoinSpill", func(r *SettingsRules) { r.JoinSpill = true }},
 	{"DistinctSpill", func(r *SettingsRules) { r.DistinctSpill = true }},
 	{"ExpHistogramTwoLevel", func(r *SettingsRules) { r.ExpHistogramTwoLevel = true }},
+	{"ClassicBucketLayoutTwoLevel", func(r *SettingsRules) { r.ClassicBucketLayoutTwoLevel = true }},
 	{"HistogramAdaptiveAggregatorOff", func(r *SettingsRules) { r.HistogramAdaptiveAggregatorOff = true }},
 	{"TraceIDBitmapFilter", func(r *SettingsRules) { r.TraceIDBitmapFilter = true }},
 	{"LogCommentShape", func(r *SettingsRules) { r.LogCommentShape = true }},
@@ -120,13 +121,16 @@ func compositionContributors() []settingsContributor {
 		{"exp_histogram_two_level", func(ctx context.Context, plan chplan.Node, _ int64, rules SettingsRules) context.Context {
 			return applyExpHistogramTwoLevelBound(ctx, shapeOf(plan), rules.ExpHistogramTwoLevel)
 		}},
+		{"classic_bucket_layout_two_level", func(ctx context.Context, plan chplan.Node, _ int64, rules SettingsRules) context.Context {
+			return applyClassicBucketLayoutTwoLevelBound(ctx, shapeOf(plan), rules.ClassicBucketLayoutTwoLevel)
+		}},
 		{"histogram_adaptive_aggregator_off", func(ctx context.Context, plan chplan.Node, _ int64, rules SettingsRules) context.Context {
 			return applyHistogramAdaptiveAggregatorOff(ctx, shapeOf(plan), rules.HistogramAdaptiveAggregatorOff)
 		}},
 	}
 	for _, f := range compositionRuleFlags {
 		switch f.name {
-		case "JoinSpill", "DistinctSpill", "ExpHistogramTwoLevel", "HistogramAdaptiveAggregatorOff":
+		case "JoinSpill", "DistinctSpill", "ExpHistogramTwoLevel", "ClassicBucketLayoutTwoLevel", "HistogramAdaptiveAggregatorOff":
 			// Applied by the dedicated bound above, not by SettingsRules.apply.
 			continue
 		case "AnalyzerMandatory", "NativeHistogramAnalyzerFaster":
@@ -166,6 +170,8 @@ func flagIsSet(rules SettingsRules, f settingsRuleFlag) bool {
 		return rules.DistinctSpill == probe.DistinctSpill
 	case "ExpHistogramTwoLevel":
 		return rules.ExpHistogramTwoLevel == probe.ExpHistogramTwoLevel
+	case "ClassicBucketLayoutTwoLevel":
+		return rules.ClassicBucketLayoutTwoLevel == probe.ClassicBucketLayoutTwoLevel
 	case "HistogramAdaptiveAggregatorOff":
 		return rules.HistogramAdaptiveAggregatorOff == probe.HistogramAdaptiveAggregatorOff
 	case "TraceIDBitmapFilter":
@@ -220,6 +226,10 @@ func compositionPlans() []struct {
 		{"sorted slab", &chplan.RangeWindow{Input: filterScan("otel_metrics_sum"), SortedSlabOverTime: true}},
 		{"vector join", &chplan.VectorJoin{Left: filterScan("otel_metrics_sum"), Right: filterScan("otel_metrics_gauge")}},
 		{"exp-histogram window", expHistogramWindowPlan()},
+		{"classic-bucket layout", classicBucketLayoutPlan()},
+		{"classic-bucket layout beside an exp-histogram window", &chplan.VectorJoin{
+			Left: classicBucketLayoutPlan(), Right: expHistogramWindowPlan(),
+		}},
 		{"exp-histogram counter window", &chplan.HistogramQuantileNative{Input: expHistogramWindowAggregate(true)}},
 		{"native histogram quantile over filter", &chplan.HistogramQuantileNative{
 			Input: &chplan.RangeBucketFanout{Input: filterScan("otel_metrics_exponential_histogram")},
@@ -253,6 +263,24 @@ func compositionPlans() []struct {
 				Start: closedStart, End: closedEnd, Step: time.Minute,
 			},
 		}},
+	}
+}
+
+// classicBucketLayoutPlan is the per-series aggregate of the classic-bucket
+// stale-marker layout, as internal/promql's staleMarkerBucketLayout builds it:
+// the union of the series' bounds and its rows carried as tuples.
+func classicBucketLayoutPlan() chplan.Node {
+	return &chplan.Aggregate{
+		Input:          filterScan("otel_metrics_histogram"),
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "MetricName"}, &chplan.ColumnRef{Name: "Attributes"}},
+		GroupByAliases: []string{"MetricName", "Attributes"},
+		AggFuncs: []chplan.AggFunc{
+			{Fn: chplan.FnGroupUniqArrayArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: "ExplicitBounds"}}, Alias: "union"},
+			{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.FuncCall{
+				Fn:   chplan.FnTuple,
+				Args: []chplan.Expr{&chplan.ColumnRef{Name: "TimeUnix"}, &chplan.ColumnRef{Name: "BucketCounts"}},
+			}}, Alias: "rows"},
+		},
 	}
 }
 

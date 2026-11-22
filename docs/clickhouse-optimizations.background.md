@@ -1337,6 +1337,83 @@ time and recreated automatically, so a boot-time refusal says nothing
 permanent about the deployment. The measurements behind this are in
 [`solver.background.md`](solver.background.md#query-log-source-what-the-local-log-misses-measured).
 
+## Why `classic_bucket_layout_two_level` exists, and why auto picks it only from 26.3 up to 26.8
+
+A classic `_bucket` selection read through the stale-marker layout groups the
+histogram rows per series: one aggregate takes the series' union of bounds
+(`groupUniqArrayArray(ExplicitBounds)`) and carries the series' rows through
+itself as one `groupArray` of tuples, which the stages above expand again with
+`arrayJoin` and fan out into one sample per bucket. Before #4398 the union
+came from a window function over the same partition. ClickHouse sorts every
+input row with all its columns to evaluate a window, and that sort is what
+took a 6h range over 200 series of 15 buckets past the 1 GiB cap, so #4398
+moved the union into the aggregate. The same change stopped stamping
+`optimize_aggregation_in_order` on that aggregate, whose `Attributes` key is
+rebuilt with `mapConcat` and so is not a prefix of the sorting key.
+
+A single-level aggregate hands its whole merged result up as one block. The
+expansion and the fan-out above it (the `le` strings, the cumulative counts)
+then run on one thread for every series. On 26.3 that made the instant
+selection and the aggregations over it 30-50% slower than v1.24.0, whose
+window ran in parallel across the partitions. A two-level aggregate emits its
+result in 256 buckets spread over the streams, so the fan-out runs in
+parallel again. `group_by_two_level_threshold_bytes=1` converts the table to
+two-level at once, as `exp_histogram_two_level` does for the windowed
+exponential-histogram grouping.
+
+Whether the unstamped aggregate stays single-level depends on how the scan
+feeds it. The server converts on its own once the state passes the default
+`group_by_two_level_threshold_bytes` (50 MB), which it checks block by block.
+With an hour of samples ahead of the lookback, the scan hands the aggregate
+many filtered blocks and it converts: on 26.3.17.56 the instant merge over
+3000 series of 15 bounds peaked at 84-97 MiB with or without the stamp. With
+the table holding only the lookback, the same merge peaked at 309 MiB
+unstamped and 67-75 MiB stamped. The stamp makes the outcome independent of
+the table's layout, which is also why the perf-smoke sentinel seeds only one
+lookback.
+
+### Measurements
+
+Statement replays of main's statement on the audit metrics seed (720,000
+histogram rows, 15 bounds), unstamped and stamped, against v1.24.0's own
+statement; ms and MiB, median of 9 on 26.3, of 5 on 26.4 to 26.7 and of 7 on
+26.8:
+
+| server     | query                             | v1.24.0    | unstamped  | stamped    |
+| ---------- | --------------------------------- | ---------- | ---------- | ---------- |
+| 26.3.17.56 | instant `<bucket>{method="POST"}` | 364 / 63   | 369 / 68   | 307 / 27   |
+| 26.3.17.56 | range `<bucket>{method="POST"}`   | 2260 / 780 | 2486 / 844 | 1460 / 273 |
+| 26.3.17.56 | instant `sum by (le) (<bucket>)`  | 525 / 286  | 961 / 280  | 449 / 54   |
+| 26.3.17.56 | instant `count(<bucket>)`         | 577 / 283  | 938 / 280  | 437 / 51   |
+| 26.4.5.143 | instant `sum by (le) (<bucket>)`  | 778 / 283  | 1225 / 280 | 725 / 50   |
+| 26.5.7.64  | instant `sum by (le) (<bucket>)`  | 850 / 293  | 1112 / 280 | 727 / 50   |
+| 26.6.8.7   | instant `sum by (le) (<bucket>)`  | 795 / 287  | 1114 / 280 | 866 / 46   |
+| 26.7.38.18 | instant `sum by (le) (<bucket>)`  | 803 / 275  | 1110 / 295 | 712 / 51   |
+| 26.8.36.3  | instant `<bucket>{method="POST"}` | not run    | 264 / 76   | 317 / 18   |
+| 26.8.36.3  | instant `sum by (le) (<bucket>)`  | not run    | 510 / 239  | 485 / 133  |
+| 26.8.36.3  | instant `count(<bucket>)`         | not run    | 491 / 243  | 437 / 137  |
+
+From 26.3 to 26.7 every instant shape ran faster stamped and used less
+memory. On 26.8.36.3 the stamp still cuts memory, but the instant selection
+ran 20% slower than unstamped, so the auto range ends at 26.8: its bar is
+main's own figures there, which #4398 measured. Below 26.3, #4398
+measured the unstamped layout no slower than before on 24.8, so the range
+starts at 26.3.
+
+### What was not done
+
+- Restoring `optimize_aggregation_in_order`: the aggregate's `Attributes` key
+  is computed, so ClickHouse reads in order by the `MetricName` prefix alone.
+  #4398 measured that at 220 -> 326 MiB on 200 series of 15 buckets over 1h.
+  On 26.3.17.56, stamping it on main's statement measured the instant
+  `sum by (le) (<bucket>)` 698 -> 718 ms and 280 -> 298 MiB, so it does not
+  recover the time either.
+- Restoring the window function: it is the sort #4398 removed to keep the
+  range selection under the memory cap.
+- Stamping the setting on every aggregation: forcing two-level costs a fixed
+  ~18 MiB on a scalar-state aggregation (#3247), so the stamp is gated on the
+  plan carrying the layout.
+
 ## Why `move_to_prewhere` is auto only on servers from 24.11 to before 26.2
 
 The emitter's own `PREWHERE` split (promote the cheap, narrow conjuncts of a

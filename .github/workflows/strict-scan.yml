@@ -441,7 +441,7 @@ jobs:
         run: just ts-grid-state-format-integration
 
       # ---- shard `perf`: test/perf/smoke and test/perf/nightly. The perf-smoke
-      # sentinels boot FOUR ClickHouse images: CH_TEST_IMAGE, then the
+      # sentinels boot FIVE ClickHouse images: CH_TEST_IMAGE, then the
       # join-spill and distinct-spill tiers (test/perf/smoke's
       # perfSmokeJoinSpillCHImage and perfSmokeDistinctSpillCHImage, >=
       # chopt.FeatureJoinSpill's 26.4 and chopt.FeatureDistinctSpill's 26.9
@@ -449,7 +449,10 @@ jobs:
       # minute, and the merge_plan_filters tier
       # (perfSmokeMergePlanFiltersCHImage, below
       # chopt.FeatureMergePlanFilters' 24.11 ceiling), which seeds 3M log
-      # lines and runs its two sentinels in about three minutes.
+      # lines and runs its two sentinels in about three minutes, and the
+      # classic_bucket_layout_two_level tier
+      # (perfSmokeClassicBucketLayoutCHImage, inside
+      # chopt.FeatureClassicBucketLayoutTwoLevel's 26.3 to 26.8 auto range).
 
       # The perf-smoke sentinel differential (#2370 PR 1): the real-CH
       # memory-bounding guard for the #2364 incident class. PR #2358 disabled
