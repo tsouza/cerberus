@@ -6,6 +6,78 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [v1.25.0] — 2026-11-22
 
+### Upgrade notes
+
+- **ClickHouse 26.3 is the minimum supported version (#4451, #4506).**
+  - cerberus follows ClickHouse's own LTS support window: the minimum is the oldest LTS line ClickHouse still supports. 24.8, 25.3 and 25.8 are no longer supported upstream.
+  - Against an older server, v1.25.0 starts and runs. It logs a warning and sets the gauge `cerberus_clickhouse_unsupported_nodes`, and `/info` reports `clickhouse.minimumSupportedVersion` and `clickhouse.unsupportedNodes`.
+  - Older servers are no longer tested, and some queries there read more or use more memory than on v1.24.0 (#4467, #4488, #4494).
+  - v1.26.0 refuses to start against a server below 26.3. Upgrade to 26.3 or later.
+- **`CERBERUS_TEMPO_MAX_TRACE_DURATION`, new, default `1h` (#4037).**
+  - It is the longest trace the TraceQL head assumes. `rootName`, `rootServiceName` and `traceDuration` are read from each trace's spans inside the query window widened by this duration on both sides. The same applies to the per-trace cohort of a spanset aggregate used as an operand.
+  - So a trace whose root span starts before the window, or which ends after it, now resolves its real root and duration, as Tempo does.
+  - A windowed search returns every matching span of each chosen trace inside the widened window (#4038).
+  - **Cost:** every per-trace scan reads twice this duration beyond the window. Shapes such as `{ traceDuration > 500s }` or `{ rootName = "…" }` over a 10-minute window peak at about 40–90 MiB, where v1.24.0 peaked at 13–21 MiB. Raising the setting widens the scan further. `0` restores v1.24.0's window-only reads.
+- **Classic-histogram bucket-merge ceiling removed (#4128, #4307).** `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_ENTRIES` and `CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS` are ignored, with one startup warning each. The per-query ClickHouse memory cap (`CERBERUS_CH_QUERY_MAX_MEMORY`) bounds the merge. Wide merges that v1.24.0 refused now answer, and a merge past the cap answers 422.
+
+### Changed answers
+
+These all move cerberus to what Prometheus or Tempo answers for the same query.
+
+#### PromQL
+
+- `histogram_quantile` over classic buckets now answers where v1.24.0 answered empty or failed (#4131, #4156, #4157, #4158, #4396):
+  - over `sum by (le) (irate|rate(...))`;
+  - over arithmetic, `abs()`, `clamp_min()` or `info()`;
+  - over `avg_over_time`, `max_over_time`, `min_over_time` and `last_over_time` of buckets (instant queries);
+  - over `topk`, `bottomk`, `limitk` and `limit_ratio`.
+- Some range forms of these now answer 422 at the memory limit or the collapsed-payload bound, where v1.24.0 answered an empty result.
+- `histogram_quantile(0.9, {job="…"} * 2)` answers 422 "Multiple series have the same tags", as Prometheus does.
+- A `{le="…"}` matcher compares against the bucket bound, also when the datapoint stores its own `le` attribute (#4396, #4494).
+- A range `info({__name__=~"up|target_info"})` with neither series present answers an empty result, where v1.24.0 answered 422.
+
+#### TraceQL
+
+- `| by(...)` and `| coalesce()` group within each trace, and the search limit counts traces (#4027). `{ } | by(resource.service.name)` returns up to the limit's traces, not one per service.
+  - The traces kept are the newest in the window (latest start first, as Tempo does), where v1.24.0 returned the oldest. The same `by()` query can therefore list different traces than on v1.24.0 (#4027, #4460).
+  - After a regroup, `by(rootName)` returns an empty `rootTraceName` and `by(traceDuration*2)` omits `durationMs`.
+  - A trace whose root span was never ingested reports `rootServiceName` `<root span not yet received>`.
+- A windowed search returns every matching span of each chosen trace, including spans outside the window (#4038).
+  - `metrics.inspectedTraces` on windowed compound and structural searches counts the chosen traces only (#4320).
+- `{ } | by(X) | rate()` answers a single series (#4112). Write `{ } | rate() by (X)` for one series per X.
+  - A pipeline that starts with a scalar filter, `by()` or `select()` is accepted as if `{ }` came first.
+- `NOT` and static comparisons inside span filters answer what Tempo answers (#4139). For example, `{ kind = client && !("a" = "a") }` returns nothing and `{ resource.service.name = "checkout" || true }` returns only the checkout traces.
+- Structural children whose parent started before the window are counted in structural metrics (#4100).
+- Windowed structural searches, `>>` included, keep traces whose stored TraceId is shorter than 32 hex characters, and those traces get their real root metadata (#4495, #4500).
+- Queries that failed with 500 or 502 now answer, among them `{ status = error } | coalesce() | rate()`, `{ kind = client } | by(span.http.method) | coalesce()` and `{ } | count() > 1 | rate()` (#4114, #4375).
+- Queries that Tempo rejects are now rejected with 400, among them `{ } | count()`, `{ } | (count() > 1)`, `({ } | count() > 1) && { }`, `count() + 1 > 2` and `topk(0)` (#4111, #4180, #4296).
+
+#### LogQL
+
+- `| pattern ""` keeps its 400, now with Loki's message (#4177).
+
+### Known costs
+
+- A correct TraceQL answer reads what v1.24.0's wrong one skipped:
+  - `by()` and `coalesce()` searches that now return their full trace set peak at up to about 87 MiB on 26.3 and 31 MiB on 26.8. `by(rootName)` and `by(traceDuration)` run up to 2.2× longer.
+  - `{ span.http.method = "GET" || true }` runs about 1.8× longer.
+- A classic-histogram `histogram_quantile` that now answers costs more than the empty answer it replaced:
+  - range `histogram_quantile(0.9, sum by (le) (irate(…[5m])))` peaks at up to about 255 MiB on 26.3 and 293 MiB on 26.8;
+  - instant quantiles over `avg_over_time` and `last_over_time` buckets peak at about 150 MiB on 26.3 and 45 MiB on 26.8.
+- An instant classic-bucket query over a small metric, such as `sum by (le) (x_bucket)` over a few series, spends about 8 ms more ClickHouse planning and about 0.25 MiB more memory (#4398). This is the cost of the per-series layout that lets large classic-bucket selections answer where v1.24.0 refused them at the memory limit.
+- On ClickHouse 26.3 to 26.7, a range classic-bucket selection over thousands of series uses about 18% more ClickHouse CPU, in exchange for about 25% less ClickHouse time and a lower peak than v1.24.0 (#4527).
+- A query refused at the memory limit can read more before refusing than v1.24.0 did. For example, `({ true } &>> { }) || ({ true }) | select(status)` reads 11–24% more.
+- On a cold ClickHouse 26.8 server, the first trace-duration search peaks near 90 MiB on both v1.24.0 and v1.25.0.
+
+### Known issues
+
+- `topk` and `bottomk` over tied values can return a different series on each evaluation (#4511). v1.24.0 behaves the same.
+- A windowed search misses traces whose matches all lie outside the window (#4310).
+- When a search matches a trace's root span, its `durationMs` is the extent of the matched spans rather than of the whole trace (#4315). v1.24.0 behaves the same.
+- On ClickHouse 26.2 and 26.3, a limited TraceQL search can read more bytes than the same search without a limit (#4507). It reads less than on v1.24.0.
+- A classic `histogram_quantile` over `rate()` of buckets selected by an `le` matcher that excludes `+Inf` fails with 500 (#4533). v1.24.0 behaves the same.
+- Instant `sort()` and `sort_desc()` results can come back unordered (#4534). v1.24.0 behaves the same.
+
 ### Added
 
 - **traceql:** read per-trace values over a bounded trace-duration lookback (#4108)
