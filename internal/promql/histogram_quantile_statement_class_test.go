@@ -35,8 +35,9 @@ const (
 const hqClassOutputBoundary = "_cerb_histogram_output"
 
 // TestHistogramQuantileStatementClass lowers the classic quantile shapes of
-// #4518 and #4529 as instant and range queries and pins each statement's
-// class:
+// #4518 and #4529 as instant and range queries, the range ones under both the
+// fan-out and the native rate lowerer (the one a server with the ts_grid
+// functions boots with), and pins each statement's class:
 //
 //   - the kernel over per-bucket counts (a bare bucket selector, and a
 //     selector that names no bucket metric) guards the empty ladder with
@@ -59,15 +60,13 @@ func TestHistogramQuantileStatementClass(t *testing.T) {
 		{query: `histogram_quantile(0.9, http_requests_total)`},
 		{query: `histogram_quantile(0.9, rate(http_server_request_duration_bucket{method="GET"}[5m]))`, cumulative: true},
 		{query: `histogram_quantile(0.9, rate(http_server_request_duration_bucket[5m]))`, cumulative: true},
+		{query: `histogram_quantile(0.9, rate(http_requests_total[5m]))`, cumulative: true},
+		{query: `histogram_quantile(0.9, sum by (le) (rate(http_requests_total[5m])))`, cumulative: true},
 	} {
-		for _, rangeQuery := range []bool{false, true} {
-			name := tc.query
-			if rangeQuery {
-				name = "range " + name
-			}
-			t.Run(name, func(t *testing.T) {
+		for _, mode := range []hqClassMode{hqClassInstant, hqClassRangeFanout, hqClassRangeNative} {
+			t.Run(string(mode)+" "+tc.query, func(t *testing.T) {
 				t.Parallel()
-				plan := hqClassLower(t, tc.query, rangeQuery)
+				plan := hqClassLower(t, tc.query, mode)
 				quantiles := 0
 				chplan.Walk(plan, func(n chplan.Node) bool {
 					if hq, ok := n.(*chplan.HistogramQuantile); ok {
@@ -100,19 +99,32 @@ func TestHistogramQuantileStatementClass(t *testing.T) {
 	}
 }
 
-// hqClassLower parses and lowers query at hqClassEnd, over the hour before it
-// when rangeQuery.
-func hqClassLower(t *testing.T, query string, rangeQuery bool) chplan.Node {
+// hqClassMode names how TestHistogramQuantileStatementClass lowers a query.
+type hqClassMode string
+
+const (
+	hqClassInstant     hqClassMode = "instant"
+	hqClassRangeFanout hqClassMode = "range"
+	hqClassRangeNative hqClassMode = "range native-rate"
+)
+
+// hqClassLower parses and lowers query at hqClassEnd, or over the hour before
+// it for a range mode.
+func hqClassLower(t *testing.T, query string, mode hqClassMode) chplan.Node {
 	t.Helper()
 	expr, err := parser.NewParser(parser.Options{}).ParseExpr(query)
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", query, err)
 	}
 	var plan chplan.Node
-	if rangeQuery {
-		plan, err = LowerAtRange(context.Background(), expr, schema.DefaultOTelMetrics(), hqClassStart, hqClassEnd, hqClassStep)
-	} else {
+	switch mode {
+	case hqClassInstant:
 		plan, err = LowerAt(context.Background(), expr, schema.DefaultOTelMetrics(), hqClassEnd, hqClassEnd)
+	case hqClassRangeFanout:
+		plan, err = LowerAtRange(context.Background(), expr, schema.DefaultOTelMetrics(), hqClassStart, hqClassEnd, hqClassStep)
+	case hqClassRangeNative:
+		plan, err = LowerAtRangeOpts(context.Background(), expr, schema.DefaultOTelMetrics(), hqClassStart, hqClassEnd, hqClassStep,
+			LowerOpts{Lowerers: RangeLowerers{Rate: NativeRateLowerer{Fallback: FanoutRateLowerer{}}}})
 	}
 	if err != nil {
 		t.Fatalf("lower(%q): %v", query, err)
