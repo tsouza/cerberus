@@ -165,7 +165,11 @@ func splitAtScanScope(t *testing.T, plan chplan.Node) (above []chplan.Node, scop
 func nodeExprs(n chplan.Node) []chplan.Expr {
 	switch v := n.(type) {
 	case *chplan.Project:
-		return projectionExprs(v.Projections)
+		exprs := make([]chplan.Expr, len(v.Projections))
+		for i, p := range v.Projections {
+			exprs[i] = p.Expr
+		}
+		return exprs
 	case *chplan.Filter:
 		return []chplan.Expr{v.Predicate}
 	}

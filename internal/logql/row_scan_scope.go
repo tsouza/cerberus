@@ -135,7 +135,7 @@ func (r *rowLayers) gatherAtScan(maps []string, inWhereOrder bool, consumer ...c
 	}
 	slices.Reverse(items)
 
-	reads := stageMapReads(maps, projectionExprs(consumer), items)
+	reads := stageMapReads(maps, consumer, items)
 	values := r.values(maps)
 	if !inWhereOrder {
 		r.node = r.rebuild(r.gather(base, items, reads, -1, nil, wholeMapFiltersAhead(items, values, reads), nil, filtersLevelSource(items)), consumer)
@@ -204,7 +204,9 @@ func (g *scanGather) leftAbove(e chplan.Expr) bool {
 // once [rowLayers.liftKeys] has moved the map key reads left above, and
 // those of consumer, into the scan's scope.
 func (r *rowLayers) rebuild(g scanGather, consumer []chplan.Projection) chplan.Node {
-	g.layers = append(r.liftKeys(g.reads, g.above, consumer), g.layers...)
+	if lifted := r.liftKeys(g.reads, g.above, consumer); lifted != nil {
+		g.layers = append(lifted, g.layers...)
+	}
 	return rebuildAtScan(g.base, g.layers, g.filtered, g.above, &r.atScan)
 }
 
@@ -231,95 +233,109 @@ const scanKeyAliasPrefix = "_logql_scan_key_"
 // every row, including those the filter drops, while the key subcolumn is
 // all the filter needs.
 func (r *rowLayers) liftKeys(reads stageMaps, above []scanRest, consumer []chplan.Projection) []*chplan.Project {
-	aliases := map[[2]string]string{}
-	var lifted []*chplan.Project
-	lift := func(e chplan.Expr) chplan.Expr {
-		return rewriteMapKeyReads(e, func(m *chplan.MapAccess) chplan.Expr {
-			ref, isColumn := m.Map.(*chplan.ColumnRef)
-			key, constant := m.Key.(*chplan.LitString)
-			if !isColumn || !constant || !slices.Contains(reads.maps, ref.Name) || slices.Contains(reads.whole, ref.Name) {
-				return nil
-			}
-			id := [2]string{ref.Name, key.V}
-			alias, ok := aliases[id]
-			if !ok {
-				alias = scanKeyAliasPrefix + strconv.Itoa(len(lifted))
-				aliases[id] = alias
-				layer := &chplan.Project{Projections: []chplan.Projection{{
-					Expr:  &chplan.MapAccess{Map: &chplan.ColumnRef{Name: ref.Name}, Key: &chplan.LitString{V: key.V}},
-					Alias: alias,
-				}}}
-				lifted = append(lifted, layer)
-				r.layers = append(r.layers, layer)
-			}
-			return &chplan.ColumnRef{Name: alias}
-		})
-	}
+	l := keyLift{rows: r, reads: reads}
 	for i := range above {
 		if layer := above[i].layer; layer != nil {
-			layer.Projections[0].Expr = lift(layer.Projections[0].Expr)
+			layer.Projections[0].Expr = l.rewrite(layer.Projections[0].Expr, nil)
 			continue
 		}
 		for j, conjunct := range above[i].conjuncts {
-			above[i].conjuncts[j] = lift(conjunct)
+			above[i].conjuncts[j] = l.rewrite(conjunct, nil)
 		}
 	}
 	for i := range consumer {
-		consumer[i].Expr = lift(consumer[i].Expr)
+		consumer[i].Expr = l.rewrite(consumer[i].Expr, nil)
 	}
-	return lifted
+	return l.lifted
 }
 
-// rewriteMapKeyReads returns e with each [chplan.MapAccess] that replace
-// returns an expression for replaced by it, copying only the expressions
-// on the way to a replaced read; replace returns nil to keep a read. It
-// descends into the expressions a map key read can sit in, and leaves any
-// other expression as it is, so a read it does not reach keeps reading
-// the map. A lambda that binds a parameter named like the map column a
-// read names keeps that read.
-func rewriteMapKeyReads(e chplan.Expr, replace func(*chplan.MapAccess) chplan.Expr) chplan.Expr {
-	rewrite := func(sub chplan.Expr) chplan.Expr { return rewriteMapKeyReads(sub, replace) }
+// keyLift is the state of one [rowLayers.liftKeys]: the key reads it has
+// lifted so far, by map column and key.
+type keyLift struct {
+	rows    *rowLayers
+	reads   stageMaps
+	aliases map[[2]string]string
+	lifted  []*chplan.Project
+}
+
+// replace returns the column of the scan's scope that m reads, defining it
+// on first use, or nil when m does not read a key of a map column the
+// stage reads only by key.
+func (l *keyLift) replace(m *chplan.MapAccess) chplan.Expr {
+	ref, isColumn := m.Map.(*chplan.ColumnRef)
+	key, constant := m.Key.(*chplan.LitString)
+	if !isColumn || !constant || !slices.Contains(l.reads.maps, ref.Name) || slices.Contains(l.reads.whole, ref.Name) {
+		return nil
+	}
+	id := [2]string{ref.Name, key.V}
+	alias, ok := l.aliases[id]
+	if !ok {
+		if l.aliases == nil {
+			l.aliases = map[[2]string]string{}
+		}
+		alias = scanKeyAliasPrefix + strconv.Itoa(len(l.lifted))
+		l.aliases[id] = alias
+		layer := &chplan.Project{Projections: []chplan.Projection{{
+			Expr:  &chplan.MapAccess{Map: &chplan.ColumnRef{Name: ref.Name}, Key: &chplan.LitString{V: key.V}},
+			Alias: alias,
+		}}}
+		l.lifted = append(l.lifted, layer)
+		l.rows.layers = append(l.rows.layers, layer)
+	}
+	return &chplan.ColumnRef{Name: alias}
+}
+
+// rewrite returns e with each map key read [keyLift.replace] lifts
+// replaced by the column it defines, copying only the expressions on the
+// way to a replaced read. It descends into the expressions a map key read
+// can sit in, and leaves any other expression as it is, so a read it does
+// not reach keeps reading the map. bound are the parameters of the lambdas
+// e sits in that are named like a map column the stage reads: a read of
+// that name reads the parameter, and is kept.
+func (l *keyLift) rewrite(e chplan.Expr, bound []string) chplan.Expr {
 	switch v := e.(type) {
 	case *chplan.MapAccess:
-		if out := replace(v); out != nil {
-			return out
+		if ref, ok := v.Map.(*chplan.ColumnRef); !ok || !slices.Contains(bound, ref.Name) {
+			if out := l.replace(v); out != nil {
+				return out
+			}
 		}
-		if m, k := rewrite(v.Map), rewrite(v.Key); m != v.Map || k != v.Key {
+		if m, k := l.rewrite(v.Map, bound), l.rewrite(v.Key, bound); m != v.Map || k != v.Key {
 			return &chplan.MapAccess{Map: m, Key: k}
 		}
 	case *chplan.Binary:
-		if l, rr := rewrite(v.Left), rewrite(v.Right); l != v.Left || rr != v.Right {
-			return &chplan.Binary{Op: v.Op, Left: l, Right: rr}
+		if left, right := l.rewrite(v.Left, bound), l.rewrite(v.Right, bound); left != v.Left || right != v.Right {
+			return &chplan.Binary{Op: v.Op, Left: left, Right: right}
 		}
 	case *chplan.FuncCall:
-		if args, changed := rewriteExprs(v.Args, rewrite); changed {
+		if args, changed := l.rewriteAll(v.Args, bound); changed {
 			return &chplan.FuncCall{Fn: v.Fn, Args: args}
 		}
 	case *chplan.InList:
-		left := rewrite(v.Left)
-		if list, changed := rewriteExprs(v.List, rewrite); changed || left != v.Left {
+		left := l.rewrite(v.Left, bound)
+		if list, changed := l.rewriteAll(v.List, bound); changed || left != v.Left {
 			return &chplan.InList{Left: left, List: list, Negated: v.Negated}
 		}
 	case *chplan.Lambda:
-		guarded := func(m *chplan.MapAccess) chplan.Expr {
-			if ref, ok := m.Map.(*chplan.ColumnRef); ok && slices.Contains(v.Params, ref.Name) {
-				return nil
+		inner := bound
+		for _, p := range v.Params {
+			if slices.Contains(l.reads.maps, p) {
+				inner = append(slices.Clip(inner), p)
 			}
-			return replace(m)
 		}
-		if body := rewriteMapKeyReads(v.Body, guarded); body != v.Body {
+		if body := l.rewrite(v.Body, inner); body != v.Body {
 			return &chplan.Lambda{Params: v.Params, Body: body}
 		}
 	}
 	return e
 }
 
-// rewriteExprs applies rewrite to each of exprs and reports whether any
-// changed; the slice it returns is a copy only when one did.
-func rewriteExprs(exprs []chplan.Expr, rewrite func(chplan.Expr) chplan.Expr) ([]chplan.Expr, bool) {
+// rewriteAll applies [keyLift.rewrite] to each of exprs and reports
+// whether any changed; the slice it returns is a copy only when one did.
+func (l *keyLift) rewriteAll(exprs []chplan.Expr, bound []string) ([]chplan.Expr, bool) {
 	var out []chplan.Expr
 	for i, e := range exprs {
-		r := rewrite(e)
+		r := l.rewrite(e, bound)
 		if r != e && out == nil {
 			out = slices.Clone(exprs)
 		}
@@ -626,7 +642,7 @@ type stageMaps struct {
 
 // stageMapReads collects the map columns of maps that consumer or an item
 // of the stack reads as a whole.
-func stageMapReads(maps []string, consumer []chplan.Expr, items []chplan.Node) stageMaps {
+func stageMapReads(maps []string, consumer []chplan.Projection, items []chplan.Node) stageMaps {
 	m := stageMaps{maps: maps}
 	note := func(e chplan.Expr) {
 		forEachMapRead(e, maps, func(name, _ string, keyed bool) {
@@ -635,8 +651,8 @@ func stageMapReads(maps []string, consumer []chplan.Expr, items []chplan.Node) s
 			}
 		})
 	}
-	for _, e := range consumer {
-		note(e)
+	for _, p := range consumer {
+		note(p.Expr)
 	}
 	for _, item := range items {
 		switch n := item.(type) {
@@ -838,13 +854,4 @@ func logMapColumns(s schema.Logs) []string {
 		}
 	}
 	return maps
-}
-
-// projectionExprs returns the expression of each projection.
-func projectionExprs(projections []chplan.Projection) []chplan.Expr {
-	exprs := make([]chplan.Expr, len(projections))
-	for i, p := range projections {
-		exprs[i] = p.Expr
-	}
-	return exprs
 }
