@@ -2327,7 +2327,8 @@ const (
 	FeatureHistogramAdaptiveAggregatorOff = "histogram_adaptive_aggregator_off"
 
 	// FeatureClassicBucketLayoutTwoLevel stamps
-	// group_by_two_level_threshold_bytes=1 on a plan carrying the
+	// group_by_two_level_threshold_bytes at 8 MiB (internal/engine's
+	// classicBucketLayoutTwoLevelThresholdBytes) on a plan carrying the
 	// classic-bucket stale-marker layout: the per-series aggregate that takes
 	// a `_bucket` selection's union of bounds and carries the series' rows
 	// through itself as one groupArray of tuples, which the stages above
@@ -2335,9 +2336,11 @@ const (
 	//
 	// Single-level, the aggregate hands its whole merged result up as one
 	// block, and one thread expands and fans out every series. Two-level, it
-	// emits its result in buckets spread over the streams. Statement replays
-	// on 26.3.17.56, median of 9, main's statement unstamped -> stamped
-	// (v1.24.0 in brackets): instant `<bucket>{method="POST"}` 369 -> 307 ms
+	// emits its result in buckets spread over the streams. A small aggregate
+	// stays under the threshold and single-level, where converting would
+	// cost more than it saves (#4532). Statement replays on 26.3.17.56, median
+	// of 9, main's statement unstamped -> stamped at 1 byte, which 8 MiB
+	// matches on this seed (v1.24.0 in brackets): instant `<bucket>{method="POST"}` 369 -> 307 ms
 	// (364) and 68 -> 27 MiB (63); range, same selector, 2486 -> 1460 ms
 	// (2260) and 844 -> 273 MiB (780); instant `sum by (le) (<bucket>)` 961 ->
 	// 449 ms (525) and 280 -> 54 MiB (286); instant `count(<bucket>)` 938 ->
@@ -2407,18 +2410,18 @@ const (
 	// FeatureSearchDrainScalarTraces drains a bounded search's chosen traces
 	// (chplan.SearchTraceLimit) from its Filter(Scan) input by binding them
 	// once as a scalar, WITH (SELECT groupArray(TraceId) FROM (<top-N>)) AS
-	// <alias>, and testing has(<alias>, TraceId) in that statement's PREWHERE
-	// after the span filter, instead of appending TraceId GLOBAL IN (<top-N>)
-	// there (chsql.SchemaStrategies.SearchDrainScalarTraces). On 26.2 and 26.3
+	// <alias>, and testing TraceId IN (SELECT arrayJoin(<alias>)) AND
+	// indexHint(has(<alias>, TraceId)) in that statement's PREWHERE after the
+	// span filter, instead of appending TraceId GLOBAL IN (<top-N>) there
+	// (chsql.SchemaStrategies.SearchDrainScalarTraces). The IN tests each row
+	// against a set built once from the scalar; has() over the constant ids,
+	// inside indexHint, is read only by the index analysis. On 26.2 and 26.3
 	// the server does not skip granules by the TraceId skip index for a
-	// PREWHERE set, and does for a constant, which the scalar is, so there
-	// the scalar reads fewer bytes. Elsewhere it reads no fewer, and has()
-	// scans the chosen ids for every row the span filter keeps where the set
-	// looks each one up, so auto picks the feature on 26.2 and 26.3 only
-	// (searchDrainScalarAutoRange, Feature.AutoRange). A search
-	// FeatureSearchDrainTraceBounds drains is drained that way instead. Every
-	// server runs both statements, so an explicit listing enables it
-	// anywhere. Result-equivalent.
+	// PREWHERE set, and does for a constant, so there the scalar reads fewer
+	// bytes. Elsewhere it reads what the set reads, so auto picks the feature
+	// on 26.2 and 26.3 only (searchDrainScalarAutoRange, Feature.AutoRange). A search FeatureSearchDrainTraceBounds drains is
+	// drained that way instead. Every server runs both statements, so an
+	// explicit listing enables it anywhere. Result-equivalent.
 	FeatureSearchDrainScalarTraces = "search_drain_scalar_traces"
 
 	// FeatureSearchDrainTraceBounds drains a bounded search whose ranking
@@ -2429,8 +2432,9 @@ const (
 	// (groupArray(TraceId), min(start), max(end)) FROM (<top-N, with each
 	// trace's min(Timestamp) as start and max(Timestamp) as end>)) AS <alias>,
 	// and appending Timestamp >= <alias>.2 AND Timestamp <= <alias>.3 AND
-	// has(<alias>.1, TraceId) to that statement's PREWHERE after the span
-	// filter (chsql.SchemaStrategies.SearchDrainTraceBounds). Every row of a
+	// TraceId IN (SELECT arrayJoin(<alias>.1)) AND indexHint(has(<alias>.1,
+	// TraceId)) to that statement's PREWHERE after the span filter
+	// (chsql.SchemaStrategies.SearchDrainTraceBounds). Every row of a
 	// chosen trace the ranking read lies between those timestamps, and the
 	// ranking picks the traces that start last, so the bounds drop the rows
 	// of the traces that started earlier, and of those after the chosen ones
@@ -2472,13 +2476,19 @@ const (
 // FeatureSearchDrainTraceBounds).
 var searchDrainScalarAutoRange = VersionRange{From: Version{Major: 26, Minor: 2}, Until: Version{Major: 26, Minor: 4}}
 
-// classicBucketLayoutTwoLevelAutoRange is the release lines on which a
-// classic-bucket selection's stale-marker layout runs faster aggregated
-// two-level (FeatureClassicBucketLayoutTwoLevel). Every line from 26.3 to
-// 26.7 measured faster stamped on the three instant shapes; 26.8.36.3
-// measured the instant selection 264 -> 317 ms slower, so the range ends
-// there.
-// Below 26.3, #4398 measured the unstamped layout no slower on 24.8.
+// classicBucketLayoutTwoLevelAutoRange is the release lines on which auto
+// aggregates a classic-bucket selection's stale-marker layout two-level
+// (FeatureClassicBucketLayoutTwoLevel). Statement replays on 26.3.17.56
+// measured the instant selection, the instant `sum by (le)` and `count` over
+// it, and the range selection faster and smaller stamped (#4519). On 26.4 to
+// 26.7 the replays measured the instant `sum by (le)` alone, faster and
+// smaller stamped on each line (26.4.5.143: 1225 -> 725 ms, 280 -> 50 MiB).
+// Served on 26.4 to 26.7 over 3000 series, the 8 MiB stamp cut all three
+// instant shapes' peak five- to six-fold on every line, while their
+// ClickHouse time moved from 32% faster to 51% slower with no consistent
+// direction (5 alternated runs, host load 8-12; #4532). 26.8.36.3 measured
+// the instant selection 264 -> 317 ms slower stamped, so the range ends
+// there. Below 26.3, #4398 measured the unstamped layout no slower on 24.8.
 var classicBucketLayoutTwoLevelAutoRange = VersionRange{From: Version{Major: 26, Minor: 3}, Until: Version{Major: 26, Minor: 8}}
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -3123,9 +3133,9 @@ var registry = []Feature{
 		Stability:  Stable,
 		AutoSelect: true,
 		AutoRange:  classicBucketLayoutTwoLevelAutoRange,
-		Doc: "stamp group_by_two_level_threshold_bytes=1 on a plan carrying a classic-bucket selection's stale-marker " +
-			"layout, so the stages fanning its rows out into buckets read the per-series aggregate in buckets across " +
-			"every stream instead of in one block (result-equivalent; auto picks it on server " +
+		Doc: "stamp group_by_two_level_threshold_bytes=8388608 on a plan carrying a classic-bucket selection's " +
+			"stale-marker layout, so once the per-series aggregate passes 8 MiB the stages fanning its rows out into " +
+			"buckets read it in buckets across every stream instead of in one block (result-equivalent; auto picks it on server " +
 			classicBucketLayoutTwoLevelAutoRange.String() + ", measured 961 -> 449 ms and 280 -> 54 MiB on the instant sum by (le) on 26.3 -- #4519)",
 	},
 	{

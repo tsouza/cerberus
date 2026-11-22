@@ -24,6 +24,10 @@ const (
 	// sentinel's classic-histogram metric; the sentinel selects its
 	// `_bucket` series.
 	ClassicBucketLayoutMetric = "cerberus_smoke_request_duration"
+	// ClassicBucketLayoutSmallMetric is the small classic-bucket layout
+	// sentinel's classic-histogram metric, seeded beside
+	// ClassicBucketLayoutMetric in the same tier.
+	ClassicBucketLayoutSmallMetric = "cerberus_smoke_small_request_duration"
 )
 
 // ClassicBucketLayoutSeriesCount / ClassicBucketLayoutBoundCount size the
@@ -34,6 +38,17 @@ const (
 const (
 	ClassicBucketLayoutSeriesCount = 3000
 	ClassicBucketLayoutBoundCount  = 15
+)
+
+// ClassicBucketLayoutSmallSeriesCount / ClassicBucketLayoutSmallBoundCount
+// size the small classic-bucket layout sentinel's seed: a metric whose
+// layout aggregate stays far below the two-level threshold the layout is
+// stamped with, so it aggregates single-level. On ClickHouse 26.3.17.56 an
+// instant merge over 9 series of 4 bounds peaked at 5.4 MiB under the 8 MiB
+// threshold and 40.8 MiB under a 1-byte one, which converts it at once.
+const (
+	ClassicBucketLayoutSmallSeriesCount = 9
+	ClassicBucketLayoutSmallBoundCount  = 4
 )
 
 // sentinelWindow / sentinelStep size every sentinel's query_range grid: 1h at
@@ -185,14 +200,21 @@ const distinctSpillTraceQL = `{ kind = server } > { kind = client } | count_over
 const settingGroupByTwoLevelThresholdBytes = "group_by_two_level_threshold_bytes"
 
 // wantTwoLevelThresholdBytes is the exact value ClickHouse records for that
-// setting under either two-level stamp (the exponential-histogram window's,
-// #3247, and the classic-bucket stale-marker layout's, #4519): "1", the
-// smallest value that ARMS the byte threshold. It is written as a literal
+// setting under the exponential-histogram window's two-level stamp (#3247):
+// "1", the smallest value that ARMS the byte threshold. It is written as a literal
 // rather than derived from internal/engine's expHistogramTwoLevelThresholdBytes
 // so the assertion pins the value those issues measured, not whatever that const currently holds --
 // "0" in particular would DISABLE the threshold and make the mechanism inert
 // while a derived expectation stayed green.
 const wantTwoLevelThresholdBytes = "1"
+
+// wantClassicLayoutTwoLevelThresholdBytes is the exact value ClickHouse
+// records for group_by_two_level_threshold_bytes under the classic-bucket
+// stale-marker layout's stamp: 8 MiB, so a layout aggregate small enough not
+// to need two-level aggregation never pays its fixed cost (#4532). A literal,
+// for the reason wantTwoLevelThresholdBytes gives; "1" would bring that cost
+// back to every small metric.
+const wantClassicLayoutTwoLevelThresholdBytes = "8388608"
 
 // settingEnableAnalyzer is the ClickHouse setting internal/engine's
 // applyNativeHistogramAnalyzerFix stamps to 0 on a native-histogram plan —
@@ -629,7 +651,7 @@ var Sentinels = []Sentinel{
 	{
 		// Classic-bucket stale-marker layout, chopt-gated:
 		// applyClassicBucketLayoutTwoLevelBound stamps
-		// group_by_two_level_threshold_bytes=1 on a plan carrying the
+		// group_by_two_level_threshold_bytes=8 MiB on a plan carrying the
 		// layout's per-series aggregate, but ONLY once
 		// SettingsRules.ClassicBucketLayoutTwoLevel is true, which auto
 		// resolves on servers from 26.3 up to 26.8. Hence Floor:
@@ -655,7 +677,28 @@ var Sentinels = []Sentinel{
 		Window: sentinelWindow,
 		Step:   0,
 		RequiredQuerySettings: func(int64) map[string]string {
-			return map[string]string{settingGroupByTwoLevelThresholdBytes: wantTwoLevelThresholdBytes}
+			return map[string]string{settingGroupByTwoLevelThresholdBytes: wantClassicLayoutTwoLevelThresholdBytes}
+		},
+	},
+	{
+		// The same stamp over a small classic metric
+		// (ClassicBucketLayoutSmallMetric): its layout aggregate stays below
+		// the threshold, so it aggregates single-level and its peak is the
+		// layout's own. Converting such an aggregate to two-level at once
+		// costs a fixed amount of memory whatever its size; a threshold
+		// that does so (1 byte) peaks several times higher and fails the
+		// committed bound. RequiredQuerySettings pins the threshold value.
+		Name:      "classic_bucket_layout_two_level_small_metric",
+		Mechanism: "applyClassicBucketLayoutTwoLevelBound (internal/engine/query_settings_rules.go) threshold classicBucketLayoutTwoLevelThresholdBytes",
+		Floor:     FloorClassicBucketLayout,
+		Path:      "/api/v1/query",
+		Params: func(start, end time.Time) url.Values {
+			return url.Values{"query": {"sum by (le) (" + ClassicBucketLayoutSmallMetric + "_bucket)"}}
+		},
+		Window: sentinelWindow,
+		Step:   0,
+		RequiredQuerySettings: func(int64) map[string]string {
+			return map[string]string{settingGroupByTwoLevelThresholdBytes: wantClassicLayoutTwoLevelThresholdBytes}
 		},
 	},
 }

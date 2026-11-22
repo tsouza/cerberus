@@ -387,7 +387,7 @@ SELECT * FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`
 -- settings --
 enable_analyzer=1
 enabled_opts=aggregation_in_order,classic_bucket_layout_two_level,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter
-group_by_two_level_threshold_bytes=1
+group_by_two_level_threshold_bytes=8388608
 log_comment=cerb:filter;agg=2;union
 max_bytes_before_external_group_by=536870912
 max_bytes_before_external_sort=536870912

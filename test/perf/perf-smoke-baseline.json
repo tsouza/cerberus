@@ -49,6 +49,11 @@
       "name": "classic_bucket_layout_two_level",
       "max_of_n_bytes": 76511491,
       "ceiling_bytes": 114767236
+    },
+    {
+      "name": "classic_bucket_layout_two_level_small_metric",
+      "max_of_n_bytes": 6545418,
+      "ceiling_bytes": 9818127
     }
   ]
 }

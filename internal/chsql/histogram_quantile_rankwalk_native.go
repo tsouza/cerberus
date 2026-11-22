@@ -55,8 +55,19 @@ func (e *emitter) emitHistogramQuantileRankWalkNative(h *chplan.HistogramQuantil
 
 // Duplicate finite bounds and cumulative monotonicity are handled by the same
 // preparation as the legacy implementation. ClickHouse additionally requires
-// exactly one terminal +Inf rung and a finite phi parameter in [0,1]. Preserve
-// Prometheus's empty/zero-total and phi-domain answers outside the aggregate.
+// exactly one terminal +Inf rung, a finite phi parameter in [0,1], and as many
+// counts as bounds. Preserve Prometheus's empty/zero-total and phi-domain
+// answers outside the aggregate.
+//
+// The kernel appends the +Inf rung to the bounds, and to the ladder only when
+// the ladder holds no rung past the finite bounds: whether it does is read off
+// the coalesced ladder's own length against the coalesced bounds', not off the
+// raw BucketCounts against ExplicitBounds. A ladder the float le pipeline
+// collapsed (no +Inf rung) carries empty BucketCounts beside its finite
+// bounds; the coalesced ladder pads it to the bounds' length, so it takes the
+// observations rung like any ladder without an overflow and keeps the two
+// arrays aligned. The empty-ladder guard's factor form evaluates the aggregate
+// on that row too, which then answers NaN (#4537).
 func histogramQuantileRankWalkNativeValueFrag(h *chplan.HistogramQuantile, helpers hqClassicHelperColumns) Frag {
 	w := newHQClassicWriters(h, helpers)
 	nan, negInf, posInf := verbatim("nan"), verbatim("-inf"), verbatim("inf")
@@ -64,7 +75,7 @@ func histogramQuantileRankWalkNativeValueFrag(h *chplan.HistogramQuantile, helpe
 	phi := Call("greatest", zero, Call("least", one, If(Call("isNaN", w.phi()), zero, w.phi())))
 	aggregate := Call("concat", InlineLit("quantilePrometheusHistogram("), Call("toString", phi), InlineLit(")"))
 	bounds := Call("arrayPushBack", w.bounds(), posInf)
-	counts := If(Neq(w.cumCount(), w.boundCount()), w.cum(), Call("arrayPushBack", w.cum(), w.observations()))
+	counts := If(Gt(Call("length", w.cum()), Call("length", w.bounds())), w.cum(), Call("arrayPushBack", w.cum(), w.observations()))
 	value := Call("arrayReduce", aggregate, bounds, counts)
 	core := w.emptyLadderNaN(nan, If(Lt(w.phi(), zero), negInf, If(Gt(w.phi(), one), posInf, value)))
 	if h.PhiExpr != nil {

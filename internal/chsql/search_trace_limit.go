@@ -70,11 +70,13 @@ import (
 //
 // Under SchemaStrategies.SearchDrainScalarTraces (chopt's
 // search_drain_scalar_traces) that statement binds the chosen traces once as
-// a scalar and tests the scalar instead of the set (scalarTracesDrain):
+// a scalar and tests the scalar instead of the ranking (scalarTracesDrain):
 //
 //	WITH (SELECT groupArray(`<trace-id role>`) FROM (<top-N>)) AS _cerberus_search_traces
 //	SELECT <columns> FROM <table>
-//	PREWHERE <input PREWHERE> AND has(_cerberus_search_traces, `<trace-id role>`)
+//	PREWHERE <input PREWHERE>
+//	  AND `<trace-id role>` IN (SELECT arrayJoin(_cerberus_search_traces))
+//	  AND indexHint(has(_cerberus_search_traces, `<trace-id role>`))
 //	WHERE <input WHERE>
 //
 // Without a Rank, under SchemaStrategies.SearchDrainTraceBounds (chopt's
@@ -87,8 +89,17 @@ import (
 //	SELECT <columns> FROM <table>
 //	PREWHERE <input PREWHERE> AND `<timestamp role>` >= _cerberus_search_traces.2
 //	  AND `<timestamp role>` <= _cerberus_search_traces.3
-//	  AND has(_cerberus_search_traces.1, `<trace-id role>`)
+//	  AND `<trace-id role>` IN (SELECT arrayJoin(_cerberus_search_traces.1))
+//	  AND indexHint(has(_cerberus_search_traces.1, `<trace-id role>`))
 //	WHERE <input WHERE>
+//
+// Both test a row's trace id with scalarTraceMembership: a set the server
+// builds once from the scalar's ids and looks each row up in, and has() over
+// the same ids inside indexHint, which the server reads for skipping granules
+// by the trace id skip index and never evaluates per row. has() evaluated per
+// row scans every chosen id for every row the span filter keeps, a cost that
+// grows with the limit; the set's lookup does not. The set reads the ids from
+// the scalar rather than from the ranking, so the ranking runs once.
 //
 // Without a Rank the ranking reads the drain's own input, so every row the
 // drain returns is a row of a chosen trace the ranking read, between that
@@ -194,14 +205,28 @@ const (
 // the Filter(Scan) statement drain (prewhereScan) under
 // SchemaStrategies.SearchDrainScalarTraces: drain with the limit traces
 // rank chooses bound once as the scalar searchTracesAlias and tested with
-// has() in its PREWHERE.
+// scalarTraceMembership in its PREWHERE.
 func scalarTracesDrain(drain *QueryBuilder, limit int64, rank Frag, traceID, timestamp string) *QueryBuilder {
 	chosen := NewQuery().
 		Select(Call("groupArray", Col(traceID))).
 		From(topNTraces(rank, limit, traceID, timestamp).Frag())
 	return drain.
 		WithScalar(searchTracesAlias, chosen).
-		Prewhere(Call("has", BareIdent(searchTracesAlias), Col(traceID)))
+		Prewhere(scalarTraceMembership(BareIdent(searchTracesAlias), traceID)...)
+}
+
+// scalarTraceMembership is a scalar drain's test that a row's trace is a
+// chosen one, given the scalar's array of chosen trace ids: the trace id IN a
+// set built from that array, then indexHint(has(ids, trace id)). The set is
+// the row test, a hash lookup per row. indexHint hands has() to the index
+// analysis alone, which skips the granules the trace id skip index rules out
+// for the constant ids; evaluated per row, has() would scan every id for every
+// row.
+func scalarTraceMembership(ids Frag, traceID string) []Frag {
+	return []Frag{
+		InSubquery(Col(traceID), NewQuery().Select(Call("arrayJoin", ids)).Frag()),
+		Call("indexHint", Call("has", ids, Col(traceID))),
+	}
 }
 
 // traceBoundsDrain renders the drain of a SearchTraceLimit with no Rank whose
@@ -209,7 +234,7 @@ func scalarTracesDrain(drain *QueryBuilder, limit int64, rank Frag, traceID, tim
 // SchemaStrategies.SearchDrainTraceBounds: drain with the limit traces rank
 // chooses and the earliest and latest timestamp of their rows bound once as
 // the scalar tuple searchTracesAlias, and its PREWHERE keeping the rows
-// between those timestamps whose trace is a chosen one.
+// between those timestamps whose trace is a chosen one (scalarTraceMembership).
 func traceBoundsDrain(drain *QueryBuilder, limit int64, rank Frag, traceID, timestamp string) *QueryBuilder {
 	ranked := topNTraces(rank, limit, traceID, timestamp,
 		As(Call("min", Col(timestamp)), searchTraceStartAlias),
@@ -223,8 +248,8 @@ func traceBoundsDrain(drain *QueryBuilder, limit int64, rank Frag, traceID, time
 		Prewhere(
 			Gte(Col(timestamp), TupleIndex(scalar, searchTracesStartField)),
 			Lte(Col(timestamp), TupleIndex(scalar, searchTracesEndField)),
-			Call("has", TupleIndex(scalar, searchTracesIDsField), Col(traceID)),
-		)
+		).
+		Prewhere(scalarTraceMembership(TupleIndex(scalar, searchTracesIDsField), traceID)...)
 }
 
 // prewhereScan renders a SearchTraceLimit's input as the drain's own

@@ -18,9 +18,10 @@ import (
 )
 
 // Profiler holds a chDB session shared across fixtures. The session is a
-// process-global singleton in chdb-go, so the profiler seeds each
-// fixture with CREATE OR REPLACE TABLE (via spec.PromoteCreateTable) to
-// stay idempotent across fixtures that reuse table names.
+// process-global singleton in chdb-go, so [Profiler.ProfileFixture] runs
+// each fixture inside a database private to it (see
+// [Profiler.enterFixtureDatabase]): a table one fixture seeds is gone
+// before the next fixture starts.
 type Profiler struct {
 	sess *chdb.Session
 }
@@ -116,11 +117,23 @@ func (p *Profiler) explainPlan(query string) (string, error) {
 // nightly lane can report profiling gaps instead of dropping fixtures.
 //
 // fixtureID is the "<head>/<name>" identity used in Record.Fixture.
-func (p *Profiler) ProfileFixture(fixtureID string, prep *spec.PreparedRoundTrip) Record {
-	rec := Record{Fixture: fixtureID}
+func (p *Profiler) ProfileFixture(fixtureID string, prep *spec.PreparedRoundTrip) (rec Record) {
+	rec = Record{Fixture: fixtureID}
 
-	// Seed: split + promote-to-OR-REPLACE exactly as applySeed does, so
-	// re-seeding across fixtures that share a table name is idempotent.
+	leave, err := p.enterFixtureDatabase()
+	if err != nil {
+		rec.Err = fmt.Sprintf("isolate: %v", err)
+		return rec
+	}
+	defer func() {
+		if err := leave(); err != nil && rec.Err == "" {
+			rec.Err = fmt.Sprintf("isolate: %v", err)
+		}
+	}()
+
+	// Seed: split + promote-to-OR-REPLACE exactly as applySeed does. The
+	// fixture database is fresh, so the promotion only matters for a seed
+	// that creates the same table twice.
 	for _, stmt := range testsql.SplitStatements(prep.Seed) {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
@@ -220,6 +233,49 @@ func (p *Profiler) ProfileFixture(fixtureID string, prep *spec.PreparedRoundTrip
 	}
 
 	return rec
+}
+
+// profileFixtureDatabase is the database [Profiler.ProfileFixture] seeds and
+// measures one fixture in; profileDefaultDatabase is the one the session
+// returns to before dropping it.
+const (
+	profileFixtureDatabase = "cerberus_profile_fixture"
+	profileDefaultDatabase = "default"
+)
+
+// enterFixtureDatabase switches the shared session to a freshly created
+// [profileFixtureDatabase] and returns the call that leaves and drops it.
+//
+// A fixture's scan_rows must be a function of its own seed and SQL. A
+// `merge(currentDatabase(), '<regex>')` fan-out resolves against every
+// table that exists in the current database, so in a session shared across
+// fixtures it also reads the rows an earlier fixture seeded into an arm
+// this fixture does not create. Which fixture ran earlier depends on how
+// the corpus is partitioned across processes, so the same fixture measured
+// different scan_rows under the ratchet's partition and under the baseline
+// regeneration's. The round-trip runner isolates each fixture the same way
+// (test/spec/runner_chdb.go, OpenChDB).
+func (p *Profiler) enterFixtureDatabase() (leave func() error, err error) {
+	for _, stmt := range []string{
+		"DROP DATABASE IF EXISTS " + profileFixtureDatabase,
+		"CREATE DATABASE " + profileFixtureDatabase,
+		"USE " + profileFixtureDatabase,
+	} {
+		if err := p.exec(stmt); err != nil {
+			return nil, fmt.Errorf("%s: %w", stmt, err)
+		}
+	}
+	return func() error {
+		// Leave before dropping: dropping the current database leaves the
+		// session pointing at one that no longer exists.
+		if err := p.exec("USE " + profileDefaultDatabase); err != nil {
+			return fmt.Errorf("restore %s database: %w", profileDefaultDatabase, err)
+		}
+		if err := p.exec("DROP DATABASE IF EXISTS " + profileFixtureDatabase); err != nil {
+			return fmt.Errorf("drop %s: %w", profileFixtureDatabase, err)
+		}
+		return nil
+	}, nil
 }
 
 // parseSingleCount pulls the single count() value out of a chDB JSON

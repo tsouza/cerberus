@@ -89,6 +89,50 @@ SELECT id, v FROM (SELECT id, vals FROM arr) ARRAY JOIN vals AS v
 	}
 }
 
+// TestProfileFixture_IsolatedFromEarlierFixture profiles a fixture that
+// seeds one arm of a merge() fan-out, then a fixture whose SQL scans both
+// arms but seeds only the other, and asserts the second fixture's
+// scan_rows counts its own seed alone. In a session shared across fixtures
+// the first fixture's rows would answer the second's fan-out too.
+func TestProfileFixture_IsolatedFromEarlierFixture(t *testing.T) {
+	const earlier = `-- seed --
+CREATE TABLE iso_sum (a UInt64) ENGINE = MergeTree ORDER BY a;
+INSERT INTO iso_sum SELECT number FROM numbers(10);
+-- expected_rows --
+[]
+-- sql --
+SELECT a FROM (SELECT a FROM iso_sum)
+`
+	const later = `-- seed --
+CREATE TABLE iso_gauge (a UInt64) ENGINE = MergeTree ORDER BY a;
+INSERT INTO iso_gauge VALUES (1), (2);
+-- expected_rows --
+[]
+-- sql --
+SELECT a FROM (SELECT a FROM merge(currentDatabase(), '^iso_(gauge|sum)$'))
+`
+	earlierPrep := writeFixture(t, earlier)
+	laterPrep := writeFixture(t, later)
+
+	p, err := NewProfiler()
+	if err != nil {
+		t.Fatalf("NewProfiler: %v", err)
+	}
+	defer p.Close()
+
+	if rec := p.ProfileFixture("test/iso_earlier", earlierPrep); rec.Err != "" {
+		t.Fatalf("profile earlier fixture: %s", rec.Err)
+	}
+	rec := p.ProfileFixture("test/iso_later", laterPrep)
+	if rec.Err != "" {
+		t.Fatalf("profile later fixture: %s", rec.Err)
+	}
+	const laterSeedRows = 2
+	if rec.ScanRows != laterSeedRows {
+		t.Errorf("ScanRows = %d, want %d: the fan-out read rows another fixture seeded", rec.ScanRows, laterSeedRows)
+	}
+}
+
 // TestProfileFixture_NoFanOut profiles a straight filtered scan and
 // asserts fan_factor == 1 and no fan-out operators.
 func TestProfileFixture_NoFanOut(t *testing.T) {

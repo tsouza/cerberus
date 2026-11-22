@@ -32,12 +32,13 @@ const (
 	classicLayoutSpacing = 15 * time.Second
 )
 
-// The two-level threshold setting, and the value under which the same
-// statement aggregates single-level: 0 unsets the byte threshold, and the
-// layout's series stay under the row threshold.
+// The two-level threshold setting, the value the layout is stamped with
+// (8 MiB, which this seed's aggregate state passes), and the value under
+// which the same statement aggregates single-level: 0 unsets the byte
+// threshold, and the layout's series stay under the row threshold.
 const (
 	classicLayoutTwoLevelSetting = "group_by_two_level_threshold_bytes"
-	classicLayoutTwoLevelStamp   = "1"
+	classicLayoutTwoLevelStamp   = "8388608"
 	classicLayoutSingleLevel     = 0
 )
 

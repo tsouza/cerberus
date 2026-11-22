@@ -608,6 +608,11 @@ func startSentinelLane(ctx context.Context, t *testing.T, floor ServerFloor, sta
 			t.Fatalf("seed classic histogram: %v", err)
 		}
 		t.Logf("seeded classic histogram: %d rows, %d series", histRows, ClassicBucketLayoutSeriesCount)
+		smallRows, err := SeedClassicHistogram(ctx, conn, ClassicBucketLayoutSmallMetric, ClassicBucketLayoutSmallSeriesCount, ClassicBucketLayoutSmallBoundCount, end)
+		if err != nil {
+			t.Fatalf("seed small classic histogram: %v", err)
+		}
+		t.Logf("seeded small classic histogram: %d rows, %d series", smallRows, ClassicBucketLayoutSmallSeriesCount)
 
 		tables = []string{"otel_metrics_histogram"}
 	}

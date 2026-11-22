@@ -3747,11 +3747,14 @@ func (s *QueryBuilder) With(name string, body Frag) *QueryBuilder {
 // form dedupes the work.
 //
 // The natural payload is an array: `(SELECT groupArray(TraceId) FROM (<top-N
-// traces>)) AS ids`, tested with `has(ids, TraceId)`. `TraceId IN ids` is NOT
-// available — ClickHouse rejects a scalar array as an IN operand ("Function
-// 'in' is supported only if second argument is constant or table
-// expression") — while `has` against a bound array still drives the spans
-// table's TraceId bloom-filter skip index, so granule pruning is preserved.
+// traces>)) AS ids`, tested per row with `TraceId IN (SELECT arrayJoin(ids))`,
+// a set the server builds once from the bound array, beside
+// `indexHint(has(ids, TraceId))`, which drives the spans table's TraceId
+// bloom-filter skip index without being evaluated per row. `TraceId IN ids`
+// is not that set: ClickHouse 24.8 rejects a scalar array as an IN operand
+// ("Function 'in' is supported only if second argument is constant or table
+// expression"), and `has(ids, TraceId)` tested per row scans the whole array
+// for every row.
 //
 // body is a QueryBuilder (not a Frag) so this method owns the surrounding
 // parens, matching WithRecursive's anchor/recursive children; passing a nil

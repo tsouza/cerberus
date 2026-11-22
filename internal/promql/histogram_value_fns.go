@@ -116,10 +116,15 @@ func lowerHistogramValueFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 		}
 
 		// Float pipelines (aggregations, arithmetic, vector(), …)
-		// provably carry no native-histogram samples; the reference
-		// skips float samples, so fold to the empty vector while
-		// preserving the argument's own lowering errors
-		// (emptyVectorFold). A mixed
+		// provably carry no native-histogram samples. The reference's
+		// histogram_count / histogram_sum / histogram_avg /
+		// histogram_stddev / histogram_stdvar skip float samples, so
+		// fold to the empty vector while preserving the argument's own
+		// lowering errors (emptyVectorFold). The pinned reference's
+		// histogram_fraction instead reads a float pipeline's classic
+		// `le` buckets (BucketFraction); folding it to the empty vector
+		// is cerberus's current behaviour, open as cerberus issue
+		// #4215. A mixed
 		// relation an intermediate wrapper already lowered (cerberus
 		// issue #3562: `histogram_count(sort_by_label(h or f, l))`) is
 		// not a float pipeline: its histogram partition is read exactly

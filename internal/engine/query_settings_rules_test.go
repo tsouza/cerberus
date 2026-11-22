@@ -1082,3 +1082,36 @@ func TestApplyHistogramAdaptiveAggregatorOff_DisabledStampsNothing(t *testing.T)
 		t.Errorf("feature disabled: enable_adaptive_aggregator = %v; want absent", got)
 	}
 }
+
+// TestClassicBucketLayoutTwoLevelBound_YieldsToTheExpHistogramWindow pins
+// which threshold a statement carries when its plan holds both a classic-bucket
+// stale-marker layout and a windowed exponential-histogram grouping: the
+// setting is one per statement, so the layout's rule stamps nothing there and
+// the window's 1-byte stamp stands, while a layout on its own keeps its own
+// threshold whichever exp-histogram flag is set.
+func TestClassicBucketLayoutTwoLevelBound_YieldsToTheExpHistogramWindow(t *testing.T) {
+	t.Parallel()
+	both := &chplan.VectorJoin{Left: classicBucketLayoutPlan(), Right: expHistogramWindowPlan()}
+	cases := []struct {
+		name         string
+		plan         chplan.Node
+		expHistogram bool
+		want         any
+	}{
+		{"both shapes, both rules", both, true, expHistogramTwoLevelThresholdBytes},
+		{"both shapes, layout rule only", both, false, classicBucketLayoutTwoLevelThresholdBytes},
+		{"layout alone, both rules", classicBucketLayoutPlan(), true, classicBucketLayoutTwoLevelThresholdBytes},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := shapeOf(tc.plan)
+			ctx := applyExpHistogramTwoLevelBound(context.Background(), f, tc.expHistogram)
+			ctx = applyClassicBucketLayoutTwoLevelBound(ctx, f, true, tc.expHistogram)
+			got, ok := chclient.QuerySettingsFromContext(ctx)[settingGroupByTwoLevelThresholdBytes]
+			if !ok || fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Fatalf("%s = %v (stamped %v); want %v", settingGroupByTwoLevelThresholdBytes, got, ok, tc.want)
+			}
+		})
+	}
+}

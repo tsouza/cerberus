@@ -16,10 +16,11 @@ import (
 
 const (
 	settingTwoLevelThresholdBytes = "group_by_two_level_threshold_bytes"
-	// twoLevelAtOnce is the literal value the #4519 measurement validated,
-	// written out so a rule that stamped 0 (which disables the threshold)
-	// would fail.
-	twoLevelAtOnce = 1
+	// classicLayoutTwoLevelBytes is the literal threshold the replays
+	// validated (8 MiB), written out so a rule that stamped 0 (which disables
+	// the threshold) or 1 (which converts a small metric's aggregate at once,
+	// the fixed cost #4532 measured) would fail.
+	classicLayoutTwoLevelBytes = 8388608
 )
 
 var (
@@ -83,8 +84,8 @@ func TestClassicBucketLayoutTwoLevel_RealLowerings(t *testing.T) {
 				}
 				t.Run(server.String()+"/"+tc.name+"/"+mode, func(t *testing.T) {
 					got := engine.SharedQuerySettingsForTest(rules, lowerWithStaleMarkers(t, lowerers, tc.query, rangeQuery))[settingTwoLevelThresholdBytes]
-					if tc.stamped && got != twoLevelAtOnce {
-						t.Errorf("%s = %v; want %v", settingTwoLevelThresholdBytes, got, twoLevelAtOnce)
+					if tc.stamped && got != classicLayoutTwoLevelBytes {
+						t.Errorf("%s = %v; want %v", settingTwoLevelThresholdBytes, got, classicLayoutTwoLevelBytes)
 					}
 					if !tc.stamped && got != nil {
 						t.Errorf("%s = %v; want absent", settingTwoLevelThresholdBytes, got)
@@ -96,9 +97,10 @@ func TestClassicBucketLayoutTwoLevel_RealLowerings(t *testing.T) {
 }
 
 // TestClassicBucketLayoutTwoLevel_OutsideTheAutoRangeStampsNothing pins the
-// auto range end to end: on 26.8, whose aggregator already spreads the
-// layout's output, and on 24.8, below the measured lines, the auto selection
-// leaves the feature out and a bucket selection carries no stamp.
+// auto range end to end: on 26.8, where the stamp still cut the layout's peak
+// but the instant selection ran slower stamped (264 -> 317 ms on 26.8.36.3),
+// and on 24.8, below the measured lines, the auto selection leaves the
+// feature out and a bucket selection carries no stamp.
 func TestClassicBucketLayoutTwoLevel_OutsideTheAutoRangeStampsNothing(t *testing.T) {
 	for _, server := range []chopt.Version{adaptiveServer268, layoutServer248} {
 		lowerers, rules := adaptiveDispatch(t, server)

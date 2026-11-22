@@ -115,8 +115,8 @@ func TestSearchTraceLimitReadsNoMoreThanTheUnboundedSearch(t *testing.T) {
 		`{ kind = server }`,
 	} {
 		t.Run(query, func(t *testing.T) {
-			limited := searchTraceLimitRun(ctx, t, s, h, query, searchTraceLimitWindowAll, true)
-			unlimited := searchTraceLimitRun(ctx, t, s, h, query, searchTraceLimitWindowAll, false)
+			limited := searchTraceLimitRun(ctx, t, s, h, query, searchTraceLimitWindowAll, searchTraceLimitLimit, true)
+			unlimited := searchTraceLimitRun(ctx, t, s, h, query, searchTraceLimitWindowAll, searchTraceLimitLimit, false)
 			t.Logf("%s: limited %d bytes, unlimited %d", s.version, limited.readBytes, unlimited.readBytes)
 			if limited.readBytes > unlimited.readBytes {
 				t.Errorf("the limited search read %d bytes, %d more than the unlimited one; want no more\nlimited:   %s\nunlimited: %s",
@@ -203,13 +203,7 @@ func TestSearchTraceLimitDrainPlacementAutoReadsNoMore(t *testing.T) {
 			}
 			compareBytes := resolved != (searchTraceLimitPlacement{})
 			handler := func(p searchTraceLimitPlacement) *tempo.Handler {
-				h := tempo.New(s.client(t, adminUser, adminPassword, chclient.Config{}), schema.DefaultOTelTraces(), "", nil)
-				h.Strategies = chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{})
-				choptwire.SetServerStrategies(h.Strategies, set)
-				h.Strategies.SetSearchDrainScalarTraces(p.scalarTraces)
-				h.Strategies.SetSearchDrainTraceBounds(p.traceBounds)
-				h.Engine.SetSettings(choptwire.SettingsRules(set, schema.DefaultOTelMetrics(), schema.DefaultOTelTraces(), schema.DefaultOTelLogs()))
-				return h
+				return searchTraceLimitHandler(t, s, set, p)
 			}
 			var others []searchTraceLimitPlacement
 			for _, scalarTraces := range []bool{false, true} {
@@ -224,8 +218,8 @@ func TestSearchTraceLimitDrainPlacementAutoReadsNoMore(t *testing.T) {
 				t.Run(search.query+" "+search.window.start.Format(time.RFC3339), func(t *testing.T) {
 					run := func(p searchTraceLimitPlacement) searchTraceLimitResult {
 						h := handler(p)
-						searchTraceLimitRun(ctx, t, s, h, search.query, search.window, true)
-						return searchTraceLimitRun(ctx, t, s, h, search.query, search.window, true)
+						searchTraceLimitRun(ctx, t, s, h, search.query, search.window, searchTraceLimitLimit, true)
+						return searchTraceLimitRun(ctx, t, s, h, search.query, search.window, searchTraceLimitLimit, true)
 					}
 					got := run(resolved)
 					if len(got.traces) != searchTraceLimitLimit {
@@ -256,6 +250,107 @@ func TestSearchTraceLimitDrainPlacementAutoReadsNoMore(t *testing.T) {
 						t.Fatalf("every drain placement ran the resolved placement's statement:\n%s", got.statement)
 					}
 				})
+			}
+		})
+	}
+}
+
+// searchTraceLimitCPUImage is the server the scalar drains' CPU sentinel runs
+// on: inside the auto range of chopt's search_drain_scalar_traces and
+// search_drain_trace_bounds, the build the drains were measured on.
+const searchTraceLimitCPUImage = "clickhouse/clickhouse-server:26.3.17.56-alpine"
+
+// searchTraceLimitCPURuns is how many measured runs of each placement the CPU
+// sentinel takes the median of, after one warm-up run.
+const searchTraceLimitCPURuns = 3
+
+// maxScalarDrainCPURatio bounds the CPU time of a search under the scalar
+// drains auto resolves against the same search under the GLOBAL IN set drain.
+// On 26.3.17.56, at the largest limit, a scalar drain testing has() per row
+// spent 29 times the set drain's CPU on `{ kind = client }` (13.8 s against
+// 0.47 s); testing a set built from the scalar, 1.2 times. The bound sits
+// between the two with room for a loaded host.
+const maxScalarDrainCPURatio = 2
+
+// searchTraceLimitCPUSearches are the searches the CPU sentinel runs: a plain
+// span search, which drains through the scalar ids, and a span filter ranked
+// by a by() stage, which drains through the scalar with the timestamp bounds.
+// The plain search keeps the four client spans of each seeded trace. The by()
+// search keeps each trace's root span alone: a by() row names its trace with
+// any(SpanName), which over several spans picks one in the order the scan
+// delivers them, so two placements could name the same trace differently
+// (the wire answer names the root through its own lookup, #1481).
+var searchTraceLimitCPUSearches = []string{
+	`{ kind = client }`,
+	`{ kind = server } | by(name)`,
+}
+
+// TestSearchTraceLimitScalarDrainCPUAtMaxLimit is the CPU sentinel of the
+// scalar drains: on a server where auto resolves them, a search at
+// tempo.MaxSearchLimit spends no more than maxScalarDrainCPURatio times the CPU
+// of the GLOBAL IN set drain, reads no more bytes, and answers the same rows.
+// A drain that tests each row's trace id with has() over the chosen ids scans
+// all of them for every row the span filter keeps, a cost that grows with the
+// limit; this sentinel fails when that placement returns. Each placement runs
+// once to warm the caches and searchTraceLimitCPURuns times measured, and the
+// medians are compared.
+func TestSearchTraceLimitScalarDrainCPUAtMaxLimit(t *testing.T) {
+	ctx := context.Background()
+	s := startServer(ctx, t, searchTraceLimitCPUImage)
+	if err := ddl.Apply(ctx, s.admin.Conn(), []ddl.Signal{ddl.Traces}); err != nil {
+		t.Fatalf("apply the traces schema: %v", err)
+	}
+	seedSearchTraceLimit(ctx, t, s)
+
+	set, _, err := chopt.Resolve(chopt.Config{Optimizations: chopt.SelectionAuto, Mode: chopt.Permissive}, s.version)
+	if err != nil {
+		t.Fatalf("resolve the optimizations of %s: %v", s.version, err)
+	}
+	resolved := searchTraceLimitPlacement{set.Has(chopt.FeatureSearchDrainScalarTraces), set.Has(chopt.FeatureSearchDrainTraceBounds)}
+	if want := (searchTraceLimitPlacement{scalarTraces: true, traceBounds: true}); resolved != want {
+		t.Fatalf("auto resolves the drain placement %+v on %s; want %+v, or the sentinel measures no scalar drain", resolved, s.version, want)
+	}
+	scalar := searchTraceLimitHandler(t, s, set, resolved)
+	globalIn := searchTraceLimitHandler(t, s, set, searchTraceLimitPlacement{})
+
+	for _, query := range searchTraceLimitCPUSearches {
+		t.Run(query, func(t *testing.T) {
+			measure := func(h *tempo.Handler) (searchTraceLimitResult, uint64) {
+				searchTraceLimitRun(ctx, t, s, h, query, searchTraceLimitWindowAll, tempo.MaxSearchLimit, true)
+				var last searchTraceLimitResult
+				cpu := make([]uint64, 0, searchTraceLimitCPURuns)
+				for range searchTraceLimitCPURuns {
+					last = searchTraceLimitRun(ctx, t, s, h, query, searchTraceLimitWindowAll, tempo.MaxSearchLimit, true)
+					cpu = append(cpu, last.cpuMicros)
+				}
+				slices.Sort(cpu)
+				return last, cpu[len(cpu)/2]
+			}
+			got, gotCPU := measure(scalar)
+			ref, refCPU := measure(globalIn)
+			t.Logf("%s at limit %d: scalar drain %d µs CPU, %d bytes; set drain %d µs CPU, %d bytes",
+				s.version, tempo.MaxSearchLimit, gotCPU, got.readBytes, refCPU, ref.readBytes)
+			if got.statement == ref.statement {
+				t.Fatalf("the scalar and set placements ran the same statement:\n%s", got.statement)
+			}
+			if len(got.traces) != tempo.MaxSearchLimit {
+				t.Fatalf("the scalar drain answers %d traces; want %d", len(got.traces), tempo.MaxSearchLimit)
+			}
+			if gotCPU > refCPU*maxScalarDrainCPURatio {
+				t.Errorf("the scalar drain spent %d µs CPU, more than %d times the set drain's %d µs\nscalar: %s",
+					gotCPU, maxScalarDrainCPURatio, refCPU, got.statement)
+			}
+			if got.readBytes > ref.readBytes {
+				t.Errorf("the scalar drain read %d bytes, %d more than the set drain\nscalar: %s\nset:    %s",
+					got.readBytes, got.readBytes-ref.readBytes, got.statement, ref.statement)
+			}
+			if len(got.traces) != len(ref.traces) {
+				t.Fatalf("the scalar drain answers %d traces, the set drain %d", len(got.traces), len(ref.traces))
+			}
+			for id, trace := range ref.traces {
+				if !slices.Equal(got.traces[id].rows, trace.rows) {
+					t.Errorf("trace %s: the scalar drain answers %v; the set drain %v", id, got.traces[id].rows, trace.rows)
+				}
 			}
 		})
 	}
@@ -319,24 +414,38 @@ type searchTraceLimitTrace struct {
 }
 
 // searchTraceLimitResult is one search: its rows per trace ID, and the
-// statement the server finished with what it read.
+// statement the server finished with what it read and the CPU time it spent.
 type searchTraceLimitResult struct {
 	traces    map[string]searchTraceLimitTrace
 	statement string
 	readBytes uint64
+	cpuMicros uint64
 }
 
-// searchTraceLimitRun searches query over window, with the search trace
-// limit when limited.
-func searchTraceLimitRun(ctx context.Context, t *testing.T, s *server, h *tempo.Handler, query string, window searchTraceLimitWindow, limited bool) searchTraceLimitResult {
+// searchTraceLimitHandler is a search handler for the optimizations set
+// resolves, with the drain placement p.
+func searchTraceLimitHandler(t *testing.T, s *server, set chopt.EnabledSet, p searchTraceLimitPlacement) *tempo.Handler {
+	t.Helper()
+	h := tempo.New(s.client(t, adminUser, adminPassword, chclient.Config{}), schema.DefaultOTelTraces(), "", nil)
+	h.Strategies = chsql.NewSchemaStrategiesCell(chsql.ResolvedSchemaStrategies{})
+	choptwire.SetServerStrategies(h.Strategies, set)
+	h.Strategies.SetSearchDrainScalarTraces(p.scalarTraces)
+	h.Strategies.SetSearchDrainTraceBounds(p.traceBounds)
+	h.Engine.SetSettings(choptwire.SettingsRules(set, schema.DefaultOTelMetrics(), schema.DefaultOTelTraces(), schema.DefaultOTelLogs()))
+	return h
+}
+
+// searchTraceLimitRun searches query over window for limit traces, with the
+// search trace limit when limited.
+func searchTraceLimitRun(ctx context.Context, t *testing.T, s *server, h *tempo.Handler, query string, window searchTraceLimitWindow, limit int, limited bool) searchTraceLimitResult {
 	t.Helper()
 	qid := "search-trace-limit-" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	rctx := chclient.WithQueryID(ctx, qid)
 	if limited {
-		rctx = traceql_lower.WithSearchTraceLimit(rctx, searchTraceLimitLimit)
+		rctx = traceql_lower.WithSearchTraceLimit(rctx, limit)
 	}
 	rctx = traceql_lower.WithSearchWindow(rctx, window.start, window.end)
-	res, err := h.SearchResult(rctx, query, searchTraceLimitLimit)
+	res, err := h.SearchResult(rctx, query, limit)
 	if err != nil {
 		t.Fatalf("search %s (limited %v): %v", query, limited, err)
 	}
@@ -359,8 +468,9 @@ func searchTraceLimitRun(ctx context.Context, t *testing.T, s *server, h *tempo.
 	}
 	s.flushLogs(ctx, t)
 	if err := s.admin.Conn().QueryRow(ctx,
-		"SELECT sum(read_bytes), arrayStringConcat(groupArray(query), '\n') FROM system.query_log WHERE type = 'QueryFinish' AND query_id = ?", qid).
-		Scan(&run.readBytes, &run.statement); err != nil {
+		"SELECT sum(read_bytes), sum(ProfileEvents['UserTimeMicroseconds'] + ProfileEvents['SystemTimeMicroseconds']), "+
+			"arrayStringConcat(groupArray(query), '\n') FROM system.query_log WHERE type = 'QueryFinish' AND query_id = ?", qid).
+		Scan(&run.readBytes, &run.cpuMicros, &run.statement); err != nil {
 		t.Fatalf("read query_log for %s: %v", qid, err)
 	}
 	return run

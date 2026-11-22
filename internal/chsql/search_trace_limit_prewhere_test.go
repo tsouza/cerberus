@@ -86,16 +86,20 @@ const (
 	searchTraceLimitScalarIDs     = "WITH (SELECT groupArray(`TraceId`) FROM (SELECT `TraceId` FROM (SELECT "
 	searchTraceLimitScalarRanking = "GROUP BY `TraceId` ORDER BY min(`Timestamp`) DESC, `TraceId` LIMIT 7)) AS _cerberus_search_traces SELECT `Duration`, "
 	searchTraceLimitPrewhereStart = "FROM `otel_traces` PREWHERE (`SpanKind` = ?) AND `Timestamp` >= _cerberus_search_traces.2 AND `Timestamp` <= _cerberus_search_traces.3 " +
-		"AND has(_cerberus_search_traces.1, `TraceId`) WHERE (`StatusCode` = ?)"
-	searchTraceLimitPrewhereIDs = "FROM `otel_traces` PREWHERE (`SpanKind` = ?) AND has(_cerberus_search_traces, `TraceId`) WHERE (`StatusCode` = ?)"
+		"AND `TraceId` IN (SELECT arrayJoin(_cerberus_search_traces.1)) AND indexHint(has(_cerberus_search_traces.1, `TraceId`)) WHERE (`StatusCode` = ?)"
+	searchTraceLimitPrewhereIDs = "FROM `otel_traces` PREWHERE (`SpanKind` = ?) AND `TraceId` IN (SELECT arrayJoin(_cerberus_search_traces)) " +
+		"AND indexHint(has(_cerberus_search_traces, `TraceId`)) WHERE (`StatusCode` = ?)"
 )
 
 // TestEmitSearchTraceLimit_ScalarDrainsTestABoundScalarInPrewhere pins the
 // drains SearchDrainScalarTraces and SearchDrainTraceBounds ask for over a
 // Filter(Scan) the emitter splits itself: the chosen traces bound once as a
-// scalar ahead of the Filter(Scan) statement, and has() against that scalar
-// appended to its PREWHERE after its own conjunct, with no GLOBAL IN set and
-// no outer filter. SearchDrainTraceBounds applies to a search with no Rank
+// scalar ahead of the Filter(Scan) statement, and appended to its PREWHERE
+// after its own conjunct the trace id IN a set built from that scalar, then
+// has() against the scalar inside indexHint, which the server only reads for
+// skipping granules. There is no GLOBAL IN set over a second ranking, no outer
+// filter, and no has() a row is tested with: has() per row scans every chosen
+// id, a cost that grows with the limit. SearchDrainTraceBounds applies to a search with no Rank
 // only, whatever SearchDrainScalarTraces asks for: its scalar also carries
 // the chosen traces' first and last timestamp, and the PREWHERE keeps the
 // rows between them before it tests the trace id. A search with a Rank, whose window is
@@ -130,6 +134,9 @@ func TestEmitSearchTraceLimit_ScalarDrainsTestABoundScalarInPrewhere(t *testing.
 			}
 			if strings.Contains(sql, "GLOBAL IN") || strings.Contains(sql, "s.*") {
 				t.Fatalf("want neither a GLOBAL IN set nor an outer filter:\n%s", sql)
+			}
+			if strings.Count(sql, "has(") != strings.Count(sql, "indexHint(has(") {
+				t.Fatalf("want has() over the chosen traces only inside indexHint, never tested per row:\n%s", sql)
 			}
 		})
 	}
