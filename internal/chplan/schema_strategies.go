@@ -87,14 +87,28 @@ type SchemaStrategies struct {
 	// orders no filter for it.
 	PrewhereInWhereOrder bool
 
-	// SearchDrainOuterFilter renders a bounded search's drain
-	// (chplan.SearchTraceLimit) as a filter over the input statement's rows,
-	// even where the emitter could test the chosen traces in the input
-	// scan's own PREWHERE (internal/chsql's search_trace_limit.go). It is
+	// SearchDrainScalarTraces drains a bounded search's chosen traces
+	// (chplan.SearchTraceLimit) from a Filter(Scan) input by binding them once
+	// as a scalar and testing that scalar in the scan's own PREWHERE, instead
+	// of a GLOBAL IN set there (internal/chsql's search_trace_limit.go). It is
 	// not a fact of the tables but of the server builds — set for every
 	// signal when the resolved optimizations include
-	// chopt.FeatureSearchDrainOuterFilter
-	// (chsql.SchemaStrategiesCell.SetSearchDrainOuterFilter). The zero value
-	// tests the chosen traces in the PREWHERE.
-	SearchDrainOuterFilter bool
+	// chopt.FeatureSearchDrainScalarTraces
+	// (chsql.SchemaStrategiesCell.SetSearchDrainScalarTraces). The zero value
+	// tests the chosen traces as a GLOBAL IN set.
+	SearchDrainScalarTraces bool
+
+	// SearchDrainTraceBounds drains a bounded search whose ranking reads the
+	// drain's own input (a chplan.SearchTraceLimit with no Rank) from a
+	// Filter(Scan) input by binding the chosen traces and the earliest and
+	// latest timestamp of their rows once as a scalar, and keeping in the
+	// scan's own PREWHERE only the rows between those timestamps whose trace
+	// is a chosen one (internal/chsql's search_trace_limit.go). It takes
+	// precedence over SearchDrainScalarTraces for such a search. It is not a
+	// fact of the tables but of the server builds — set for every signal
+	// when the resolved optimizations include
+	// chopt.FeatureSearchDrainTraceBounds
+	// (chsql.SchemaStrategiesCell.SetSearchDrainTraceBounds). The zero value
+	// bounds no timestamp.
+	SearchDrainTraceBounds bool
 }

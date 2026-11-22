@@ -453,13 +453,17 @@ func SettingsRules(set chopt.EnabledSet, metrics schema.Metrics, traces schema.T
 // chsql.SchemaStrategies.CanonicalMapTypeCast), and whether every server
 // runs a multi-step PREWHERE in WHERE order
 // (chopt.EnabledSet.PrewhereInWhereOrder,
-// chsql.SchemaStrategies.PrewhereInWhereOrder), and whether a bounded
-// search drains its chosen traces with a filter over the input statement
-// (chopt.FeatureSearchDrainOuterFilter,
-// chsql.SchemaStrategies.SearchDrainOuterFilter).
+// chsql.SchemaStrategies.PrewhereInWhereOrder), whether a bounded search
+// tests its chosen traces in the scan's PREWHERE as a scalar
+// (chopt.FeatureSearchDrainScalarTraces,
+// chsql.SchemaStrategies.SearchDrainScalarTraces), and whether one that ranks
+// the rows it drains keeps only the rows between its chosen traces' earliest
+// and latest timestamp (chopt.FeatureSearchDrainTraceBounds,
+// chsql.SchemaStrategies.SearchDrainTraceBounds).
 func SetServerStrategies(cell *chsql.SchemaStrategiesCell, set chopt.EnabledSet) {
 	cell.SetPrewhereByServer(set.Has(chopt.FeatureMoveToPrewhere))
 	cell.SetCanonicalMapTypeCast(set.Has(chopt.FeatureCanonicalMapTypeCast))
 	cell.SetPrewhereInWhereOrder(set.PrewhereInWhereOrder())
-	cell.SetSearchDrainOuterFilter(set.Has(chopt.FeatureSearchDrainOuterFilter))
+	cell.SetSearchDrainScalarTraces(set.Has(chopt.FeatureSearchDrainScalarTraces))
+	cell.SetSearchDrainTraceBounds(set.Has(chopt.FeatureSearchDrainTraceBounds))
 }

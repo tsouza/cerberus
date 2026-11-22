@@ -2375,20 +2375,46 @@ const (
 	// (Feature.AutoRange). Result-equivalent on every server.
 	FeatureCanonicalMapTypeCast = "canonical_map_type_cast"
 
-	// FeatureSearchDrainOuterFilter drains a bounded search's chosen traces
-	// (chplan.SearchTraceLimit) with a filter over the input statement's
-	// rows, SELECT s.* FROM (<input>) AS s WHERE TraceId GLOBAL IN (<top-N>),
-	// instead of the input's own Filter(Scan) statement with that membership
-	// appended to its PREWHERE (chsql.SchemaStrategies.SearchDrainOuterFilter).
-	// Outside 26.2 and 26.3 the PREWHERE placement reads the rest of a row
-	// only for the chosen traces' rows and reads fewer bytes. On 26.2 and 26.3
-	// the server does not skip granules by a PREWHERE set, so that placement
-	// reads every granule the span filter keeps and more bytes than the outer
-	// filter, whose set does skip them; auto picks the feature on those two
-	// lines (searchDrainOuterFilterAutoRange, Feature.AutoRange). Every
+	// FeatureSearchDrainScalarTraces drains a bounded search's chosen traces
+	// (chplan.SearchTraceLimit) from its Filter(Scan) input by binding them
+	// once as a scalar, WITH (SELECT groupArray(TraceId) FROM (<top-N>)) AS
+	// <alias>, and testing has(<alias>, TraceId) in that statement's PREWHERE
+	// after the span filter, instead of appending TraceId GLOBAL IN (<top-N>)
+	// there (chsql.SchemaStrategies.SearchDrainScalarTraces). On 26.2 and 26.3
+	// the server does not skip granules by the TraceId skip index for a
+	// PREWHERE set, and does for a constant, which the scalar is, so there
+	// the scalar reads fewer bytes. Elsewhere it reads no fewer, and has()
+	// scans the chosen ids for every row the span filter keeps where the set
+	// looks each one up, so auto picks the feature on 26.2 and 26.3 only
+	// (searchDrainScalarAutoRange, Feature.AutoRange). A search
+	// FeatureSearchDrainTraceBounds drains is drained that way instead. Every
 	// server runs both statements, so an explicit listing enables it
 	// anywhere. Result-equivalent.
-	FeatureSearchDrainOuterFilter = "search_drain_outer_filter"
+	FeatureSearchDrainScalarTraces = "search_drain_scalar_traces"
+
+	// FeatureSearchDrainTraceBounds drains a bounded search whose ranking
+	// reads the drain's own input (a chplan.SearchTraceLimit with no Rank:
+	// every search with a by() or coalesce() stage) from its Filter(Scan)
+	// input by binding the chosen traces and the earliest and latest
+	// Timestamp of their matching rows once as a scalar, WITH (SELECT
+	// (groupArray(TraceId), min(start), max(end)) FROM (<top-N, with each
+	// trace's min(Timestamp) as start and max(Timestamp) as end>)) AS <alias>,
+	// and appending Timestamp >= <alias>.2 AND Timestamp <= <alias>.3 AND
+	// has(<alias>.1, TraceId) to that statement's PREWHERE after the span
+	// filter (chsql.SchemaStrategies.SearchDrainTraceBounds). Every row of a
+	// chosen trace the ranking read lies between those timestamps, and the
+	// ranking picks the traces that start last, so the bounds drop the rows
+	// of the traces that started earlier, and of those after the chosen ones
+	// end, before the trace id is read. It reads fewer bytes than either the
+	// GLOBAL IN set or the scalar ids alone on every line measured, 24.8 to
+	// 26.8, but the latest timestamp adds an aggregate to every ranked
+	// trace, which raises the ranking's peak memory. Auto picks it on 26.2
+	// and 26.3 only, the lines on which the GLOBAL IN set reads more bytes
+	// than v1.24.0's drain (searchDrainScalarAutoRange, Feature.AutoRange);
+	// elsewhere a bounded search keeps the GLOBAL IN set drain. Every server
+	// runs the statement, so an explicit listing enables it anywhere.
+	// Result-equivalent.
+	FeatureSearchDrainTraceBounds = "search_drain_trace_bounds"
 
 	// FeatureMergePlanFilters stamps query_plan_merge_filters=1 on a plan
 	// whose LogQL per-row stage (chplan.Project.OneScopeRows) leaves a filter
@@ -2410,11 +2436,12 @@ const (
 	FeatureMergePlanFilters = "merge_plan_filters"
 )
 
-// searchDrainOuterFilterAutoRange is the release lines on which a bounded
-// search's drain reads fewer bytes as a filter over its scan statement than
-// with the chosen traces tested in that statement's PREWHERE
-// (FeatureSearchDrainOuterFilter).
-var searchDrainOuterFilterAutoRange = VersionRange{From: Version{Major: 26, Minor: 2}, Until: Version{Major: 26, Minor: 4}}
+// searchDrainScalarAutoRange is the release lines on which a bounded
+// search's drain reads fewer bytes testing its chosen traces as a scalar in
+// the scan's PREWHERE than as a GLOBAL IN set there, and on which auto drains
+// a bounded search through a scalar (FeatureSearchDrainScalarTraces,
+// FeatureSearchDrainTraceBounds).
+var searchDrainScalarAutoRange = VersionRange{From: Version{Major: 26, Minor: 2}, Until: Version{Major: 26, Minor: 4}}
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
 // server-version gate at all (a purely client-side optimization such as
@@ -3082,14 +3109,23 @@ var registry = []Feature{
 			"< 25.1, where those functions return a type the spilled read-back rejects)",
 	},
 	{
-		ID:         FeatureSearchDrainOuterFilter,
+		ID:         FeatureSearchDrainScalarTraces,
 		MinVersion: AlwaysAvailable,
 		Stability:  Stable,
 		AutoSelect: true,
-		AutoRange:  searchDrainOuterFilterAutoRange,
-		Doc: "drain a bounded search's chosen traces with a filter over the scan statement instead of in its PREWHERE " +
-			"(result-equivalent; auto picks it on server " + searchDrainOuterFilterAutoRange.String() +
-			", where the PREWHERE placement reads more bytes)",
+		AutoRange:  searchDrainScalarAutoRange,
+		Doc: "drain a bounded search's chosen traces by testing them in the scan's PREWHERE as a scalar bound once, " +
+			"instead of as a GLOBAL IN set (result-equivalent; auto picks it on server " + searchDrainScalarAutoRange.String() + ")",
+	},
+	{
+		ID:         FeatureSearchDrainTraceBounds,
+		MinVersion: AlwaysAvailable,
+		Stability:  Stable,
+		AutoSelect: true,
+		AutoRange:  searchDrainScalarAutoRange,
+		Doc: "drain a bounded search that ranks the spans it drains by keeping, in the scan's PREWHERE, only the rows " +
+			"between its chosen traces' earliest and latest timestamp whose trace is a chosen one, all bound once as a scalar " +
+			"(result-equivalent; auto picks it on server " + searchDrainScalarAutoRange.String() + ")",
 	},
 	{
 		ID:          FeatureMergePlanFilters,

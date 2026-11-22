@@ -60,14 +60,42 @@ import (
 // matching spans over Input's wider window.
 //
 // When the input is a Filter directly above a Scan whose rendering carries a
-// PREWHERE, and the strategies do not ask for the outer filter
-// (SchemaStrategies.SearchDrainOuterFilter, chopt's
-// search_drain_outer_filter), the drain is that Filter(Scan) statement
-// itself, with the membership test appended to its PREWHERE (prewhereDrain):
+// PREWHERE, the drain is that Filter(Scan) statement itself, with the
+// chosen-traces test appended to its PREWHERE after the input's own PREWHERE
+// conjuncts (prewhereScan):
 //
 //	SELECT <columns> FROM <table>
 //	PREWHERE <input PREWHERE> AND `<trace-id role>` GLOBAL IN (<top-N>)
 //	WHERE <input WHERE>
+//
+// Under SchemaStrategies.SearchDrainScalarTraces (chopt's
+// search_drain_scalar_traces) that statement binds the chosen traces once as
+// a scalar and tests the scalar instead of the set (scalarTracesDrain):
+//
+//	WITH (SELECT groupArray(`<trace-id role>`) FROM (<top-N>)) AS _cerberus_search_traces
+//	SELECT <columns> FROM <table>
+//	PREWHERE <input PREWHERE> AND has(_cerberus_search_traces, `<trace-id role>`)
+//	WHERE <input WHERE>
+//
+// Without a Rank, under SchemaStrategies.SearchDrainTraceBounds (chopt's
+// search_drain_trace_bounds, which takes precedence), the scalar also carries
+// the earliest and latest timestamp of the chosen traces' rows, and the
+// PREWHERE keeps only the rows between them before it tests the trace id
+// (traceBoundsDrain):
+//
+//	WITH (SELECT (groupArray(`<trace-id role>`), min(start), max(end)) FROM (<top-N with each trace's first and last timestamp>)) AS _cerberus_search_traces
+//	SELECT <columns> FROM <table>
+//	PREWHERE <input PREWHERE> AND `<timestamp role>` >= _cerberus_search_traces.2
+//	  AND `<timestamp role>` <= _cerberus_search_traces.3
+//	  AND has(_cerberus_search_traces.1, `<trace-id role>`)
+//	WHERE <input WHERE>
+//
+// Without a Rank the ranking reads the drain's own input, so every row the
+// drain returns is a row of a chosen trace the ranking read, between that
+// trace's first and last timestamp: the bounds drop no row the membership
+// test keeps. With a Rank the drain reads a wider window than the ranking,
+// and a chosen trace can have rows outside its first and last one in the
+// ranking's, so no bound applies.
 //
 // Without a Rank the input is emitted twice (drain + inner ranking) by
 // design. The window predicate keeps each scan cheap, and a `WITH src AS
@@ -104,22 +132,19 @@ func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
 		return err
 	}
 
-	topN := NewQuery().
-		Select(Col(traceID)).
-		From(innerSub).
-		GroupBy(Col(traceID)).
-		OrderBy(Call("min", Col(timestamp)), true).
-		OrderBy(Col(traceID), false).
-		Limit(n.TraceLimit).
-		Frag()
-	chosen := InSubquery(Col(traceID), topN)
-
-	drain, ok, err := prewhereDrain(n.Input, chosen, e.strategies)
+	drain, ok, err := prewhereScan(n.Input, e.strategies)
 	if err != nil {
 		return err
 	}
+	if ok && n.Rank == nil && e.strategies.SearchDrainTraceBounds {
+		return e.emitSelect(traceBoundsDrain(drain, n.TraceLimit, innerSub, traceID, timestamp))
+	}
+	if ok && e.strategies.SearchDrainScalarTraces {
+		return e.emitSelect(scalarTracesDrain(drain, n.TraceLimit, innerSub, traceID, timestamp))
+	}
+	chosen := InSubquery(Col(traceID), topNTraces(innerSub, n.TraceLimit, traceID, timestamp).Frag())
 	if ok {
-		return e.emitSelect(drain)
+		return e.emitSelect(drain.Prewhere(chosen))
 	}
 
 	outerSub, err := e.subqueryFrag(n.Input)
@@ -133,20 +158,85 @@ func (e *emitter) emitSearchTraceLimit(n *chplan.SearchTraceLimit) error {
 	return e.emitSelect(sb)
 }
 
-// prewhereDrain renders the drain of a SearchTraceLimit whose input is a
-// Filter directly above a Scan that the emitter splits into PREWHERE and
-// WHERE itself: the Filter(Scan) statement with chosen, the chosen-traces
-// membership, appended to its PREWHERE after the input's own PREWHERE
+// topNTraces is the ranking subquery: the TraceLimit traces of rank whose
+// first row is newest, a tie broken by ascending trace id, selecting each
+// trace's id and then extra.
+func topNTraces(rank Frag, limit int64, traceID, timestamp string, extra ...Frag) *QueryBuilder {
+	return NewQuery().
+		Select(append([]Frag{Col(traceID)}, extra...)...).
+		From(rank).
+		GroupBy(Col(traceID)).
+		OrderBy(Call("min", Col(timestamp)), true).
+		OrderBy(Col(traceID), false).
+		Limit(limit)
+}
+
+// searchTracesAlias names the scalar a scalarTracesDrain or traceBoundsDrain
+// binds the chosen traces to.
+const searchTracesAlias = "_cerberus_search_traces"
+
+// The aliases a traceBoundsDrain's ranking gives each chosen trace's first and
+// last timestamp.
+const (
+	searchTraceStartAlias = "_cerberus_search_trace_start"
+	searchTraceEndAlias   = "_cerberus_search_trace_end"
+)
+
+// The 1-based positions of the chosen trace ids and of their rows' earliest
+// and latest timestamp in a traceBoundsDrain's scalar tuple.
+const (
+	searchTracesIDsField   = 1
+	searchTracesStartField = 2
+	searchTracesEndField   = 3
+)
+
+// scalarTracesDrain renders the drain of a SearchTraceLimit whose input is
+// the Filter(Scan) statement drain (prewhereScan) under
+// SchemaStrategies.SearchDrainScalarTraces: drain with the limit traces
+// rank chooses bound once as the scalar searchTracesAlias and tested with
+// has() in its PREWHERE.
+func scalarTracesDrain(drain *QueryBuilder, limit int64, rank Frag, traceID, timestamp string) *QueryBuilder {
+	chosen := NewQuery().
+		Select(Call("groupArray", Col(traceID))).
+		From(topNTraces(rank, limit, traceID, timestamp).Frag())
+	return drain.
+		WithScalar(searchTracesAlias, chosen).
+		Prewhere(Call("has", BareIdent(searchTracesAlias), Col(traceID)))
+}
+
+// traceBoundsDrain renders the drain of a SearchTraceLimit with no Rank whose
+// input is the Filter(Scan) statement drain (prewhereScan) under
+// SchemaStrategies.SearchDrainTraceBounds: drain with the limit traces rank
+// chooses and the earliest and latest timestamp of their rows bound once as
+// the scalar tuple searchTracesAlias, and its PREWHERE keeping the rows
+// between those timestamps whose trace is a chosen one.
+func traceBoundsDrain(drain *QueryBuilder, limit int64, rank Frag, traceID, timestamp string) *QueryBuilder {
+	ranked := topNTraces(rank, limit, traceID, timestamp,
+		As(Call("min", Col(timestamp)), searchTraceStartAlias),
+		As(Call("max", Col(timestamp)), searchTraceEndAlias))
+	chosen := NewQuery().
+		Select(Tuple(Call("groupArray", Col(traceID)), Call("min", Col(searchTraceStartAlias)), Call("max", Col(searchTraceEndAlias)))).
+		From(ranked.Frag())
+	scalar := BareIdent(searchTracesAlias)
+	return drain.
+		WithScalar(searchTracesAlias, chosen).
+		Prewhere(
+			Gte(Col(timestamp), TupleIndex(scalar, searchTracesStartField)),
+			Lte(Col(timestamp), TupleIndex(scalar, searchTracesEndField)),
+			Call("has", TupleIndex(scalar, searchTracesIDsField), Col(traceID)),
+		)
+}
+
+// prewhereScan renders a SearchTraceLimit's input as the drain's own
+// statement when it is a Filter directly above a Scan that the emitter
+// splits into PREWHERE and WHERE itself: the Filter(Scan) statement, to which
+// the caller appends the chosen-traces test after the input's own PREWHERE
 // conjuncts. ClickHouse then reads the trace-id column only for the rows
 // those conjuncts keep, and the rest of the row only for the chosen traces'
-// rows. ok is false under SearchDrainOuterFilter, for any other input, and
-// for a Filter(Scan) rendered without a PREWHERE (the server places it, or
-// no conjunct qualifies): the drain then filters the input's rows from
-// outside.
-func prewhereDrain(input chplan.Node, chosen Frag, strategies SchemaStrategies) (sb *QueryBuilder, ok bool, err error) {
-	if strategies.SearchDrainOuterFilter {
-		return nil, false, nil
-	}
+// rows. ok is false for any other input, and for a Filter(Scan) rendered
+// without a PREWHERE (the server places it, or no conjunct qualifies): the
+// drain then filters the input's rows from outside.
+func prewhereScan(input chplan.Node, strategies SchemaStrategies) (sb *QueryBuilder, ok bool, err error) {
 	f, isFilter := input.(*chplan.Filter)
 	if !isFilter {
 		return nil, false, nil
@@ -162,7 +252,7 @@ func prewhereDrain(input chplan.Node, chosen Frag, strategies SchemaStrategies) 
 	if len(sb.prewhere) == 0 {
 		return nil, false, nil
 	}
-	return sb.Prewhere(chosen), true, nil
+	return sb, true, nil
 }
 
 // sameRankDrivers checks that a SearchTraceLimit's Rank, when set, names its

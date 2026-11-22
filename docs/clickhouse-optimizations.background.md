@@ -616,24 +616,117 @@ case, but is not the safe default to design around. See
 [#2790](https://github.com/tsouza/cerberus/issues/2790) for the full numbers
 and methodology from both PRs.
 
-## Why `search_drain_outer_filter` is auto-picked on 26.2 and 26.3 only
+## Why a bounded search's drain tests a scalar, and when
 
 A bounded Tempo search ranks the matching spans' traces in a subquery and
-drains the chosen ones from the same scan. The drain can test the chosen traces
-from outside the scan statement (`SELECT s.* FROM (<scan>) AS s WHERE TraceId
-GLOBAL IN (<top-N>)`) or append that test to the scan's own `PREWHERE` after
-the span filter. On every line measured except 26.2 and 26.3, the `PREWHERE`
-placement reads the rest of a row only for the chosen traces' rows and reads
-fewer bytes. On 26.2 and 26.3 it reads more: the server does not use the
-`PREWHERE` set to skip granules, so the drain reads every granule the span
-filter keeps. With the condition cache off, on 26.3.17.56, the `PREWHERE`
-placement of `{ kind = server } | by(name)` read 2,000,000 rows (23,722,059
-bytes) and the outer filter 1,393,792 rows (21,988,586 bytes). Every 26.3 patch
-build measured behaves the same, so the range is a release-line one.
+drains the chosen ones from the same scan. Four drains were measured: an outer
+filter over the scan statement (`SELECT s.* FROM (<scan>) AS s WHERE TraceId
+GLOBAL IN (<top-N>)`, the v1.24.0 shape), the scan statement with `TraceId
+GLOBAL IN (<top-N>)` appended to its `PREWHERE`, the scan statement with the
+chosen traces bound once as a scalar and `has(<scalar>, TraceId)` in its
+`PREWHERE` (`search_drain_scalar_traces`), and that scalar carrying the chosen
+traces' earliest and latest timestamp as well, with `PREWHERE` bounding
+`Timestamp` by them before the trace id (`search_drain_trace_bounds`).
 
-Limited-search read bytes, outer filter / `PREWHERE`, on the
-`test/chserver` probe's data (200,000 traces of 5 spans, limit 20). Each cell is
-the median of 7 alternated runs:
+### The outer filter and the `PREWHERE` set
+
+Which of the first two reads less depends on the data, not only on the server.
+On 26.2 and 26.3 the server does not skip granules by the TraceId skip index
+for a `PREWHERE` set, so the `PREWHERE` placement reads the trace id of every
+granule the span filter keeps. The outer filter's set does skip them, but the
+outer filter reads every column of each granule it keeps. On the
+`test/chserver` probe's data, where a chosen trace's spans sit in few
+granules, the outer filter read less; on spans whose error rows are scattered
+through every granule, the skip index keeps every granule and the outer filter
+read the most. A main branch that picked the outer filter on 26.2 and 26.3
+read 156.8 MB for `{ status = error } | by(resource.service.name)` on
+26.3.17.56, against 124.2 MB for the `PREWHERE` set and 120.9 MB for v1.24.0
+([#4513](https://github.com/tsouza/cerberus/issues/4513)). In the
+`test/chserver` scattered seed the outer filter read 104,086,706 bytes for that
+search against 71,351,022 for the set, and 116,324,378 against 73,346,116 for
+`{ status = error }`.
+
+### The scalar ids
+
+The scalar is a constant by the time the scan runs, and 26.2 and 26.3 skip
+granules by the skip index for a constant in `PREWHERE`. It reads what a second
+statement with the chosen ids as a literal list reads, in one statement and one
+round trip: on the probe's data, with the condition cache off, `{ kind = server
+} | by(name)` read 18,816,903 bytes, against 21,988,586 for the outer filter
+and 23,722,059 for the `PREWHERE` set. From 26.4 the server skips granules
+for the set as well, and the scalar ids read the same bytes as the set; but
+`has()` scans the chosen ids for every row the span filter keeps, where the
+set looks each one up. On 26.8 a plain `{ kind = server }` search over 100,000
+traces took 117 ms under the scalar against 86 ms under the set, at the same
+72,832,267 bytes. On 24.8 the scalar ids read more than the set (28,468,699
+against 22,826,263 bytes for `{ kind = server }` on the probe's data). So
+`search_drain_scalar_traces` is auto on 26.2 and 26.3 only.
+
+`TraceId IN <scalar>` instead of `has(<scalar>, TraceId)` looks each id up
+in a set built from the constant, and reads fewer bytes still on 26.3 to 26.8
+(59,373,707 against 72,832,267 for that search). But it takes longer than
+`has()` on the probe's data (69 ms against 59 ms on 26.3), and 24.8 rejects it:
+`Function 'in' is supported only if second argument is constant or table
+expression`.
+
+### The timestamp bounds
+
+When the search ranks over the spans it drains (a search with a `by()` or
+`coalesce()` stage, whose `SearchTraceLimit` has no `Rank`), every span the
+drain keeps is a span the ranking read of a chosen trace, so it lies between
+the earliest and latest timestamp of those spans. The ranking picks the traces
+that start last, so a `PREWHERE` step on `Timestamp` drops the rows of the
+traces that started earlier before the trace id is read. It needs both bounds:
+over a window that ends before the table does, a lower bound alone keeps the
+rows after the chosen traces end, because the request window sits in the
+scan's `WHERE`. On the scattered seed over a 10-minute window in the middle of
+the data, `{ status = error } | by(resource.service.name)` read 67,296,899
+bytes with the lower bound only, against 63,057,259 with the scalar ids alone
+and 48,755,928 with both bounds.
+
+The bounds read fewer bytes than the set and the scalar ids on every line
+measured, 24.8 to 26.8. The latest timestamp costs one more `max` per ranked
+trace: over 100,000 traces, `{ kind = server } | by(name)` over 1 h peaked at
+35.8 MiB on 26.8 against 31.6 MiB for the set drain, and 60.9 MiB against
+58.9 MiB on 26.3; with the lower bound only it peaked at the set's 31.8 MiB. A
+plain span search ranks over a narrower window than it drains, so a chosen
+trace can have matching spans outside the ranked ones and no bound applies.
+
+### Why both are auto on 26.2 and 26.3 only
+
+Only on 26.2 and 26.3 does the `GLOBAL IN` set read more bytes than v1.24.0's
+drain, which is the regression the scalar drains exist to remove. From 26.4 the
+set reads fewer bytes than v1.24.0 on every search measured but one, `{ status
+= error } | by(resource.service.name)` over 10 minutes on 26.8 (116,122,991
+against 115,682,673), and the bounds' further byte saving comes with the
+ranking's extra peak memory above, so auto keeps the set drain there:
+26.4 and later run the statement they ran before the scalar drains existed,
+with the same bytes and memory. 24.8 is below the minimum supported release
+and keeps the set drain too. An operator who wants the bytes on another line
+lists either feature explicitly.
+
+### Measurements
+
+Limited-search bytes of `TestSearchTraceLimitDrainPlacementAutoReadsNoMore`'s
+searches, condition cache on and warm: `PREWHERE` set / scalar ids / scalar
+with the timestamp bounds. A and B run on the probe's seed: A is `{ kind =
+server } | by(name)`, B `{ kind = server }`, a plain span search the bounds do
+not apply to (set / scalar ids). C, D and E run on the scattered seed: C is `{
+status = error } | by(resource.service.name)` over every trace, D the same over
+a 10-minute window a sixth of the way in, and E `{ status = error }` (set /
+scalar ids):
+
+| server     | A                                    | B                       | C                                    | D                                    | E                       |
+| ---------- | ------------------------------------ | ----------------------- | ------------------------------------ | ------------------------------------ | ----------------------- |
+| 24.8.14.39 | 21,530,625 / 27,173,061 / 19,768,995 | 22,826,263 / 28,468,699 | 75,292,906 / 81,827,678 / 58,687,800 | 72,187,433 / 80,098,009 / 56,402,554 | 77,921,532 / 84,456,304 |
+| 26.3.17.56 | 23,064,645 / 18,159,489 / 16,712,355 | 24,048,667 / 19,143,511 | 71,351,022 / 65,750,138 / 51,200,361 | 69,837,339 / 63,057,259 / 48,755,928 | 73,346,116 / 67,745,232 |
+| 26.4.5.143 | 18,159,489 / 18,159,489 / 16,712,355 | 19,143,511 / 19,143,511 | 65,750,138 / 65,750,138 / 51,200,361 | 63,057,259 / 63,057,259 / 48,755,928 | 67,745,232 / 67,745,232 |
+| 26.8.36.3  | 17,689,315 / 17,689,315 / 16,404,383 | 18,673,337 / 18,673,337 | 65,750,138 / 65,750,138 / 51,200,361 | 63,057,259 / 63,057,259 / 48,755,928 | 67,745,232 / 67,745,232 |
+
+Every drain answers the same rows on every line.
+
+The outer filter against the `PREWHERE` set, on the probe's data, before the
+scalar was measured. Each cell is the median of 7 alternated runs:
 
 | server      | `{ kind = server } \| by(name)` | `{ kind = server }`     |
 | ----------- | ------------------------------- | ----------------------- |
