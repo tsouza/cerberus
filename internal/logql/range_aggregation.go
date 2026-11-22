@@ -161,7 +161,7 @@ func lowerRangeAggregation(e *syntax.RangeAggregationExpr, s schema.Logs, lc low
 		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
 		{Expr: value, Alias: rangeAggSynthValueColumn},
 	}
-	rows.gatherAtScan(logMapColumns(s), lc.PrewhereInWhereOrder, projectionExprs(projections)...)
+	rows.gatherAtScan(logMapColumns(s), lc.PrewhereInWhereOrder, projections...)
 	projected := &chplan.Project{
 		Roles:       logRoles(s),
 		Input:       rows.node,

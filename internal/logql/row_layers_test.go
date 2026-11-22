@@ -380,8 +380,11 @@ func TestRowLayersGatherAtScanLeavesWhatItMustNotMove(t *testing.T) {
 			t.Parallel()
 			scanFilter := &chplan.Filter{Input: &chplan.Scan{Table: "otel_logs"}, Predicate: eq(&chplan.ColumnRef{Name: "Job"}, "api")}
 			rows := newRowLayers(scanFilter)
-			reads := tc.build(rows)
-			rows.gatherAtScan(tc.maps, false, reads...)
+			var consumer []chplan.Projection
+			for _, read := range tc.build(rows) {
+				consumer = append(consumer, chplan.Projection{Expr: read})
+			}
+			rows.gatherAtScan(tc.maps, false, consumer...)
 
 			var moved []string
 			var scan *chplan.Filter
