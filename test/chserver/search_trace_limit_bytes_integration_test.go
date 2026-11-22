@@ -273,12 +273,16 @@ const searchTraceLimitCPURuns = 3
 const maxScalarDrainCPURatio = 2
 
 // searchTraceLimitCPUSearches are the searches the CPU sentinel runs: a plain
-// span search, which drains through the scalar ids, and the same span filter
-// ranked by a by() stage, which drains through the scalar with the timestamp
-// bounds. The span kind filter keeps four spans of each of the seeded traces.
+// span search, which drains through the scalar ids, and a span filter ranked
+// by a by() stage, which drains through the scalar with the timestamp bounds.
+// The plain search keeps the four client spans of each seeded trace. The by()
+// search keeps each trace's root span alone: a by() row names its trace with
+// any(SpanName), which over several spans picks one in the order the scan
+// delivers them, so two placements could name the same trace differently
+// (the wire answer names the root through its own lookup, #1481).
 var searchTraceLimitCPUSearches = []string{
 	`{ kind = client }`,
-	`{ kind = client } | by(name)`,
+	`{ kind = server } | by(name)`,
 }
 
 // TestSearchTraceLimitScalarDrainCPUAtMaxLimit is the CPU sentinel of the
