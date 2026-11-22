@@ -326,8 +326,9 @@ func hqFloatFiniteBoundsExpr() chplan.Expr {
 // hqFloatMinRungs rungs must exist. Both fail the same way the array-domain
 // `le` restriction fails them — by collapsing BucketCounts to an empty
 // array, whose ladder holds no observations, which the emitter's own
-// `observations = 0 -> nan` branch turns into Prometheus's NaN. That keeps the guard in the shape of the
-// plan and out of the emitter.
+// `observations = 0 -> nan` guard (hqClassicWriters.emptyLadderNaN) turns
+// into Prometheus's NaN. That keeps the guard in the shape of the plan and
+// out of the emitter.
 //
 // Passing the guards, the ladder gets Prometheus's
 // ensureMonotonicAndIgnoreSmallDeltas repair, which the cumulative input
@@ -591,6 +592,26 @@ func groupingMayKeepBucketBound(agg *parser.AggregateExpr) bool {
 		return false
 	}
 	return mayCarryBucketBound(agg.Expr)
+}
+
+// emptyVectorFold is the plan of a function whose argument provably carries
+// none of the samples it reads, which therefore answers the empty vector. The
+// caller still lowers the argument, so the argument's own lowering errors
+// surface, and then drops that plan: a constant-false Filter over it would
+// still have ClickHouse build the argument's whole pipeline for a statement
+// that reads nothing (https://github.com/tsouza/cerberus/issues/4536). The
+// fold is a constant-false Filter over `vector(0)` lowered in the same
+// context, so it has the argument's row shape and [planProvablyEmpty] still
+// recognises it.
+func emptyVectorFold(s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	zero, err := lower(&parser.Call{
+		Func: parser.Functions["vector"],
+		Args: parser.Expressions{&parser.NumberLiteral{Val: 0}},
+	}, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &chplan.Filter{Input: zero, Predicate: &chplan.LitBool{V: false}}, nil
 }
 
 // planProvablyEmpty reports whether inner's lowering already folded it to

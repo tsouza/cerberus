@@ -397,10 +397,7 @@ func histogramQuantileOverUnrecognisedArg(arg parser.Expr, inner chplan.Node, ph
 		return lowerHistogramQuantileNativeOverProjection(wrapMixedHistogramPartition(inner, s), phi, s), nil
 	}
 	if !mayCarryBucketBound(arg) || planProvablyEmpty(inner) {
-		return &chplan.Filter{
-			Input:     inner,
-			Predicate: &chplan.LitBool{V: false},
-		}, nil
+		return emptyVectorFold(s, ctx)
 	}
 	return lowerHistogramQuantileClassicFloatOverPlan(inner, phi, s, ctx), nil
 }

@@ -2,7 +2,6 @@ package chsql
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 
@@ -161,17 +160,22 @@ func TestEmitHistogramQuantile_GroupByAliasFallback(t *testing.T) {
 	}
 }
 
-// TestHistogramQuantileValueFrag_EmptyLadderGuardIsNoBranch pins the
-// empty-ladder guard of every classic kernel as a factor of the value, never
-// as the condition of a branch around it: ClickHouse filters every array
-// column a row-dependent `if` branch reads down to that branch's rows, which
-// raised a range quantile's peak memory several-fold (#4518). The kernel
-// never tests length(BucketCounts) either, which answered nothing the
-// observations test does not.
-func TestHistogramQuantileValueFrag_EmptyLadderGuardIsNoBranch(t *testing.T) {
+// TestHistogramQuantileValueFrag_EmptyLadderGuardFollowsTheLadder pins the
+// empty-ladder guard of both singular classic kernels by the ladder they
+// read. Over a cumulative ladder the guard is a factor of the value, never
+// the condition of a branch around it: ClickHouse filters every array column
+// a row-dependent `if` branch reads down to that branch's rows, which raised
+// the per-series range quantile of a rate several-fold (#4518). Over
+// per-bucket counts it is the branch chain
+// `if(length(BucketCounts) = 0, nan, if(observations = 0, nan, …))`, whose
+// statement the factor does not improve on (#4529).
+func TestHistogramQuantileValueFrag_EmptyLadderGuardFollowsTheLadder(t *testing.T) {
 	t.Parallel()
 
-	const factor = " * if(`_cerb_hqc_observations` = 0, nan, 1)"
+	const (
+		factor   = " * if(`_cerb_hqc_observations` = 0, nan, 1)"
+		branches = "if(length(`BucketCounts`) = 0, nan, if(`_cerb_hqc_observations` = 0, nan, if("
+	)
 	helpers := hqClassicHelperColumns{observations: hqClassicObservationsColumn}
 	for _, cumulative := range []bool{false, true} {
 		h := &chplan.HistogramQuantile{
@@ -185,56 +189,58 @@ func TestHistogramQuantileValueFrag_EmptyLadderGuardIsNoBranch(t *testing.T) {
 			"native":        histogramQuantileRankWalkNativeValueFrag(h, helpers),
 		} {
 			sql := renderFragToSQL(frag)
-			if !strings.HasSuffix(sql, factor) {
-				t.Errorf("%s kernel (cumulative=%v) must end in the empty-ladder factor %q:\n%s", name, cumulative, factor, sql)
+			if cumulative {
+				if !strings.HasSuffix(sql, factor) {
+					t.Errorf("%s kernel over a cumulative ladder must end in the empty-ladder factor %q:\n%s", name, factor, sql)
+				}
+				if strings.Contains(sql, "if(`_cerb_hqc_observations` = 0, nan, if") ||
+					strings.Contains(sql, "length(`BucketCounts`) = 0") {
+					t.Errorf("%s kernel over a cumulative ladder branches on an empty ladder:\n%s", name, sql)
+				}
+				continue
 			}
-			if strings.Contains(sql, "if(`_cerb_hqc_observations` = 0, nan, if") ||
-				strings.Contains(sql, "length(`BucketCounts`) = 0") {
-				t.Errorf("%s kernel (cumulative=%v) branches on an empty ladder:\n%s", name, cumulative, sql)
+			if !strings.HasPrefix(sql, branches) {
+				t.Errorf("%s kernel over per-bucket counts must open with the empty-ladder branches %q:\n%s", name, branches, sql)
+			}
+			if strings.Contains(sql, factor) {
+				t.Errorf("%s kernel over per-bucket counts carries the empty-ladder factor:\n%s", name, sql)
 			}
 		}
 	}
 }
 
-// TestEmitHistogramQuantile_AnswerLeavesThroughOutputBoundary pins that both
-// singular classic kernels hand their answer up through the output boundary
-// (materializeHistogramOutput): the statement selects every output column
-// from the boundary's tuple, and the boundary's singleton ARRAY JOIN reads
-// the kernel's `Value`. Without it ClickHouse runs the kernel after the
-// result's series-order sort, over the sort's output blocks, which raised a
-// range quantile's peak several-fold (#4518).
-func TestEmitHistogramQuantile_AnswerLeavesThroughOutputBoundary(t *testing.T) {
+// TestEmitHistogramQuantile_AnswerIsTheKernelSelect pins that both singular
+// classic kernels, over either ladder, answer straight from the SELECT that
+// computes `Value`: no further stage, such as a singleton ARRAY JOIN over the
+// answer row, sits above it. Such a stage keeps the kernel beneath the range
+// result's series-order sort, which cost the range quantile over a bare
+// bucket selector CPU time on 26.8 and every small statement a fixed
+// 0.1-0.5 MiB, and bounded no memory the empty-ladder factor had not
+// already bounded (#4529).
+func TestEmitHistogramQuantile_AnswerIsTheKernelSelect(t *testing.T) {
 	t.Parallel()
 	const (
-		outer    = "SELECT `_cerb_histogram_output`.1 AS `AttrsAlias`, `_cerb_histogram_output`.2 AS `Value` FROM (SELECT arrayJoin([(`AttrsAlias`, `Value`)]) AS `_cerb_histogram_output` FROM (SELECT `Attributes` AS `AttrsAlias`, "
-		answered = " AS `Value` FROM (SELECT *, arrayFirstIndex("
+		outer    = "SELECT `Attributes` AS `AttrsAlias`, "
+		answered = " AS `Value` FROM (SELECT *, "
 	)
-	for name, native := range map[string]bool{"interpolating": false, "native": true} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
+	for _, native := range []bool{false, true} {
+		for _, cumulative := range []bool{false, true} {
 			h := rankWalkNativePlan()
 			h.UseNativeQuantileAggregate = native
+			h.BucketCountsCumulative = cumulative
 			sql, _, err := Emit(context.Background(), h)
 			if err != nil {
-				t.Fatalf("Emit: %v", err)
+				t.Fatalf("native=%v cumulative=%v: Emit: %v", native, cumulative, err)
 			}
 			if !strings.HasPrefix(sql, outer) {
-				t.Errorf("the quantile's answer must leave through the output boundary, want prefix %q\nSQL: %s", outer, sql)
+				t.Errorf("native=%v cumulative=%v: the statement must be the kernel's own SELECT, want prefix %q\nSQL: %s", native, cumulative, outer, sql)
 			}
 			if !native && !strings.Contains(sql, answered) {
-				t.Errorf("the boundary must read the kernel's own Value\nSQL: %s", sql)
+				t.Errorf("native=%v cumulative=%v: the kernel's SELECT must compute Value over its staged helpers\nSQL: %s", native, cumulative, sql)
 			}
-		})
-	}
-}
-
-// TestMaterializeHistogramOutput_RefusesAnUnnamedColumn pins that the output
-// boundary refuses a row with a column it cannot read by name, rather than
-// emitting a tuple that names an empty column.
-func TestMaterializeHistogramOutput_RefusesAnUnnamedColumn(t *testing.T) {
-	t.Parallel()
-	row := chplan.Schema{Columns: []chplan.Column{{Name: "Attributes"}, {Name: ""}}}
-	if _, err := materializeHistogramOutput(NewQuery().Select(Star()), row); !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("materializeHistogramOutput over an unnamed column: err = %v, want ErrUnsupported", err)
+			if strings.Contains(sql, "arrayJoin([(`AttrsAlias`") {
+				t.Errorf("native=%v cumulative=%v: the answer row passes through a singleton ARRAY JOIN\nSQL: %s", native, cumulative, sql)
+			}
+		}
 	}
 }

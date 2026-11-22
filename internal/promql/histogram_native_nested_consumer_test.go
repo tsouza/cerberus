@@ -333,7 +333,9 @@ func TestLower_ExpHistogram_SubqueryMatrixPreservesHistogramContract(t *testing.
 // the plan of count_values over an exp-histogram operand nested under a
 // further wrapper: somewhere beneath the wrapper an Aggregate groups the
 // histogram rows themselves, which is the count_values that stringifies
-// each published histogram.
+// each published histogram. A histogram_quantile wrapper is not one of them: its
+// argument carries no `le`, so it folds to the empty vector without the
+// argument's plan (emptyVectorFold).
 func TestLower_ExpHistogram_CountValuesNestedUnderWrapperGroupsHistograms(t *testing.T) {
 	t.Parallel()
 
@@ -342,7 +344,7 @@ func TestLower_ExpHistogram_CountValuesNestedUnderWrapperGroupsHistograms(t *tes
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for _, query := range []string{
 		`sum(count_values("hist", latency_exp_hist))`,
-		`histogram_quantile(0.5, count_values("hist", latency_exp_hist))`,
+		`abs(count_values("hist", latency_exp_hist))`,
 	} {
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()

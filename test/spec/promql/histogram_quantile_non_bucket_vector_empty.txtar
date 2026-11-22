@@ -21,17 +21,17 @@ INSERT INTO otel_metrics_gauge VALUES
 [0] string = ""
 [1] string = "Map(String,String)"
 [2] int64 = 9
-[3] float64 = 1
+[3] float64 = 0
 [4] bool = false
 -- args_optimized --
 [0] string = ""
 [1] string = "Map(String,String)"
 [2] int64 = 9
-[3] float64 = 1
+[3] float64 = 0
 [4] bool = false
 -- chplan --
 Filter predicate=false
-  Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, FnNow64(9) AS TimeUnix, 1 AS Value]
+  Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, FnNow64(9) AS TimeUnix, 0 AS Value]
     OneRow
 -- settings --
 enabled_opts=aggregation_in_order,classic_bucket_layout_two_level,condition_cache,exp_histogram_two_level,join_spill,lazy_materialization,native_histogram_legacy_analyzer,result_cache,trace_id_bitmap_filter

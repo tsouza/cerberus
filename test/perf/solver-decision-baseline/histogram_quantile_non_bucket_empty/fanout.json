@@ -1,11 +1,11 @@
 {
   "query": "histogram_quantile_non_bucket_empty/fanout",
   "lowering": "fanout",
-  "routed": true,
-  "k": 8,
-  "reason": "routed",
+  "routed": false,
+  "k": 0,
+  "reason": "not-sliceable",
   "n_anchors": 241,
-  "fanout": 20,
-  "cumulative_d": "5m0s",
+  "fanout": 0,
+  "cumulative_d": "0s",
   "outer_range": "1h0m0s"
 }
