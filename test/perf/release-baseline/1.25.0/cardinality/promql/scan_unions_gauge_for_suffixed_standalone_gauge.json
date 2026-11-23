@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/scan_unions_gauge_for_suffixed_standalone_gauge",
+  "fan_factor": 1,
+  "scan_rows": 1,
+  "peak_intermediate": 1,
+  "has_cross_join": false,
+  "has_array_join": false,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}

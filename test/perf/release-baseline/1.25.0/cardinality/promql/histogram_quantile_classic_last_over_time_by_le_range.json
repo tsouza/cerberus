@@ -1,0 +1,11 @@
+{
+  "fixture": "promql/histogram_quantile_classic_last_over_time_by_le_range",
+  "fan_factor": 4.2,
+  "scan_rows": 5,
+  "peak_intermediate": 21,
+  "has_cross_join": false,
+  "has_array_join": true,
+  "has_recursive_cte": false,
+  "max_recursion_depth": 0,
+  "uncountable_levels": 0
+}
